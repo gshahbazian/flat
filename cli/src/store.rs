@@ -2,7 +2,7 @@
 //! and sync state under `~/.flat/<host>/.flat/`. `FLAT_DIR` overrides the
 //! root, which also makes a second checkout trivial.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +11,7 @@ use flat_schema::{Mutation, Ticket};
 use serde::{Deserialize, Serialize};
 
 use crate::markdown;
+use crate::merge;
 
 pub const PROJECT_KEY: &str = "DEMO";
 
@@ -176,35 +177,107 @@ impl Checkout {
 
     /// Materializes server deltas into the mirror and base copies.
     ///
-    /// `keep_local` keys are skipped entirely (push uses it to leave a
-    /// conflicted file's local edits in place). A dirty file being overwritten
-    /// gets a warning — conflict handling is deliberately out of scope for now.
-    pub fn apply_deltas(&mut self, deltas: &[Ticket], keep_local: &HashSet<String>) -> Result<()> {
+    /// A file with unpushed local edits is never clobbered here: a delta only
+    /// lands when the mirror file is provably clean — missing, already at
+    /// server state, equal to its base copy, or byte-identical to the content
+    /// in `pushed` (push: the exact bytes each mutation was built from, so an
+    /// edit saved mid-flight is preserved). Tickets in `keep_local` are
+    /// skipped entirely (push: a conflicted ticket keeps its local edits).
+    /// Everything else — including a dirty file whose base copy is missing or
+    /// unreadable, which proves nothing — is left in place and returned to
+    /// the caller, who reports it (or three-way merges it, `flat sync
+    /// --merge`) and holds back last_seq so a later sync re-delivers the
+    /// withheld delta.
+    pub fn apply_deltas(
+        &mut self,
+        deltas: &[Ticket],
+        keep_local: &HashSet<String>,
+        pushed: &HashMap<String, String>,
+    ) -> Result<Vec<Ticket>> {
+        let mut skipped = Vec::new();
         for ticket in deltas {
             if keep_local.contains(&ticket.key) {
                 continue;
             }
             let rendered = markdown::render(ticket);
-            let mirror = self.mirror_path(&ticket.key);
-            let base = self.base_path(&ticket.key);
-            if let (Ok(current), Ok(base_copy)) = (fs::read_to_string(&mirror), fs::read_to_string(&base)) {
-                if current != base_copy && current != rendered {
-                    eprintln!(
-                        "warning: {} had local edits; overwritten with server state",
-                        mirror.display()
-                    );
+            let clean = match fs::read_to_string(self.mirror_path(&ticket.key)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+                Err(e) => return Err(e).context(format!("reading mirror file of {}", ticket.key)),
+                Ok(current) => {
+                    current == rendered
+                        || pushed.get(&ticket.key) == Some(&current)
+                        || fs::read_to_string(self.base_path(&ticket.key))
+                            .is_ok_and(|base| base == current)
                 }
+            };
+            if !clean {
+                skipped.push(ticket.clone());
+                continue;
             }
-            fs::create_dir_all(mirror.parent().unwrap())?;
-            fs::create_dir_all(base.parent().unwrap())?;
-            write_atomic(&mirror, &rendered)?;
-            write_atomic(&base, &rendered)?;
-            self.state.tickets.insert(
-                ticket.key.clone(),
-                TicketState { id: ticket.id.clone(), seq: ticket.seq },
-            );
+            self.write_ticket(ticket, &rendered, &rendered)?;
         }
+        Ok(skipped)
+    }
+
+    /// Writes the outcome of a three-way merge: the merged content (possibly
+    /// holding conflict markers) becomes the mirror file, while the base copy
+    /// and state advance to the server row — so the next `flat push` sends
+    /// exactly the local side of the merge with a fresh base_seq.
+    pub fn write_merged(&mut self, ticket: &Ticket, merged: &str) -> Result<()> {
+        self.write_ticket(ticket, merged, &markdown::render(ticket))
+    }
+
+    fn write_ticket(&mut self, ticket: &Ticket, mirror: &str, base: &str) -> Result<()> {
+        let mirror_path = self.mirror_path(&ticket.key);
+        let base_path = self.base_path(&ticket.key);
+        fs::create_dir_all(mirror_path.parent().unwrap())?;
+        fs::create_dir_all(base_path.parent().unwrap())?;
+        write_atomic(&mirror_path, mirror)?;
+        write_atomic(&base_path, base)?;
+        self.state.tickets.insert(
+            ticket.key.clone(),
+            TicketState { id: ticket.id.clone(), seq: ticket.seq },
+        );
         Ok(())
+    }
+
+    /// Mirror files still containing conflict markers, from any past merge.
+    /// Derived by scanning rather than persisted state, so resolving (or
+    /// deleting) a file clears it with nothing to invalidate.
+    pub fn marker_files(&self) -> Result<Vec<PathBuf>> {
+        let mut found = Vec::new();
+        for key in self.state.tickets.keys() {
+            let path = self.mirror_path(key);
+            match fs::read_to_string(&path) {
+                Ok(content) if merge::has_markers(&content) => found.push(path),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).context(format!("reading {}", path.display())),
+            }
+        }
+        Ok(found)
+    }
+
+    /// Re-materializes mirror files that were deleted locally from their base
+    /// copies (the last synced server state). Deleting a file is how local
+    /// edits are discarded, now that sync never overwrites them.
+    pub fn restore_missing(&self) -> Result<Vec<String>> {
+        let mut restored = Vec::new();
+        for key in self.state.tickets.keys() {
+            let mirror = self.mirror_path(key);
+            if mirror.exists() {
+                continue;
+            }
+            let base = match fs::read_to_string(self.base_path(key)) {
+                Ok(base) => base,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e).context(format!("reading base copy of {key}")),
+            };
+            fs::create_dir_all(mirror.parent().unwrap())?;
+            write_atomic(&mirror, &base)?;
+            restored.push(key.clone());
+        }
+        Ok(restored)
     }
 }
 

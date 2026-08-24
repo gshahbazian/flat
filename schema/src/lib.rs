@@ -132,8 +132,10 @@ pub struct Mutation {
     pub entity: Entity,
     /// Client-generated ULID of the ticket (also on create).
     pub entity_id: String,
-    /// Seq the client last saw for this entity. Required on update; if the
-    /// server has moved past it, the whole mutation is rejected. Absent on create.
+    /// Seq the client last saw for this entity. Required on update; absent on
+    /// create. A stale base_seq is not by itself a conflict: the mutation
+    /// still applies if it only touches fields the server has not changed
+    /// since. A field both sides changed rejects the whole mutation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_seq: Option<u32>,
     pub set: TicketSet,

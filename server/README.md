@@ -6,6 +6,9 @@ Cloudflare Worker and Durable Object that host the ticket backend.
 - `src/tenant.ts` — the single tenant DO: `tickets`, the ordered `mutation_log`,
   `applied_mutations` (idempotency), and the seeded `DEMO` project counter,
   all in DO SQLite.
+- `src/conflict.ts` — field-level conflict detection: an update against a
+  stale base_seq applies unless it sets a field the server changed since
+  (found by replaying the mutation log after base_seq).
 - `src/schema.gen.ts` — generated from `/schema` by `scripts/codegen.sh`; do not edit.
 
 ## Endpoints
