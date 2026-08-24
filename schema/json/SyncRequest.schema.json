@@ -1,0 +1,103 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SyncRequest",
+  "type": "object",
+  "required": [
+    "last_seq",
+    "protocol_version"
+  ],
+  "properties": {
+    "last_seq": {
+      "description": "Highest seq the client has applied locally; deltas above this come back in the response.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "mutations": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Mutation"
+      }
+    },
+    "protocol_version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    }
+  },
+  "definitions": {
+    "EntityKind": {
+      "type": "string",
+      "enum": [
+        "ticket",
+        "comment",
+        "project",
+        "member",
+        "label"
+      ]
+    },
+    "Mutation": {
+      "description": "One client write. Atomic per entity: if any field conflicts, nothing in this mutation applies (other mutations in the same push still can).",
+      "type": "object",
+      "required": [
+        "base_seq",
+        "entity",
+        "entity_id",
+        "mutation_id",
+        "op"
+      ],
+      "properties": {
+        "base_seq": {
+          "description": "The seq the client last saw for this entity. Conflict = a field the server changed since then.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "entity": {
+          "$ref": "#/definitions/EntityKind"
+        },
+        "entity_id": {
+          "description": "Entity ULID. For `create`, the client generates it.",
+          "type": "string"
+        },
+        "labels_add": {
+          "description": "List fields (labels) travel as add/remove deltas so concurrent taggers don't clobber each other.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "labels_remove": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mutation_id": {
+          "description": "Client-generated ULID; the server's idempotency key. Replaying a mutation_id returns the original result instead of double-applying.",
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/definitions/Op"
+        },
+        "set": {
+          "description": "Scalar fields: last-value set.",
+          "default": {},
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "Op": {
+      "type": "string",
+      "enum": [
+        "create",
+        "update",
+        "delete"
+      ]
+    }
+  }
+}

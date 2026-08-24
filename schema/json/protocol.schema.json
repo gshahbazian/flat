@@ -1,0 +1,623 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FlatProtocol",
+  "description": "Generated from Rust (schema/src/lib.rs). Do not edit.",
+  "type": "object",
+  "properties": {
+    "project": {
+      "$ref": "#/definitions/Project"
+    },
+    "ticket": {
+      "$ref": "#/definitions/Ticket"
+    },
+    "comment": {
+      "$ref": "#/definitions/Comment"
+    },
+    "member": {
+      "$ref": "#/definitions/Member"
+    },
+    "label": {
+      "$ref": "#/definitions/Label"
+    },
+    "mutation": {
+      "$ref": "#/definitions/Mutation"
+    },
+    "sync_request": {
+      "$ref": "#/definitions/SyncRequest"
+    },
+    "sync_response": {
+      "$ref": "#/definitions/SyncResponse"
+    },
+    "snapshot": {
+      "$ref": "#/definitions/Snapshot"
+    },
+    "error_response": {
+      "$ref": "#/definitions/ErrorResponse"
+    }
+  },
+  "required": [
+    "project",
+    "ticket",
+    "comment",
+    "member",
+    "label",
+    "mutation",
+    "sync_request",
+    "sync_response",
+    "snapshot",
+    "error_response"
+  ],
+  "additionalProperties": false,
+  "definitions": {
+    "Project": {
+      "type": "object",
+      "required": [
+        "created",
+        "id",
+        "key",
+        "name",
+        "owners",
+        "seq",
+        "updated"
+      ],
+      "properties": {
+        "created": {
+          "type": "string"
+        },
+        "id": {
+          "description": "Immutable ULID.",
+          "type": "string"
+        },
+        "key": {
+          "description": "Human-facing key, `^[A-Z][A-Z0-9]{1,7}$`, immutable in v1.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Display name; renames freely.",
+          "type": "string"
+        },
+        "owners": {
+          "description": "Optional owner emails.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "seq": {
+          "description": "Mutation-log seq of the last change to this entity.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "updated": {
+          "type": "string"
+        }
+      }
+    },
+    "Priority": {
+      "type": "string",
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "urgent"
+      ]
+    },
+    "Status": {
+      "type": "string",
+      "enum": [
+        "backlog",
+        "todo",
+        "in_progress",
+        "in_review",
+        "done",
+        "canceled"
+      ]
+    },
+    "Ticket": {
+      "type": "object",
+      "required": [
+        "created",
+        "description",
+        "id",
+        "key",
+        "labels",
+        "number",
+        "priority",
+        "project_id",
+        "seq",
+        "status",
+        "title",
+        "updated"
+      ],
+      "properties": {
+        "assignee": {
+          "description": "Assignee email, or null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created": {
+          "type": "string"
+        },
+        "description": {
+          "description": "Freeform markdown body.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Immutable ULID.",
+          "type": "string"
+        },
+        "key": {
+          "description": "Human-facing key alias, e.g. `AUTH-142`.",
+          "type": "string"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "number": {
+          "description": "Per-project counter, from 1, never reused.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "priority": {
+          "$ref": "#/definitions/Priority"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "seq": {
+          "description": "Mutation-log seq of the last change to this entity.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "status": {
+          "$ref": "#/definitions/Status"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated": {
+          "type": "string"
+        }
+      }
+    },
+    "Comment": {
+      "type": "object",
+      "required": [
+        "author",
+        "body",
+        "created",
+        "id",
+        "seq",
+        "ticket_id"
+      ],
+      "properties": {
+        "author": {
+          "description": "Author email (the token owner, or the agent's name).",
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "created": {
+          "type": "string"
+        },
+        "id": {
+          "description": "Immutable ULID.",
+          "type": "string"
+        },
+        "on_behalf_of": {
+          "description": "When an agent token acts for a human, the human's email.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "ticket_id": {
+          "type": "string"
+        }
+      }
+    },
+    "Member": {
+      "type": "object",
+      "required": [
+        "created",
+        "email",
+        "id",
+        "seq"
+      ],
+      "properties": {
+        "created": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "id": {
+          "description": "Immutable ULID.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "Label": {
+      "type": "object",
+      "required": [
+        "created",
+        "id",
+        "name",
+        "seq"
+      ],
+      "properties": {
+        "created": {
+          "type": "string"
+        },
+        "id": {
+          "description": "Immutable ULID.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "EntityKind": {
+      "type": "string",
+      "enum": [
+        "ticket",
+        "comment",
+        "project",
+        "member",
+        "label"
+      ]
+    },
+    "Op": {
+      "type": "string",
+      "enum": [
+        "create",
+        "update",
+        "delete"
+      ]
+    },
+    "Mutation": {
+      "description": "One client write. Atomic per entity: if any field conflicts, nothing in this mutation applies (other mutations in the same push still can).",
+      "type": "object",
+      "required": [
+        "base_seq",
+        "entity",
+        "entity_id",
+        "mutation_id",
+        "op"
+      ],
+      "properties": {
+        "base_seq": {
+          "description": "The seq the client last saw for this entity. Conflict = a field the server changed since then.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "entity": {
+          "$ref": "#/definitions/EntityKind"
+        },
+        "entity_id": {
+          "description": "Entity ULID. For `create`, the client generates it.",
+          "type": "string"
+        },
+        "labels_add": {
+          "description": "List fields (labels) travel as add/remove deltas so concurrent taggers don't clobber each other.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "labels_remove": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mutation_id": {
+          "description": "Client-generated ULID; the server's idempotency key. Replaying a mutation_id returns the original result instead of double-applying.",
+          "type": "string"
+        },
+        "op": {
+          "$ref": "#/definitions/Op"
+        },
+        "set": {
+          "description": "Scalar fields: last-value set.",
+          "default": {},
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "SyncRequest": {
+      "properties": {
+        "last_seq": {
+          "description": "Highest seq the client has applied locally; deltas above this come back in the response.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "mutations": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Mutation"
+          }
+        },
+        "protocol_version": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      },
+      "title": "SyncRequest",
+      "type": "object",
+      "required": [
+        "last_seq",
+        "protocol_version"
+      ]
+    },
+    "AppliedMutation": {
+      "type": "object",
+      "required": [
+        "entity_id",
+        "mutation_id",
+        "seq"
+      ],
+      "properties": {
+        "entity_id": {
+          "type": "string"
+        },
+        "key": {
+          "description": "For creates of keyed entities: the assigned key, e.g. `AUTH-142`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mutation_id": {
+          "type": "string"
+        },
+        "seq": {
+          "description": "Seq stamped on this change (unchanged entity seq for a no-op).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "Conflict": {
+      "type": "object",
+      "required": [
+        "entity_id",
+        "fields",
+        "mutation_id",
+        "server"
+      ],
+      "properties": {
+        "entity_id": {
+          "type": "string"
+        },
+        "fields": {
+          "description": "Fields the server changed since the mutation's base_seq that the mutation also tried to set.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mutation_id": {
+          "type": "string"
+        },
+        "server": {
+          "description": "Current server state of the entity."
+        }
+      }
+    },
+    "Delta": {
+      "type": "object",
+      "required": [
+        "entity",
+        "entity_id",
+        "op",
+        "seq"
+      ],
+      "properties": {
+        "data": true,
+        "entity": {
+          "$ref": "#/definitions/EntityKind"
+        },
+        "entity_id": {
+          "type": "string"
+        },
+        "op": {
+          "description": "`upsert` carries the full entity in `data`; `delete` carries null.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/DeltaOp"
+            }
+          ]
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "DeltaOp": {
+      "type": "string",
+      "enum": [
+        "upsert",
+        "delete"
+      ]
+    },
+    "Rejected": {
+      "description": "A mutation the server refused for a reason other than a conflict (validation error, unknown entity, read-only field, ...).",
+      "type": "object",
+      "required": [
+        "entity_id",
+        "error",
+        "mutation_id"
+      ],
+      "properties": {
+        "entity_id": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "mutation_id": {
+          "type": "string"
+        }
+      }
+    },
+    "SyncResponse": {
+      "properties": {
+        "applied": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/AppliedMutation"
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Conflict"
+          }
+        },
+        "deltas": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Delta"
+          }
+        },
+        "latest_seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "rejected": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Rejected"
+          }
+        }
+      },
+      "title": "SyncResponse",
+      "type": "object",
+      "required": [
+        "applied",
+        "conflicts",
+        "deltas",
+        "latest_seq",
+        "rejected"
+      ]
+    },
+    "Snapshot": {
+      "properties": {
+        "comments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Comment"
+          }
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Label"
+          }
+        },
+        "latest_seq": {
+          "description": "The seq watermark this snapshot represents.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Member"
+          }
+        },
+        "next_cursor": {
+          "description": "Pagination cursor; null when this page is the last.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "projects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Project"
+          }
+        },
+        "tickets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Ticket"
+          }
+        }
+      },
+      "title": "Snapshot",
+      "type": "object",
+      "required": [
+        "comments",
+        "labels",
+        "latest_seq",
+        "members",
+        "projects",
+        "tickets"
+      ]
+    },
+    "ErrorResponse": {
+      "properties": {
+        "error": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "title": "ErrorResponse",
+      "description": "Non-2xx responses carry this body. `error` is a stable machine-readable code; the compaction clause uses `resync_required` (client's last_seq predates the server's compaction floor -> take a fresh snapshot).",
+      "type": "object",
+      "required": [
+        "error",
+        "message"
+      ]
+    }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "id": "01JCZX6T4SR0WV6P5B4X4E9K1T",
+  "key": "AUTH-142",
+  "project_id": "01JCZWZQ8B3F2M7N9P4R5S6T7V",
+  "number": 142,
+  "title": "Fix OAuth token refresh race",
+  "status": "in_progress",
+  "priority": "high",
+  "assignee": "gabe@acme.com",
+  "labels": ["auth", "bug"],
+  "description": "The refresh lock is per-process; two workers can refresh\nconcurrently and one lands a stale token.",
+  "created": "2025-11-30T18:04:11Z",
+  "updated": "2025-12-01T09:22:41Z",
+  "seq": 4021
+}

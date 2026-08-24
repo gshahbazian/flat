@@ -1,0 +1,53 @@
+{
+  "latest_seq": 4090,
+  "projects": [
+    {
+      "id": "01JCZWZQ8B3F2M7N9P4R5S6T7V",
+      "key": "AUTH",
+      "name": "Authentication",
+      "owners": ["gabe@acme.com"],
+      "created": "2025-11-01T09:00:00Z",
+      "updated": "2025-11-01T09:00:00Z",
+      "seq": 12
+    }
+  ],
+  "tickets": [
+    {
+      "id": "01JCZX6T4SR0WV6P5B4X4E9K1T",
+      "key": "AUTH-142",
+      "project_id": "01JCZWZQ8B3F2M7N9P4R5S6T7V",
+      "number": 142,
+      "title": "Fix OAuth token refresh race",
+      "status": "in_progress",
+      "priority": "high",
+      "assignee": "gabe@acme.com",
+      "labels": ["auth", "bug"],
+      "description": "Two workers can refresh concurrently.",
+      "created": "2025-11-30T18:04:11Z",
+      "updated": "2025-12-01T09:22:41Z",
+      "seq": 4089
+    }
+  ],
+  "comments": [
+    {
+      "id": "01JCZXA2Q9K8J7H6G5F4D3S2A1",
+      "ticket_id": "01JCZX6T4SR0WV6P5B4X4E9K1T",
+      "author": "gabe@acme.com",
+      "on_behalf_of": null,
+      "body": "Repro'd it, the refresh lock is per-process.",
+      "created": "2025-11-30T18:40:02Z",
+      "seq": 4025
+    }
+  ],
+  "members": [
+    {
+      "id": "01JCZWY0X9W8V7T6S5R4Q3P2N1",
+      "email": "gabe@acme.com",
+      "name": "Gabe",
+      "created": "2025-11-01T09:00:00Z",
+      "seq": 2
+    }
+  ],
+  "labels": [],
+  "next_cursor": null
+}

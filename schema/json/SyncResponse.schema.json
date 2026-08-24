@@ -1,0 +1,169 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SyncResponse",
+  "type": "object",
+  "required": [
+    "applied",
+    "conflicts",
+    "deltas",
+    "latest_seq",
+    "rejected"
+  ],
+  "properties": {
+    "applied": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/AppliedMutation"
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Conflict"
+      }
+    },
+    "deltas": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Delta"
+      }
+    },
+    "latest_seq": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "rejected": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Rejected"
+      }
+    }
+  },
+  "definitions": {
+    "AppliedMutation": {
+      "type": "object",
+      "required": [
+        "entity_id",
+        "mutation_id",
+        "seq"
+      ],
+      "properties": {
+        "entity_id": {
+          "type": "string"
+        },
+        "key": {
+          "description": "For creates of keyed entities: the assigned key, e.g. `AUTH-142`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mutation_id": {
+          "type": "string"
+        },
+        "seq": {
+          "description": "Seq stamped on this change (unchanged entity seq for a no-op).",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "Conflict": {
+      "type": "object",
+      "required": [
+        "entity_id",
+        "fields",
+        "mutation_id",
+        "server"
+      ],
+      "properties": {
+        "entity_id": {
+          "type": "string"
+        },
+        "fields": {
+          "description": "Fields the server changed since the mutation's base_seq that the mutation also tried to set.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "mutation_id": {
+          "type": "string"
+        },
+        "server": {
+          "description": "Current server state of the entity."
+        }
+      }
+    },
+    "Delta": {
+      "type": "object",
+      "required": [
+        "entity",
+        "entity_id",
+        "op",
+        "seq"
+      ],
+      "properties": {
+        "data": true,
+        "entity": {
+          "$ref": "#/definitions/EntityKind"
+        },
+        "entity_id": {
+          "type": "string"
+        },
+        "op": {
+          "description": "`upsert` carries the full entity in `data`; `delete` carries null.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/DeltaOp"
+            }
+          ]
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "DeltaOp": {
+      "type": "string",
+      "enum": [
+        "upsert",
+        "delete"
+      ]
+    },
+    "EntityKind": {
+      "type": "string",
+      "enum": [
+        "ticket",
+        "comment",
+        "project",
+        "member",
+        "label"
+      ]
+    },
+    "Rejected": {
+      "description": "A mutation the server refused for a reason other than a conflict (validation error, unknown entity, read-only field, ...).",
+      "type": "object",
+      "required": [
+        "entity_id",
+        "error",
+        "mutation_id"
+      ],
+      "properties": {
+        "entity_id": {
+          "type": "string"
+        },
+        "error": {
+          "type": "string"
+        },
+        "mutation_id": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

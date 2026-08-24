@@ -1,0 +1,70 @@
+{
+  "applied": [
+    {
+      "mutation_id": "01JD0B9Z8Y7X6W5V4T3S2R1Q0P",
+      "entity_id": "01JCZX6T4SR0WV6P5B4X4E9K1T",
+      "seq": 4089,
+      "key": null
+    }
+  ],
+  "conflicts": [
+    {
+      "mutation_id": "01JD0C1A2B3C4D5E6F7G8H9J0K",
+      "entity_id": "01JCZX7XQ2M3N4P5Q6R7S8T9V0",
+      "fields": ["title"],
+      "server": {
+        "id": "01JCZX7XQ2M3N4P5Q6R7S8T9V0",
+        "key": "AUTH-143",
+        "project_id": "01JCZWZQ8B3F2M7N9P4R5S6T7V",
+        "number": 143,
+        "title": "Rotate signing keys",
+        "status": "todo",
+        "priority": "none",
+        "assignee": null,
+        "labels": [],
+        "description": "",
+        "created": "2025-11-30T18:10:00Z",
+        "updated": "2025-12-01T08:00:00Z",
+        "seq": 4055
+      }
+    }
+  ],
+  "rejected": [
+    {
+      "mutation_id": "01JD0D9M8N7P6Q5R4S3T2V1W0X",
+      "entity_id": "01JCZX8A1B2C3D4E5F6G7H8J9K",
+      "error": "unknown status: blocked"
+    }
+  ],
+  "deltas": [
+    {
+      "seq": 4089,
+      "entity": "ticket",
+      "entity_id": "01JCZX6T4SR0WV6P5B4X4E9K1T",
+      "op": "upsert",
+      "data": {
+        "id": "01JCZX6T4SR0WV6P5B4X4E9K1T",
+        "key": "AUTH-142",
+        "project_id": "01JCZWZQ8B3F2M7N9P4R5S6T7V",
+        "number": 142,
+        "title": "Fix OAuth token refresh race",
+        "status": "in_progress",
+        "priority": "high",
+        "assignee": "gabe@acme.com",
+        "labels": ["auth", "bug"],
+        "description": "Two workers can refresh concurrently.",
+        "created": "2025-11-30T18:04:11Z",
+        "updated": "2025-12-01T09:22:41Z",
+        "seq": 4089
+      }
+    },
+    {
+      "seq": 4090,
+      "entity": "ticket",
+      "entity_id": "01JCZX9B1C2D3E4F5G6H7J8K9M",
+      "op": "delete",
+      "data": null
+    }
+  ],
+  "latest_seq": 4090
+}

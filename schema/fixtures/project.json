@@ -1,0 +1,9 @@
+{
+  "id": "01JCZWZQ8B3F2M7N9P4R5S6T7V",
+  "key": "AUTH",
+  "name": "Authentication",
+  "owners": ["gabe@acme.com"],
+  "created": "2025-11-01T09:00:00Z",
+  "updated": "2025-11-01T09:00:00Z",
+  "seq": 12
+}

@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Ticket",
+  "type": "object",
+  "required": [
+    "created",
+    "description",
+    "id",
+    "key",
+    "labels",
+    "number",
+    "priority",
+    "project_id",
+    "seq",
+    "status",
+    "title",
+    "updated"
+  ],
+  "properties": {
+    "assignee": {
+      "description": "Assignee email, or null.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created": {
+      "type": "string"
+    },
+    "description": {
+      "description": "Freeform markdown body.",
+      "type": "string"
+    },
+    "id": {
+      "description": "Immutable ULID.",
+      "type": "string"
+    },
+    "key": {
+      "description": "Human-facing key alias, e.g. `AUTH-142`.",
+      "type": "string"
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "number": {
+      "description": "Per-project counter, from 1, never reused.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "priority": {
+      "$ref": "#/definitions/Priority"
+    },
+    "project_id": {
+      "type": "string"
+    },
+    "seq": {
+      "description": "Mutation-log seq of the last change to this entity.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "status": {
+      "$ref": "#/definitions/Status"
+    },
+    "title": {
+      "type": "string"
+    },
+    "updated": {
+      "type": "string"
+    }
+  },
+  "definitions": {
+    "Priority": {
+      "type": "string",
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "urgent"
+      ]
+    },
+    "Status": {
+      "type": "string",
+      "enum": [
+        "backlog",
+        "todo",
+        "in_progress",
+        "in_review",
+        "done",
+        "canceled"
+      ]
+    }
+  }
+}

@@ -1,0 +1,4 @@
+{
+  "error": "resync_required",
+  "message": "last_seq 12 predates the compaction floor 4000; take a fresh snapshot"
+}

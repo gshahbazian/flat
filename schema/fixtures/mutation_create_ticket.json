@@ -1,0 +1,17 @@
+{
+  "mutation_id": "01JD0A1B2C3D4E5F6G7H8J9K0M",
+  "op": "create",
+  "entity": "ticket",
+  "entity_id": "01JD0A1B2C3D4E5F6G7H8J9K1N",
+  "base_seq": 0,
+  "set": {
+    "project_id": "01JCZWZQ8B3F2M7N9P4R5S6T7V",
+    "title": "Fix OAuth token refresh race",
+    "status": "todo",
+    "priority": "high",
+    "assignee": "gabe@acme.com",
+    "description": "Two workers can refresh concurrently."
+  },
+  "labels_add": ["auth", "bug"],
+  "labels_remove": []
+}

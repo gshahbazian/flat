@@ -1,0 +1,18 @@
+{
+  "protocol_version": 1,
+  "last_seq": 4021,
+  "mutations": [
+    {
+      "mutation_id": "01JD0B9Z8Y7X6W5V4T3S2R1Q0P",
+      "op": "update",
+      "entity": "ticket",
+      "entity_id": "01JCZX6T4SR0WV6P5B4X4E9K1T",
+      "base_seq": 4021,
+      "set": {
+        "status": "in_progress"
+      },
+      "labels_add": [],
+      "labels_remove": []
+    }
+  ]
+}

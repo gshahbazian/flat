@@ -1,0 +1,300 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Snapshot",
+  "type": "object",
+  "required": [
+    "comments",
+    "labels",
+    "latest_seq",
+    "members",
+    "projects",
+    "tickets"
+  ],
+  "properties": {
+    "comments": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Comment"
+      }
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Label"
+      }
+    },
+    "latest_seq": {
+      "description": "The seq watermark this snapshot represents.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Member"
+      }
+    },
+    "next_cursor": {
+      "description": "Pagination cursor; null when this page is the last.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "projects": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Project"
+      }
+    },
+    "tickets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Ticket"
+      }
+    }
+  },
+  "definitions": {
+    "Comment": {
+      "type": "object",
+      "required": [
+        "author",
+        "body",
+        "created",
+        "id",
+        "seq",
+        "ticket_id"
+      ],
+      "properties": {
+        "author": {
+          "description": "Author email (the token owner, or the agent's name).",
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "created": {
+          "type": "string"
+        },
+        "id": {
+          "description": "Immutable ULID.",
+          "type": "string"
+        },
+        "on_behalf_of": {
+          "description": "When an agent token acts for a human, the human's email.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "ticket_id": {
+          "type": "string"
+        }
+      }
+    },
+    "Label": {
+      "type": "object",
+      "required": [
+        "created",
+        "id",
+        "name",
+        "seq"
+      ],
+      "properties": {
+        "created": {
+          "type": "string"
+        },
+        "id": {
+          "description": "Immutable ULID.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "Member": {
+      "type": "object",
+      "required": [
+        "created",
+        "email",
+        "id",
+        "seq"
+      ],
+      "properties": {
+        "created": {
+          "type": "string"
+        },
+        "email": {
+          "type": "string"
+        },
+        "id": {
+          "description": "Immutable ULID.",
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seq": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "Priority": {
+      "type": "string",
+      "enum": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "urgent"
+      ]
+    },
+    "Project": {
+      "type": "object",
+      "required": [
+        "created",
+        "id",
+        "key",
+        "name",
+        "owners",
+        "seq",
+        "updated"
+      ],
+      "properties": {
+        "created": {
+          "type": "string"
+        },
+        "id": {
+          "description": "Immutable ULID.",
+          "type": "string"
+        },
+        "key": {
+          "description": "Human-facing key, `^[A-Z][A-Z0-9]{1,7}$`, immutable in v1.",
+          "type": "string"
+        },
+        "name": {
+          "description": "Display name; renames freely.",
+          "type": "string"
+        },
+        "owners": {
+          "description": "Optional owner emails.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "seq": {
+          "description": "Mutation-log seq of the last change to this entity.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "updated": {
+          "type": "string"
+        }
+      }
+    },
+    "Status": {
+      "type": "string",
+      "enum": [
+        "backlog",
+        "todo",
+        "in_progress",
+        "in_review",
+        "done",
+        "canceled"
+      ]
+    },
+    "Ticket": {
+      "type": "object",
+      "required": [
+        "created",
+        "description",
+        "id",
+        "key",
+        "labels",
+        "number",
+        "priority",
+        "project_id",
+        "seq",
+        "status",
+        "title",
+        "updated"
+      ],
+      "properties": {
+        "assignee": {
+          "description": "Assignee email, or null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created": {
+          "type": "string"
+        },
+        "description": {
+          "description": "Freeform markdown body.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Immutable ULID.",
+          "type": "string"
+        },
+        "key": {
+          "description": "Human-facing key alias, e.g. `AUTH-142`.",
+          "type": "string"
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "number": {
+          "description": "Per-project counter, from 1, never reused.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "priority": {
+          "$ref": "#/definitions/Priority"
+        },
+        "project_id": {
+          "type": "string"
+        },
+        "seq": {
+          "description": "Mutation-log seq of the last change to this entity.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "status": {
+          "$ref": "#/definitions/Status"
+        },
+        "title": {
+          "type": "string"
+        },
+        "updated": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

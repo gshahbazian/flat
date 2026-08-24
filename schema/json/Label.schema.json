@@ -1,0 +1,28 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Label",
+  "type": "object",
+  "required": [
+    "created",
+    "id",
+    "name",
+    "seq"
+  ],
+  "properties": {
+    "created": {
+      "type": "string"
+    },
+    "id": {
+      "description": "Immutable ULID.",
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "seq": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    }
+  }
+}

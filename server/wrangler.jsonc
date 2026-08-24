@@ -1,0 +1,12 @@
+// Self-host: `wrangler deploy` into your company's own Cloudflare account,
+// then `wrangler secret put ADMIN_TOKEN`. One deployment = one tenant.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "flat-server",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-06-01",
+  "durable_objects": {
+    "bindings": [{ "name": "TENANT", "class_name": "Tenant" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Tenant"] }]
+}

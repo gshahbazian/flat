@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Comment",
+  "type": "object",
+  "required": [
+    "author",
+    "body",
+    "created",
+    "id",
+    "seq",
+    "ticket_id"
+  ],
+  "properties": {
+    "author": {
+      "description": "Author email (the token owner, or the agent's name).",
+      "type": "string"
+    },
+    "body": {
+      "type": "string"
+    },
+    "created": {
+      "type": "string"
+    },
+    "id": {
+      "description": "Immutable ULID.",
+      "type": "string"
+    },
+    "on_behalf_of": {
+      "description": "When an agent token acts for a human, the human's email.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "seq": {
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0.0
+    },
+    "ticket_id": {
+      "type": "string"
+    }
+  }
+}

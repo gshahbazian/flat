@@ -1,0 +1,21 @@
+{
+  "name": "flat-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "codegen": "cargo run -q -p flat-schema --bin codegen && json2ts ../schema/json/protocol.schema.json -o src/schema.ts --bannerComment \"/* Generated from Rust (schema/src/lib.rs) via npm run codegen. Do not edit. */\"",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260820.0",
+    "@types/node": "^24.0.0",
+    "ajv": "^8.17.1",
+    "json-schema-to-typescript": "^15.0.4",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4",
+    "wrangler": "^4.26.0"
+  }
+}

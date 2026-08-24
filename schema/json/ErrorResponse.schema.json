@@ -1,0 +1,18 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ErrorResponse",
+  "description": "Non-2xx responses carry this body. `error` is a stable machine-readable code; the compaction clause uses `resync_required` (client's last_seq predates the server's compaction floor -> take a fresh snapshot).",
+  "type": "object",
+  "required": [
+    "error",
+    "message"
+  ],
+  "properties": {
+    "error": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    }
+  }
+}
