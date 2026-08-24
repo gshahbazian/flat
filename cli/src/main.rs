@@ -7,7 +7,7 @@ mod markdown;
 mod merge;
 mod store;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 
 use anyhow::{bail, Context, Result};
@@ -73,7 +73,7 @@ fn run() -> Result<()> {
             // The snapshot is authoritative: reconcile, don't layer. After
             // reset() nothing is dirty, so no delta can be skipped.
             checkout.reset()?;
-            checkout.apply_deltas(&snapshot.tickets, &HashSet::new(), &HashSet::new())?;
+            checkout.apply_deltas(&snapshot.tickets, &HashSet::new(), &HashMap::new())?;
             checkout.state.last_seq = snapshot.latest_seq;
             checkout.save_state()?;
             println!(
@@ -113,7 +113,7 @@ fn run() -> Result<()> {
                 .find(|a| a.mutation_id == mutation_id)
                 .context("server returned no result")?
                 .clone();
-            let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashSet::new())?;
+            let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
             report_kept(&checkout, &skipped);
             if skipped.is_empty() {
                 checkout.state.last_seq = response.latest_seq;
@@ -131,18 +131,21 @@ fn run() -> Result<()> {
             for conflict in &response.conflicts {
                 eprintln!("pending mutation rejected: {}", conflict.reason);
             }
-            let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashSet::new())?;
-            let unresolved = if merge {
+            let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
+            let (unresolved, marked) = if merge {
                 merge_skipped(&mut checkout, &skipped)?
             } else {
                 report_kept(&checkout, &skipped);
-                skipped.len()
+                (skipped.len(), 0)
             };
             for key in checkout.restore_missing()? {
                 println!("restored {} (was deleted locally)", checkout.mirror_path(&key).display());
             }
             // Withheld deltas must come back on the next sync: last_seq only
-            // advances once every delta has landed in the mirror.
+            // advances once every delta has landed in the mirror. A merge
+            // that wrote conflict markers did land (the base copy advanced),
+            // but still exits non-zero below — agents automate off the exit
+            // status, and markers mean work remains.
             if unresolved == 0 {
                 checkout.state.last_seq = response.latest_seq;
             }
@@ -152,6 +155,9 @@ fn run() -> Result<()> {
                     bail!("{unresolved} file(s) could not be merged; fix them and rerun `flat sync --merge`");
                 }
                 bail!("{unresolved} file(s) have local edits the server also changed; run `flat sync --merge`");
+            }
+            if marked > 0 {
+                bail!("{marked} file(s) have conflict markers to resolve; edit them away, then `flat push`");
             }
             println!("synced {} tickets (seq {})", response.deltas.len(), response.latest_seq);
         }
@@ -195,7 +201,10 @@ fn send(checkout: &mut Checkout, mutations: Vec<Mutation>) -> Result<SyncRespons
 fn push(checkout: &mut Checkout) -> Result<()> {
     let mirror_dir = checkout.mirror_dir();
     let mut mutations = Vec::new();
-    let mut pushed_keys = HashSet::new();
+    // The exact bytes each mutation was built from: after the push, a mirror
+    // file may only be clobbered if it still matches (an edit saved while the
+    // request was in flight is not on the server and must survive).
+    let mut pushed = HashMap::new();
 
     let mut entries: Vec<_> = match fs::read_dir(&mirror_dir) {
         Ok(entries) => entries.collect::<std::io::Result<_>>()?,
@@ -241,7 +250,7 @@ fn push(checkout: &mut Checkout) -> Result<()> {
         if set == TicketSet::default() {
             continue;
         }
-        pushed_keys.insert(stem.clone());
+        pushed.insert(stem.clone(), content);
         mutations.push(Mutation {
             mutation_id: Ulid::new().to_string(),
             op: MutationOp::Update,
@@ -276,13 +285,12 @@ fn push(checkout: &mut Checkout) -> Result<()> {
         eprintln!("rejected {}: {}", key_of(&conflict.entity_id), conflict.reason);
     }
 
-    // Conflicted files keep their local edits. Tickets we just pushed may
-    // clobber their own files: those local edits are now server state (the
-    // delta row folds them together with whatever disjoint fields the server
-    // changed). last_seq only advances on a clean push so a later sync
+    // Conflicted files keep their local edits. A file whose pushed content is
+    // unchanged may be clobbered by its own delta: those edits are now server
+    // state (the row folds them together with whatever disjoint fields the
+    // server changed). last_seq only advances on a clean push so a later sync
     // re-delivers anything skipped here.
-    let applied_keys: HashSet<String> = response.applied.iter().map(|a| a.key.clone()).collect();
-    let skipped = checkout.apply_deltas(&response.deltas, &conflicted, &applied_keys)?;
+    let skipped = checkout.apply_deltas(&response.deltas, &conflicted, &pushed)?;
     report_kept(checkout, &skipped);
     if conflicted.is_empty() && skipped.is_empty() {
         checkout.state.last_seq = response.latest_seq;
@@ -309,9 +317,11 @@ fn report_kept(checkout: &Checkout, skipped: &[Ticket]) {
 }
 
 /// Three-way merges each withheld delta into its dirty mirror file. Returns
-/// how many were left untouched (unparseable local files).
-fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<usize> {
+/// `(unresolved, marked)`: files left untouched (unparseable local edits) and
+/// files written with conflict markers still to be edited away.
+fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<(usize, usize)> {
     let mut unresolved = 0;
+    let mut marked = 0;
     for ticket in skipped {
         let mirror = checkout.mirror_path(&ticket.key);
         let local_raw = fs::read_to_string(&mirror)?;
@@ -334,9 +344,10 @@ fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<usize> {
         checkout.write_merged(ticket, &merged.content)?;
         if merged.conflicted {
             eprintln!("conflicts in {} — edit the markers away, then `flat push`", mirror.display());
+            marked += 1;
         } else {
             println!("merged {} (kept local edits)", ticket.key);
         }
     }
-    Ok(unresolved)
+    Ok((unresolved, marked))
 }

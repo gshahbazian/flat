@@ -2,7 +2,7 @@
 //! and sync state under `~/.flat/<host>/.flat/`. `FLAT_DIR` overrides the
 //! root, which also makes a second checkout trivial.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -176,18 +176,22 @@ impl Checkout {
 
     /// Materializes server deltas into the mirror and base copies.
     ///
-    /// A file with unpushed local edits is never clobbered here: tickets in
-    /// `keep_local` are skipped entirely (push: a conflicted ticket keeps its
-    /// local edits), tickets in `clobber` overwrite even a dirty file (push:
-    /// a just-applied ticket's local edits are now server state), and any
-    /// other dirty file is left in place and returned to the caller — who
-    /// reports it (or three-way merges it, `flat sync --merge`) and holds
-    /// back last_seq so a later sync re-delivers the withheld delta.
+    /// A file with unpushed local edits is never clobbered here: a delta only
+    /// lands when the mirror file is provably clean — missing, already at
+    /// server state, equal to its base copy, or byte-identical to the content
+    /// in `pushed` (push: the exact bytes each mutation was built from, so an
+    /// edit saved mid-flight is preserved). Tickets in `keep_local` are
+    /// skipped entirely (push: a conflicted ticket keeps its local edits).
+    /// Everything else — including a dirty file whose base copy is missing or
+    /// unreadable, which proves nothing — is left in place and returned to
+    /// the caller, who reports it (or three-way merges it, `flat sync
+    /// --merge`) and holds back last_seq so a later sync re-delivers the
+    /// withheld delta.
     pub fn apply_deltas(
         &mut self,
         deltas: &[Ticket],
         keep_local: &HashSet<String>,
-        clobber: &HashSet<String>,
+        pushed: &HashMap<String, String>,
     ) -> Result<Vec<Ticket>> {
         let mut skipped = Vec::new();
         for ticket in deltas {
@@ -195,15 +199,19 @@ impl Checkout {
                 continue;
             }
             let rendered = markdown::render(ticket);
-            if !clobber.contains(&ticket.key) {
-                let mirror = fs::read_to_string(self.mirror_path(&ticket.key));
-                let base = fs::read_to_string(self.base_path(&ticket.key));
-                if let (Ok(current), Ok(base_copy)) = (mirror, base) {
-                    if current != base_copy && current != rendered {
-                        skipped.push(ticket.clone());
-                        continue;
-                    }
+            let clean = match fs::read_to_string(self.mirror_path(&ticket.key)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+                Err(e) => return Err(e).context(format!("reading mirror file of {}", ticket.key)),
+                Ok(current) => {
+                    current == rendered
+                        || pushed.get(&ticket.key) == Some(&current)
+                        || fs::read_to_string(self.base_path(&ticket.key))
+                            .is_ok_and(|base| base == current)
                 }
+            };
+            if !clean {
+                skipped.push(ticket.clone());
+                continue;
             }
             self.write_ticket(ticket, &rendered, &rendered)?;
         }
