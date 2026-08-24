@@ -31,6 +31,7 @@ Notes:
   (idempotent server-side) instead of a rerun creating a duplicate ticket.
 - Rerunning `flat init` treats the snapshot as authoritative: local state is
   reset and tickets absent from the server disappear from the mirror.
-- Known limitation: concurrent `flat` commands against the same checkout are
-  not serialized; last write to `state.json` wins. Locking arrives with the
-  planned SQLite state db.
+- Known limitation: nothing serializes concurrent access to a checkout —
+  simultaneous `flat` commands race on `state.json` (last write wins), and an
+  editor save in the instant between sync's clean-file check and its write
+  can still be overwritten. Locking arrives with the planned SQLite state db.

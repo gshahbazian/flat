@@ -16,15 +16,26 @@ pub struct Merged {
     pub conflicted: bool,
 }
 
-/// Whether file content contains conflict markers. `=======` alone is not
-/// checked: it is also a legitimate markdown setext heading underline, and
-/// markers always come in <<<<<<</>>>>>>>> pairs. The one predicate shared by
-/// everything that must not treat a half-merged file as clean (`flat push`
-/// refuses it, `flat sync` exits non-zero while any remain).
+/// Whether file content contains an unresolved conflict block that flat
+/// itself wrote: the exact lines `<<<<<<< local`, `=======`, `>>>>>>> server`
+/// in order. Anything looser misfires on legitimate freeform bodies (a
+/// fenced code block documenting a git conflict also starts lines with
+/// `<<<<<<<`, and `=======` alone is a setext heading underline) and bricks
+/// the ticket — an unpushable file that fails every sync. The one predicate
+/// shared by everything that must not treat a half-merged file as clean
+/// (`flat push` refuses it, `flat sync` exits non-zero while any remain).
 pub fn has_markers(content: &str) -> bool {
-    content
-        .lines()
-        .any(|line| line.starts_with("<<<<<<<") || line.starts_with(">>>>>>>"))
+    const BLOCK: [&str; 3] = ["<<<<<<< local", "=======", ">>>>>>> server"];
+    let mut expect = 0;
+    for line in content.lines() {
+        if line == BLOCK[expect] {
+            expect += 1;
+            if expect == BLOCK.len() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 enum Field<T> {
@@ -155,6 +166,20 @@ mod tests {
             status,
             seq: 9,
         }
+    }
+
+    #[test]
+    fn has_markers_matches_generated_conflicts_only() {
+        // Both kinds of block flat writes are detected...
+        let base = file("t", Status::Todo, "line");
+        let frontmatter = merge(&base, &file("mine", Status::Todo, "line"), &server("theirs", Status::Todo, "line"));
+        let body = merge(&base, &file("t", Status::Todo, "mine"), &server("t", Status::Todo, "theirs"));
+        assert!(has_markers(&frontmatter.content));
+        assert!(has_markers(&body.content));
+        // ...while ordinary body text that resembles markers is not.
+        assert!(!has_markers("```\n<<<<<<< HEAD\ntheirs\n=======\nours\n>>>>>>> main\n```"));
+        assert!(!has_markers("a setext heading\n=======\n"));
+        assert!(!has_markers("resolved: kept the local side\n"));
     }
 
     #[test]
