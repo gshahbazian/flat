@@ -17,6 +17,7 @@ import {
   type Ticket,
   type TicketSet,
 } from "../src/schema.gen";
+import { invalidTitle } from "../src/validate";
 
 function fixture(name: string): unknown {
   return JSON.parse(readFileSync(new URL(`../../schema/fixtures/${name}.json`, import.meta.url), "utf8"));
@@ -150,5 +151,23 @@ describe("schema fixtures round-trip through the generated types", () => {
 
   test("snapshot", () => {
     expect(snapshot(fixture("snapshot"))).toEqual(fixture("snapshot"));
+  });
+});
+
+// The Rust twin (flat_schema::validate_title) runs this same fixture in
+// schema/tests/fixtures.rs, keeping the two implementations in lockstep.
+describe("title rule matches the Rust rule", () => {
+  const titles = fixture("titles") as { valid: string[]; invalid: string[] };
+
+  test("valid titles pass", () => {
+    for (const title of titles.valid) {
+      expect(invalidTitle(title), JSON.stringify(title)).toBeNull();
+    }
+  });
+
+  test("invalid titles are rejected", () => {
+    for (const title of titles.invalid) {
+      expect(invalidTitle(title), JSON.stringify(title)).not.toBeNull();
+    }
   });
 });

@@ -39,3 +39,28 @@ fn sync_response() {
 fn snapshot() {
     roundtrip::<Snapshot>("snapshot");
 }
+
+/// The title rule is implemented twice (Rust and server/src/validate.ts);
+/// both sides run this same fixture so they can't drift apart silently.
+#[test]
+fn titles() {
+    #[derive(serde::Deserialize)]
+    struct Titles {
+        valid: Vec<String>,
+        invalid: Vec<String>,
+    }
+    let path = format!("{}/fixtures/titles.json", env!("CARGO_MANIFEST_DIR"));
+    let titles: Titles = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    for title in &titles.valid {
+        assert!(
+            flat_schema::validate_title(title).is_ok(),
+            "expected valid: {title:?}"
+        );
+    }
+    for title in &titles.invalid {
+        assert!(
+            flat_schema::validate_title(title).is_err(),
+            "expected invalid: {title:?}"
+        );
+    }
+}

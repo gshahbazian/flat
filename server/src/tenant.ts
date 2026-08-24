@@ -15,6 +15,7 @@ import {
   type Ticket,
 } from "./schema.gen";
 import type { Env } from "./index";
+import { invalidTitle } from "./validate";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -52,19 +53,6 @@ INSERT OR IGNORE INTO meta (key, value) VALUES ('latest_seq', '0');
 `;
 
 const STATUSES = new Set<string>(Object.values(Status));
-
-/// Mirrors `flat_schema::validate_title` (schema/src/lib.rs): non-empty,
-/// single line, no control characters. A newline would corrupt the markdown
-/// frontmatter every client materializes.
-function invalidTitle(title: string): string | null {
-  if (title.trim().length === 0) {
-    return "title must not be empty";
-  }
-  if (/[\u0000-\u001f\u007f-\u009f]/.test(title)) {
-    return "title must be a single line without control characters";
-  }
-  return null;
-}
 
 export class TenantDO extends DurableObject<Env> {
   private sql: SqlStorage;

@@ -16,10 +16,11 @@ jobs:
       # and runs the CLI unit tests.
       - run: cargo test --workspace
       # Rust is the source of truth: fail if server/src/schema.gen.ts is stale.
+      # Pinned to the version that generated the committed file, so a typeshare
+      # release can't fail CI with a cosmetic diff.
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-binstall
-      - run: cargo binstall --no-confirm typeshare-cli
+          tool: typeshare-cli@1.13.4
       - name: Check generated TS is current
         run: |
           ./scripts/codegen.sh
