@@ -1,0 +1,19 @@
+[package]
+name = "flat"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "flat"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+flat-schema = { path = "../schema" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ulid = "1"
+ureq = { version = "2", features = ["json"] }
+url = "2"

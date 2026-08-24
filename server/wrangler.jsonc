@@ -1,0 +1,11 @@
+// Local development config (`pnpm dev`). Real deployments are driven by
+// the Alchemy program in /infra, which owns the production configuration.
+{
+  "name": "flat-server",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-10-01",
+  "durable_objects": {
+    "bindings": [{ "name": "TENANT", "class_name": "TenantDO" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TenantDO"] }]
+}

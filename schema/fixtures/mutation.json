@@ -1,0 +1,11 @@
+{
+  "mutation_id": "01JG4C3TA0PQRSTVWXYZ012345",
+  "op": "update",
+  "entity": "ticket",
+  "entity_id": "01JG4C2Q4V8XKZ3W5D9E7F2H6M",
+  "base_seq": 42,
+  "set": {
+    "title": "Fix OAuth token refresh race",
+    "status": "in_review"
+  }
+}
