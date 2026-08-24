@@ -132,11 +132,11 @@ fn run() -> Result<()> {
                 eprintln!("pending mutation rejected: {}", conflict.reason);
             }
             let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
-            let (unresolved, marked) = if merge {
+            let unresolved = if merge {
                 merge_skipped(&mut checkout, &skipped)?
             } else {
                 report_kept(&checkout, &skipped);
-                (skipped.len(), 0)
+                skipped.len()
             };
             for key in checkout.restore_missing()? {
                 println!("restored {} (was deleted locally)", checkout.mirror_path(&key).display());
@@ -144,8 +144,7 @@ fn run() -> Result<()> {
             // Withheld deltas must come back on the next sync: last_seq only
             // advances once every delta has landed in the mirror. A merge
             // that wrote conflict markers did land (the base copy advanced),
-            // but still exits non-zero below — agents automate off the exit
-            // status, and markers mean work remains.
+            // but the marker scan below still fails the command.
             if unresolved == 0 {
                 checkout.state.last_seq = response.latest_seq;
             }
@@ -156,8 +155,15 @@ fn run() -> Result<()> {
                 }
                 bail!("{unresolved} file(s) have local edits the server also changed; run `flat sync --merge`");
             }
-            if marked > 0 {
-                bail!("{marked} file(s) have conflict markers to resolve; edit them away, then `flat push`");
+            // Scanned, not remembered from this run: a sync retry must not
+            // mistake a checkout with leftover markers for a clean one —
+            // agents automate off the exit status.
+            let marked = checkout.marker_files()?;
+            if !marked.is_empty() {
+                for path in &marked {
+                    eprintln!("unresolved conflict markers in {}", path.display());
+                }
+                bail!("{} file(s) have conflict markers to resolve; edit them away, then `flat push`", marked.len());
             }
             println!("synced {} tickets (seq {})", response.deltas.len(), response.latest_seq);
         }
@@ -230,7 +236,7 @@ fn push(checkout: &mut Checkout) -> Result<()> {
         let content = fs::read_to_string(&path)?;
         // Frontmatter markers already fail the parse below; this catches
         // markers in the freeform body, which would otherwise push silently.
-        if content.lines().any(|l| l.starts_with("<<<<<<<") || l.starts_with(">>>>>>>")) {
+        if merge::has_markers(&content) {
             bail!("{} has unresolved conflict markers; edit them away and push again", path.display());
         }
         let file = markdown::parse(&content).with_context(|| format!("parsing {}", path.display()))?;
@@ -317,11 +323,10 @@ fn report_kept(checkout: &Checkout, skipped: &[Ticket]) {
 }
 
 /// Three-way merges each withheld delta into its dirty mirror file. Returns
-/// `(unresolved, marked)`: files left untouched (unparseable local edits) and
-/// files written with conflict markers still to be edited away.
-fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<(usize, usize)> {
+/// how many were left untouched (unparseable local files); merges that wrote
+/// conflict markers are picked up by the caller's marker scan.
+fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<usize> {
     let mut unresolved = 0;
-    let mut marked = 0;
     for ticket in skipped {
         let mirror = checkout.mirror_path(&ticket.key);
         let local_raw = fs::read_to_string(&mirror)?;
@@ -342,12 +347,9 @@ fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<(usize, 
             .with_context(|| format!("parsing base copy of {}", ticket.key))?;
         let merged = merge::merge(&base, &local, ticket);
         checkout.write_merged(ticket, &merged.content)?;
-        if merged.conflicted {
-            eprintln!("conflicts in {} — edit the markers away, then `flat push`", mirror.display());
-            marked += 1;
-        } else {
+        if !merged.conflicted {
             println!("merged {} (kept local edits)", ticket.key);
         }
     }
-    Ok((unresolved, marked))
+    Ok(unresolved)
 }

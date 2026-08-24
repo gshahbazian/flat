@@ -22,7 +22,8 @@ Notes:
   advance, so the next sync re-delivers it); with `--merge` it three-way
   merges the server's changes in, leaving `<<<<<<< local` / `>>>>>>> server`
   conflict markers where both sides changed the same thing. `flat push`
-  refuses files with unresolved markers.
+  refuses files with unresolved markers, and `flat sync` exits non-zero as
+  long as any mirror file still contains them.
 - Deleting a mirror file discards its local edits: `flat sync` restores the
   last synced server state from the base copy.
 - `flat new` journals its mutation under `.flat/pending/` before sending; if

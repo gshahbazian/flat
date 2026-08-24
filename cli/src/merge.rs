@@ -16,6 +16,17 @@ pub struct Merged {
     pub conflicted: bool,
 }
 
+/// Whether file content contains conflict markers. `=======` alone is not
+/// checked: it is also a legitimate markdown setext heading underline, and
+/// markers always come in <<<<<<</>>>>>>>> pairs. The one predicate shared by
+/// everything that must not treat a half-merged file as clean (`flat push`
+/// refuses it, `flat sync` exits non-zero while any remain).
+pub fn has_markers(content: &str) -> bool {
+    content
+        .lines()
+        .any(|line| line.starts_with("<<<<<<<") || line.starts_with(">>>>>>>"))
+}
+
 enum Field<T> {
     Clean(T),
     Conflict { local: T, server: T },

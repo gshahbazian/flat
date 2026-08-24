@@ -11,6 +11,7 @@ use flat_schema::{Mutation, Ticket};
 use serde::{Deserialize, Serialize};
 
 use crate::markdown;
+use crate::merge;
 
 pub const PROJECT_KEY: &str = "DEMO";
 
@@ -238,6 +239,23 @@ impl Checkout {
             TicketState { id: ticket.id.clone(), seq: ticket.seq },
         );
         Ok(())
+    }
+
+    /// Mirror files still containing conflict markers, from any past merge.
+    /// Derived by scanning rather than persisted state, so resolving (or
+    /// deleting) a file clears it with nothing to invalidate.
+    pub fn marker_files(&self) -> Result<Vec<PathBuf>> {
+        let mut found = Vec::new();
+        for key in self.state.tickets.keys() {
+            let path = self.mirror_path(key);
+            match fs::read_to_string(&path) {
+                Ok(content) if merge::has_markers(&content) => found.push(path),
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).context(format!("reading {}", path.display())),
+            }
+        }
+        Ok(found)
     }
 
     /// Re-materializes mirror files that were deleted locally from their base
