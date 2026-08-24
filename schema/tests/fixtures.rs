@@ -2,7 +2,7 @@
 //! and require the result to be byte-for-byte the same JSON value. Catches
 //! renamed fields, wrong enum casing, and dropped fields on either side.
 
-use flat_schema::{Mutation, SyncRequest, SyncResponse, Ticket};
+use flat_schema::{Mutation, Snapshot, SyncRequest, SyncResponse, Ticket};
 use serde::{de::DeserializeOwned, Serialize};
 
 fn roundtrip<T: Serialize + DeserializeOwned>(name: &str) {
@@ -33,4 +33,9 @@ fn sync_request() {
 #[test]
 fn sync_response() {
     roundtrip::<SyncResponse>("sync_response");
+}
+
+#[test]
+fn snapshot() {
+    roundtrip::<Snapshot>("snapshot");
 }

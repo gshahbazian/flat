@@ -49,7 +49,12 @@ fn config_path(root: &Path) -> PathBuf {
 
 pub fn save_config(root: &Path, config: &Config) -> Result<()> {
     fs::create_dir_all(root)?;
-    write_atomic(&config_path(root), &format!("{}\n", serde_json::to_string_pretty(config)?))
+    // 0600: the config holds the bearer token.
+    write_atomic_mode(
+        &config_path(root),
+        &format!("{}\n", serde_json::to_string_pretty(config)?),
+        Some(0o600),
+    )
 }
 
 pub fn load_config(root: &Path) -> Result<Config> {
@@ -145,7 +150,24 @@ pub fn host_dir_name(server: &str) -> Result<String> {
 }
 
 fn write_atomic(path: &Path, content: &str) -> Result<()> {
-    let tmp = path.with_extension("tmp");
+    write_atomic_mode(path, content, None)
+}
+
+fn write_atomic_mode(path: &Path, content: &str, mode: Option<u32>) -> Result<()> {
+    // Append .tmp to the whole name (DEMO-1.md.tmp): `with_extension` would
+    // produce DEMO-1.tmp, and a crashed write would leave what looks like a
+    // ticket file in the mirror.
+    let mut name = path.file_name().context("path has no file name")?.to_os_string();
+    name.push(".tmp");
+    let tmp = path.with_file_name(name);
     fs::write(&tmp, content).with_context(|| format!("writing {}", tmp.display()))?;
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(mode))
+            .with_context(|| format!("setting permissions on {}", tmp.display()))?;
+    }
+    #[cfg(not(unix))]
+    let _ = mode;
     fs::rename(&tmp, path).with_context(|| format!("writing {}", path.display()))
 }

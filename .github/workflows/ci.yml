@@ -15,6 +15,15 @@ jobs:
       # Round-trips the schema fixtures through the Rust types (schema/tests)
       # and runs the CLI unit tests.
       - run: cargo test --workspace
+      # Rust is the source of truth: fail if server/src/schema.gen.ts is stale.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-binstall
+      - run: cargo binstall --no-confirm typeshare-cli
+      - name: Check generated TS is current
+        run: |
+          ./scripts/codegen.sh
+          git diff --exit-code server/src/schema.gen.ts
 
   typescript:
     runs-on: ubuntu-latest

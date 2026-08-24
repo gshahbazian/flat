@@ -11,6 +11,20 @@ use typeshare::typeshare;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// The one rule for ticket titles, enforced by both the CLI and the server
+/// (mirrored in `server/src/tenant.ts`): non-empty, single line, no control
+/// characters. A newline in a title would corrupt the markdown frontmatter,
+/// and that format is harder to change than the wire protocol.
+pub fn validate_title(title: &str) -> Result<(), String> {
+    if title.trim().is_empty() {
+        return Err("title must not be empty".into());
+    }
+    if title.chars().any(|c| c.is_control()) {
+        return Err("title must be a single line without control characters".into());
+    }
+    Ok(())
+}
+
 /// Ticket workflow state.
 #[typeshare]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -18,6 +18,10 @@ import type { Env } from "./index";
 
 export const PROTOCOL_VERSION = 1;
 
+// Bootstrapped on every DO start. Note: `CREATE TABLE IF NOT EXISTS` only
+// creates missing tables — it will never ALTER an existing one. When a table
+// gains a column, add a real migration (versioned via a meta row), don't edit
+// the CREATE statements and hope.
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -48,6 +52,19 @@ INSERT OR IGNORE INTO meta (key, value) VALUES ('latest_seq', '0');
 `;
 
 const STATUSES = new Set<string>(Object.values(Status));
+
+/// Mirrors `flat_schema::validate_title` (schema/src/lib.rs): non-empty,
+/// single line, no control characters. A newline would corrupt the markdown
+/// frontmatter every client materializes.
+function invalidTitle(title: string): string | null {
+  if (title.trim().length === 0) {
+    return "title must not be empty";
+  }
+  if (/[\u0000-\u001f\u007f-\u009f]/.test(title)) {
+    return "title must be a single line without control characters";
+  }
+  return null;
+}
 
 export class TenantDO extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -90,6 +107,16 @@ export class TenantDO extends DurableObject<Env> {
     const conflicts: MutationConflict[] = [];
     this.ctx.storage.transactionSync(() => {
       for (const mutation of req.mutations) {
+        // Shape-check before touching sql so a malformed mutation rejects
+        // instead of throwing (a throw here would 500 the whole batch).
+        if (typeof mutation?.mutation_id !== "string" || mutation.mutation_id.length === 0) {
+          conflicts.push({
+            mutation_id: String(mutation?.mutation_id ?? ""),
+            entity_id: String(mutation?.entity_id ?? ""),
+            reason: "mutation_id is required",
+          });
+          continue;
+        }
         // Idempotency: a replayed mutation_id returns the original result
         // instead of double-applying.
         const prior = this.sql
@@ -154,6 +181,12 @@ export class TenantDO extends DurableObject<Env> {
     if (set.status != null && !STATUSES.has(set.status)) {
       return reject(`unknown status ${JSON.stringify(set.status)}`);
     }
+    if (set.title != null) {
+      const reason = invalidTitle(set.title);
+      if (reason) {
+        return reject(reason);
+      }
+    }
 
     if (mutation.op === MutationOp.Create) {
       const exists = this.sql
@@ -162,7 +195,7 @@ export class TenantDO extends DurableObject<Env> {
       if (exists.length > 0) {
         return reject(`ticket ${mutation.entity_id} already exists`);
       }
-      if (set.title == null || set.title.trim().length === 0) {
+      if (set.title == null) {
         return reject("create requires set.title");
       }
       const num = Number(this.meta("next_ticket_num"));
@@ -190,8 +223,8 @@ export class TenantDO extends DurableObject<Env> {
         return reject(`unknown ticket ${mutation.entity_id}`);
       }
       const { key, seq: currentSeq } = rows[0] as { key: string; seq: number };
-      if (mutation.base_seq == null) {
-        return reject("update requires base_seq");
+      if (typeof mutation.base_seq !== "number") {
+        return reject("update requires a numeric base_seq");
       }
       if (mutation.base_seq !== currentSeq) {
         return reject(

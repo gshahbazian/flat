@@ -11,6 +11,7 @@ import {
   type AppliedMutation,
   type Mutation,
   type MutationConflict,
+  type Snapshot,
   type SyncRequest,
   type SyncResponse,
   type Ticket,
@@ -121,6 +122,15 @@ function syncResponse(v: unknown): SyncResponse {
   };
 }
 
+function snapshot(v: unknown): Snapshot {
+  const raw = obj(v, ["tickets", "latest_seq"]);
+  expect(raw.tickets).toBeInstanceOf(Array);
+  return {
+    tickets: (raw.tickets as unknown[]).map(ticket),
+    latest_seq: num(raw.latest_seq),
+  };
+}
+
 describe("schema fixtures round-trip through the generated types", () => {
   test("ticket", () => {
     expect(ticket(fixture("ticket"))).toEqual(fixture("ticket"));
@@ -136,5 +146,9 @@ describe("schema fixtures round-trip through the generated types", () => {
 
   test("sync_response", () => {
     expect(syncResponse(fixture("sync_response"))).toEqual(fixture("sync_response"));
+  });
+
+  test("snapshot", () => {
+    expect(snapshot(fixture("snapshot"))).toEqual(fixture("snapshot"));
   });
 });

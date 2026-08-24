@@ -63,15 +63,18 @@ pub fn parse(content: &str) -> Result<TicketFile> {
             "id" => id = Some(value.to_string()),
             "title" => title = Some(value.to_string()),
             "status" => status = Some(value.parse::<Status>().map_err(anyhow::Error::msg)?),
-            other => bail!("unknown frontmatter field {other:?} (only title and status exist)"),
+            other => bail!("unknown frontmatter field {other:?} (fields: id, title, status)"),
         }
     }
+
+    let title = title.context("frontmatter is missing `title`")?;
+    flat_schema::validate_title(&title).map_err(anyhow::Error::msg)?;
 
     let body: Vec<&str> = lines.collect();
     let body = body.join("\n");
     Ok(TicketFile {
         key: id.context("frontmatter is missing `id`")?,
-        title: title.context("frontmatter is missing `title`")?,
+        title,
         status: status.context("frontmatter is missing `status`")?,
         body: body.trim_start_matches('\n').trim_end().to_string(),
     })
@@ -111,6 +114,12 @@ mod tests {
     fn rejects_unknown_fields() {
         let err = parse("---\nid: DEMO-1\ntitle: x\nstatus: todo\npriority: high\n---\n").unwrap_err();
         assert!(err.to_string().contains("unknown frontmatter field"));
+    }
+
+    #[test]
+    fn rejects_empty_title() {
+        let err = parse("---\nid: DEMO-1\ntitle:\nstatus: todo\n---\n").unwrap_err();
+        assert!(err.to_string().contains("title must not be empty"));
     }
 
     #[test]

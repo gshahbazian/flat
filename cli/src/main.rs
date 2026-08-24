@@ -73,6 +73,7 @@ fn run() -> Result<()> {
             );
         }
         Command::New { title } => {
+            flat_schema::validate_title(&title).map_err(anyhow::Error::msg)?;
             let mut checkout = Checkout::open(&root)?;
             let mutation = Mutation {
                 mutation_id: Ulid::new().to_string(),
@@ -83,7 +84,10 @@ fn run() -> Result<()> {
                 set: TicketSet { title: Some(title), status: None, body: None },
             };
             let response = send(&mut checkout, vec![mutation])?;
-            let created = response.applied.first().context("server applied nothing")?;
+            if let Some(conflict) = response.conflicts.first() {
+                bail!("create rejected: {}", conflict.reason);
+            }
+            let created = response.applied.first().context("server returned no result")?;
             checkout.apply_deltas(&response.deltas, &HashSet::new())?;
             checkout.state.last_seq = response.latest_seq;
             checkout.save_state()?;

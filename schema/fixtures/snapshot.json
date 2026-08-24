@@ -1,0 +1,21 @@
+{
+  "tickets": [
+    {
+      "id": "01JG4C2Q4V8XKZ3W5D9E7F2H6M",
+      "key": "DEMO-1",
+      "title": "Fix OAuth token refresh race",
+      "body": "Two agents refreshing the same token clobber each other.",
+      "status": "in_progress",
+      "seq": 42
+    },
+    {
+      "id": "01JG4C5E2MZYXWVTSRQPNMKJHG",
+      "key": "DEMO-2",
+      "title": "hello",
+      "body": "",
+      "status": "todo",
+      "seq": 43
+    }
+  ],
+  "latest_seq": 43
+}
