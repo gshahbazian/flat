@@ -1,0 +1,10 @@
+// The tests run under node (vitest), not workerd, so they get node types
+// instead of the worker runtime types used by ../src.
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "module": "esnext"
+  },
+  "include": ["./**/*.ts", "../src/schema.gen.ts"]
+}

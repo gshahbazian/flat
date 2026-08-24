@@ -1,0 +1,7 @@
+packages:
+  - server
+  - infra
+allowBuilds:
+  esbuild: true
+  sharp: false
+  workerd: true

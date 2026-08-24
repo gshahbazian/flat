@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Round-trips the schema fixtures through the Rust types (schema/tests)
+      # and runs the CLI unit tests.
+      - run: cargo test --workspace
+      # Rust is the source of truth: fail if server/src/schema.gen.ts is stale.
+      # Pinned to the version that generated the committed file, so a typeshare
+      # release can't fail CI with a cosmetic diff.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: typeshare-cli@1.13.4
+      - name: Check generated TS is current
+        run: |
+          ./scripts/codegen.sh
+          git diff --exit-code server/src/schema.gen.ts
+
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --dir server typecheck
+      # Round-trips the schema fixtures through the generated TS types.
+      - run: pnpm --dir server test
+      - run: pnpm --dir infra typecheck

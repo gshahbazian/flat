@@ -1,0 +1,8 @@
+{
+  "id": "01JG4C2Q4V8XKZ3W5D9E7F2H6M",
+  "key": "DEMO-1",
+  "title": "Fix OAuth token refresh race",
+  "body": "Two agents refreshing the same token clobber each other.\n\nRepro steps in thread.",
+  "status": "in_progress",
+  "seq": 42
+}

@@ -1,0 +1,15 @@
+{
+  "valid": [
+    "Fix OAuth token refresh race",
+    "colons: and — dashes — and a 🎫"
+  ],
+  "invalid": [
+    "",
+    "   ",
+    "line\nbreak",
+    "tab\tseparated",
+    "carriage\rreturn",
+    "del\u007fchar",
+    "nel\u0085char"
+  ]
+}

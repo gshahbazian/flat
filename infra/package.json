@@ -1,0 +1,15 @@
+{
+  "name": "@flat/infra",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "deploy": "alchemy deploy",
+    "destroy": "alchemy destroy",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "alchemy": "^0.94.0",
+    "typescript": "^5.9.3"
+  }
+}
