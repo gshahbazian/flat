@@ -1,8 +1,7 @@
 {
   "valid": [
     "Fix OAuth token refresh race",
-    "colons: and — dashes — and a 🎫",
-    " leading and trailing spaces are fine "
+    "colons: and — dashes — and a 🎫"
   ],
   "invalid": [
     "",

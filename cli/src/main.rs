@@ -58,10 +58,13 @@ fn run() -> Result<()> {
     let root = store::flat_root()?;
     match Cli::parse().command {
         Command::Init { server, token } => {
+            // Talk to the server before touching anything on disk, so a bad
+            // URL or token can't brick an existing checkout.
+            let snapshot = Client::new(&server, &token).snapshot()?;
             store::save_config(&root, &Config { server, token })?;
             let mut checkout = Checkout::open(&root)?;
-            let client = client(&checkout);
-            let snapshot = client.snapshot()?;
+            // The snapshot is authoritative: reconcile, don't layer.
+            checkout.reset()?;
             checkout.apply_deltas(&snapshot.tickets, &HashSet::new())?;
             checkout.state.last_seq = snapshot.latest_seq;
             checkout.save_state()?;
@@ -73,8 +76,15 @@ fn run() -> Result<()> {
             );
         }
         Command::New { title } => {
+            let title = title.trim().to_string();
             flat_schema::validate_title(&title).map_err(anyhow::Error::msg)?;
             let mut checkout = Checkout::open(&root)?;
+            if !checkout.pending_mutations()?.is_empty() {
+                bail!("a previous mutation may not have reached the server; run `flat sync` to replay it first");
+            }
+            // Journal the create before sending: if the response is lost, the
+            // next `flat sync` replays the same mutation_id instead of a rerun
+            // minting fresh IDs and creating a duplicate ticket.
             let mutation = Mutation {
                 mutation_id: Ulid::new().to_string(),
                 op: MutationOp::Create,
@@ -83,11 +93,18 @@ fn run() -> Result<()> {
                 base_seq: None,
                 set: TicketSet { title: Some(title), status: None, body: None },
             };
-            let response = send(&mut checkout, vec![mutation])?;
-            if let Some(conflict) = response.conflicts.first() {
+            let mutation_id = mutation.mutation_id.clone();
+            checkout.write_pending(&mutation)?;
+            let response = send(&mut checkout, vec![])?;
+            if let Some(conflict) = response.conflicts.iter().find(|c| c.mutation_id == mutation_id) {
                 bail!("create rejected: {}", conflict.reason);
             }
-            let created = response.applied.first().context("server returned no result")?;
+            let created = response
+                .applied
+                .iter()
+                .find(|a| a.mutation_id == mutation_id)
+                .context("server returned no result")?
+                .clone();
             checkout.apply_deltas(&response.deltas, &HashSet::new())?;
             checkout.state.last_seq = response.latest_seq;
             checkout.save_state()?;
@@ -96,6 +113,13 @@ fn run() -> Result<()> {
         Command::Sync => {
             let mut checkout = Checkout::open(&root)?;
             let response = send(&mut checkout, vec![])?;
+            // Anything applied here was a replayed pending mutation.
+            for applied in &response.applied {
+                println!("recovered pending {} (seq {})", applied.key, applied.seq);
+            }
+            for conflict in &response.conflicts {
+                eprintln!("pending mutation rejected: {}", conflict.reason);
+            }
             checkout.apply_deltas(&response.deltas, &HashSet::new())?;
             checkout.state.last_seq = response.latest_seq;
             checkout.save_state()?;
@@ -115,12 +139,25 @@ fn client(checkout: &Checkout) -> Client {
     Client::new(&checkout.config.server, &checkout.config.token)
 }
 
+/// Sends mutations, with any journaled pending mutations replayed first
+/// (idempotent server-side). Acknowledged pending entries are cleared.
 fn send(checkout: &mut Checkout, mutations: Vec<Mutation>) -> Result<SyncResponse> {
-    client(checkout).sync(&SyncRequest {
+    let mut all = checkout.pending_mutations()?;
+    all.extend(mutations);
+    let response = client(checkout).sync(&SyncRequest {
         protocol_version: PROTOCOL_VERSION,
         last_seq: checkout.state.last_seq,
-        mutations,
-    })
+        mutations: all,
+    })?;
+    for mutation_id in response
+        .applied
+        .iter()
+        .map(|a| &a.mutation_id)
+        .chain(response.conflicts.iter().map(|c| &c.mutation_id))
+    {
+        checkout.clear_pending(mutation_id)?;
+    }
+    Ok(response)
 }
 
 /// Diffs every mirror file against its base copy and pushes one update

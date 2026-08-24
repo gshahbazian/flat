@@ -81,6 +81,10 @@ export class TenantDO extends DurableObject<Env> {
     } catch {
       return Response.json({ error: "body is not valid JSON" }, { status: 400 });
     }
+    // `null` and other non-object roots parse fine; check before dereferencing.
+    if (req === null || typeof req !== "object" || Array.isArray(req)) {
+      return Response.json({ error: "malformed sync request" }, { status: 400 });
+    }
     if (req.protocol_version !== PROTOCOL_VERSION) {
       return Response.json(
         { error: `unsupported protocol_version ${req.protocol_version} (server speaks ${PROTOCOL_VERSION})` },
@@ -148,9 +152,12 @@ export class TenantDO extends DurableObject<Env> {
 
   /** Applies one mutation, or rejects it whole. Runs inside the sync transaction. */
   private apply(mutation: Mutation): AppliedMutation | MutationConflict {
+    // Coerce entity_id: a reject must serialize as a full MutationConflict
+    // (an omitted field would fail deserialization of the whole response on
+    // the Rust side, losing the batch's other outcomes).
     const reject = (reason: string): MutationConflict => ({
       mutation_id: mutation.mutation_id,
-      entity_id: mutation.entity_id,
+      entity_id: typeof mutation.entity_id === "string" ? mutation.entity_id : String(mutation.entity_id ?? ""),
       reason,
     });
 
@@ -161,6 +168,11 @@ export class TenantDO extends DurableObject<Env> {
       return reject("entity_id is required");
     }
     const set = mutation.set ?? {};
+    if (typeof set !== "object" || set === null || Array.isArray(set)) {
+      // Without this, a primitive `set` would apply as a no-op update that
+      // still bumps the ticket's seq and stales every other client.
+      return reject("set must be an object");
+    }
     for (const field of ["title", "body"] as const) {
       if (set[field] != null && typeof set[field] !== "string") {
         return reject(`set.${field} must be a string`);
@@ -169,8 +181,11 @@ export class TenantDO extends DurableObject<Env> {
     if (set.status != null && !STATUSES.has(set.status)) {
       return reject(`unknown status ${JSON.stringify(set.status)}`);
     }
-    if (set.title != null) {
-      const reason = invalidTitle(set.title);
+    // Titles are stored trimmed everywhere (the CLI trims too), so title
+    // equality never hinges on invisible whitespace.
+    const title = set.title != null ? set.title.trim() : null;
+    if (title !== null) {
+      const reason = invalidTitle(title);
       if (reason) {
         return reject(reason);
       }
@@ -183,7 +198,7 @@ export class TenantDO extends DurableObject<Env> {
       if (exists.length > 0) {
         return reject(`ticket ${mutation.entity_id} already exists`);
       }
-      if (set.title == null) {
+      if (title == null) {
         return reject("create requires set.title");
       }
       const num = Number(this.meta("next_ticket_num"));
@@ -193,7 +208,7 @@ export class TenantDO extends DurableObject<Env> {
         "INSERT INTO tickets (id, key, title, body, status, seq) VALUES (?, ?, ?, ?, ?, ?)",
         mutation.entity_id,
         key,
-        set.title,
+        title,
         set.body ?? "",
         set.status ?? Status.Todo,
         seq,
@@ -227,7 +242,7 @@ export class TenantDO extends DurableObject<Env> {
            body = COALESCE(?, body),
            seq = ?
          WHERE id = ?`,
-        set.title ?? null,
+        title,
         set.status ?? null,
         set.body ?? null,
         seq,

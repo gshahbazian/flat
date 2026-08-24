@@ -16,6 +16,9 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// characters. A newline in a title would corrupt the markdown frontmatter,
 /// and that format is harder to change than the wire protocol.
 /// `fixtures/titles.json` runs against both implementations in CI.
+///
+/// Titles are stored trimmed everywhere; callers trim before validating so
+/// title equality never hinges on invisible whitespace.
 pub fn validate_title(title: &str) -> Result<(), String> {
     if title.trim().is_empty() {
         return Err("title must not be empty".into());
