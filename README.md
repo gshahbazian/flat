@@ -4,9 +4,12 @@ A ticket system with no UI, designed for AI agents: tickets sync down to plain
 markdown files that agents grep, edit, and push back. See
 [docs/001_initial_system.md](docs/001_initial_system.md) for the full design.
 
-Current state: the first tracer bullet — create a ticket, edit the markdown,
-push it back. One seeded `DEMO` project, one bearer token, no conflict merging
-yet (a stale edit is rejected whole; `flat sync` re-materializes server state).
+Current state: the second tracer bullet — concurrent edits. A push against a
+stale base applies as long as it touches only fields the server hasn't
+changed; a field both sides changed rejects the ticket whole, and
+`flat sync --merge` three-way merges the server's changes into the edited
+file, leaving git-style conflict markers where the edits overlap. One seeded
+`DEMO` project, one bearer token.
 
 ## Layout
 
@@ -51,7 +54,16 @@ Description body.
 Editable: `title`, `status` (`backlog|todo|in_progress|in_review|done|canceled`),
 and the body. Read-only: `id`. `flat push` diffs each file against its base
 copy and sends one atomic update mutation per ticket; replaying a mutation is
-idempotent, and an update against a stale `base_seq` is rejected whole.
+idempotent.
+
+Conflicts are field-level: concurrent pushes that touch different fields of
+the same ticket both apply, and a field both sides changed rejects the whole
+ticket (the body merges line-wise, so only overlapping regions conflict).
+`flat sync` never overwrites a file with local edits — it reports them and
+withholds that ticket's delta; `flat sync --merge` merges the server's
+changes in, writing `<<<<<<< local` / `>>>>>>> server` markers where the
+edits collide. Edit the markers away and push again. To discard local edits
+instead, delete the file: `flat sync` restores the last synced server state.
 
 ## Deploying
 

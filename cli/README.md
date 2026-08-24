@@ -5,7 +5,7 @@ The Rust `flat` CLI.
 ```
 flat init --server URL --token TOKEN   # connect + first snapshot
 flat new TITLE                         # create a ticket, materialize DEMO-N.md
-flat sync                              # pull server changes into the mirror
+flat sync [--merge]                    # pull server changes into the mirror
 flat push                              # send locally edited files back
 flat path                              # print the mirror location
 ```
@@ -17,6 +17,14 @@ mutation per dirty ticket.
 
 Notes:
 
+- `flat sync` never overwrites a file with local edits: without `--merge` it
+  reports the file and withholds that ticket's delta (last_seq doesn't
+  advance, so the next sync re-delivers it); with `--merge` it three-way
+  merges the server's changes in, leaving `<<<<<<< local` / `>>>>>>> server`
+  conflict markers where both sides changed the same thing. `flat push`
+  refuses files with unresolved markers.
+- Deleting a mirror file discards its local edits: `flat sync` restores the
+  last synced server state from the base copy.
 - `flat new` journals its mutation under `.flat/pending/` before sending; if
   the response is lost, the next `flat sync` replays the same mutation_id
   (idempotent server-side) instead of a rerun creating a duplicate ticket.

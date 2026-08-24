@@ -4,6 +4,7 @@
 
 mod api;
 mod markdown;
+mod merge;
 mod store;
 
 use std::collections::HashSet;
@@ -12,7 +13,7 @@ use std::fs;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use flat_schema::{
-    Entity, Mutation, MutationOp, SyncRequest, SyncResponse, TicketSet, PROTOCOL_VERSION,
+    Entity, Mutation, MutationOp, SyncRequest, SyncResponse, Ticket, TicketSet, PROTOCOL_VERSION,
 };
 use ulid::Ulid;
 
@@ -40,7 +41,13 @@ enum Command {
     /// Create a ticket on the server and materialize its file.
     New { title: String },
     /// Pull server changes into the mirror.
-    Sync,
+    Sync {
+        /// Three-way merge server changes into files with local edits,
+        /// writing git-style conflict markers where both sides changed the
+        /// same thing.
+        #[arg(long)]
+        merge: bool,
+    },
     /// Push locally edited ticket files to the server.
     Push,
     /// Print the mirror location.
@@ -63,9 +70,10 @@ fn run() -> Result<()> {
             let snapshot = Client::new(&server, &token).snapshot()?;
             store::save_config(&root, &Config { server, token })?;
             let mut checkout = Checkout::open(&root)?;
-            // The snapshot is authoritative: reconcile, don't layer.
+            // The snapshot is authoritative: reconcile, don't layer. After
+            // reset() nothing is dirty, so no delta can be skipped.
             checkout.reset()?;
-            checkout.apply_deltas(&snapshot.tickets, &HashSet::new())?;
+            checkout.apply_deltas(&snapshot.tickets, &HashSet::new(), &HashSet::new())?;
             checkout.state.last_seq = snapshot.latest_seq;
             checkout.save_state()?;
             println!(
@@ -105,12 +113,15 @@ fn run() -> Result<()> {
                 .find(|a| a.mutation_id == mutation_id)
                 .context("server returned no result")?
                 .clone();
-            checkout.apply_deltas(&response.deltas, &HashSet::new())?;
-            checkout.state.last_seq = response.latest_seq;
+            let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashSet::new())?;
+            report_kept(&checkout, &skipped);
+            if skipped.is_empty() {
+                checkout.state.last_seq = response.latest_seq;
+            }
             checkout.save_state()?;
             println!("{}  {}", created.key, checkout.mirror_path(&created.key).display());
         }
-        Command::Sync => {
+        Command::Sync { merge } => {
             let mut checkout = Checkout::open(&root)?;
             let response = send(&mut checkout, vec![])?;
             // Anything applied here was a replayed pending mutation.
@@ -120,9 +131,28 @@ fn run() -> Result<()> {
             for conflict in &response.conflicts {
                 eprintln!("pending mutation rejected: {}", conflict.reason);
             }
-            checkout.apply_deltas(&response.deltas, &HashSet::new())?;
-            checkout.state.last_seq = response.latest_seq;
+            let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashSet::new())?;
+            let unresolved = if merge {
+                merge_skipped(&mut checkout, &skipped)?
+            } else {
+                report_kept(&checkout, &skipped);
+                skipped.len()
+            };
+            for key in checkout.restore_missing()? {
+                println!("restored {} (was deleted locally)", checkout.mirror_path(&key).display());
+            }
+            // Withheld deltas must come back on the next sync: last_seq only
+            // advances once every delta has landed in the mirror.
+            if unresolved == 0 {
+                checkout.state.last_seq = response.latest_seq;
+            }
             checkout.save_state()?;
+            if unresolved > 0 {
+                if merge {
+                    bail!("{unresolved} file(s) could not be merged; fix them and rerun `flat sync --merge`");
+                }
+                bail!("{unresolved} file(s) have local edits the server also changed; run `flat sync --merge`");
+            }
             println!("synced {} tickets (seq {})", response.deltas.len(), response.latest_seq);
         }
         Command::Push => {
@@ -189,6 +219,11 @@ fn push(checkout: &mut Checkout) -> Result<()> {
         };
 
         let content = fs::read_to_string(&path)?;
+        // Frontmatter markers already fail the parse below; this catches
+        // markers in the freeform body, which would otherwise push silently.
+        if content.lines().any(|l| l.starts_with("<<<<<<<") || l.starts_with(">>>>>>>")) {
+            bail!("{} has unresolved conflict markers; edit them away and push again", path.display());
+        }
         let file = markdown::parse(&content).with_context(|| format!("parsing {}", path.display()))?;
         if file.key != stem {
             bail!("{}: id is read-only (file says {:?}, expected {:?})", path.display(), file.key, stem);
@@ -241,16 +276,67 @@ fn push(checkout: &mut Checkout) -> Result<()> {
         eprintln!("rejected {}: {}", key_of(&conflict.entity_id), conflict.reason);
     }
 
-    // Conflicted files keep their local edits. last_seq only advances on a
-    // clean push so a later sync re-delivers what we skipped here.
-    checkout.apply_deltas(&response.deltas, &conflicted)?;
-    if conflicted.is_empty() {
+    // Conflicted files keep their local edits. Tickets we just pushed may
+    // clobber their own files: those local edits are now server state (the
+    // delta row folds them together with whatever disjoint fields the server
+    // changed). last_seq only advances on a clean push so a later sync
+    // re-delivers anything skipped here.
+    let applied_keys: HashSet<String> = response.applied.iter().map(|a| a.key.clone()).collect();
+    let skipped = checkout.apply_deltas(&response.deltas, &conflicted, &applied_keys)?;
+    report_kept(checkout, &skipped);
+    if conflicted.is_empty() && skipped.is_empty() {
         checkout.state.last_seq = response.latest_seq;
     }
     checkout.save_state()?;
 
     if !conflicted.is_empty() {
-        bail!("{} ticket(s) rejected; run `flat sync` to update (local edits will be overwritten)", conflicted.len());
+        bail!(
+            "{} ticket(s) rejected; run `flat sync --merge` to merge the server's changes, then push again",
+            conflicted.len()
+        );
     }
     Ok(())
+}
+
+/// Reports deltas that were withheld because the mirror file has local edits.
+fn report_kept(checkout: &Checkout, skipped: &[Ticket]) {
+    for ticket in skipped {
+        eprintln!(
+            "kept local edits in {} (server changed it too; run `flat sync --merge`)",
+            checkout.mirror_path(&ticket.key).display()
+        );
+    }
+}
+
+/// Three-way merges each withheld delta into its dirty mirror file. Returns
+/// how many were left untouched (unparseable local files).
+fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<usize> {
+    let mut unresolved = 0;
+    for ticket in skipped {
+        let mirror = checkout.mirror_path(&ticket.key);
+        let local_raw = fs::read_to_string(&mirror)?;
+        let local = match markdown::parse(&local_raw) {
+            Ok(local) => local,
+            Err(e) => {
+                eprintln!(
+                    "cannot merge {}: {e:#} (fix the file, or delete it to discard local edits)",
+                    mirror.display()
+                );
+                unresolved += 1;
+                continue;
+            }
+        };
+        let base_raw = fs::read_to_string(checkout.base_path(&ticket.key))
+            .with_context(|| format!("no base copy for {} — run `flat init`", ticket.key))?;
+        let base = markdown::parse(&base_raw)
+            .with_context(|| format!("parsing base copy of {}", ticket.key))?;
+        let merged = merge::merge(&base, &local, ticket);
+        checkout.write_merged(ticket, &merged.content)?;
+        if merged.conflicted {
+            eprintln!("conflicts in {} — edit the markers away, then `flat push`", mirror.display());
+        } else {
+            println!("merged {} (kept local edits)", ticket.key);
+        }
+    }
+    Ok(unresolved)
 }

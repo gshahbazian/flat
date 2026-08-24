@@ -52,8 +52,10 @@ export interface Mutation {
 	/** Client-generated ULID of the ticket (also on create). */
 	entity_id: string;
 	/**
-	 * Seq the client last saw for this entity. Required on update; if the
-	 * server has moved past it, the whole mutation is rejected. Absent on create.
+	 * Seq the client last saw for this entity. Required on update; absent on
+	 * create. A stale base_seq is not by itself a conflict: the mutation
+	 * still applies if it only touches fields the server has not changed
+	 * since. A field both sides changed rejects the whole mutation.
 	 */
 	base_seq?: number;
 	set: TicketSet;

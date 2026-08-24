@@ -15,6 +15,7 @@ import {
   type Ticket,
 } from "./schema.gen";
 import type { Env } from "./index";
+import { conflictingFields } from "./conflict";
 import { invalidTitle } from "./validate";
 
 export const PROTOCOL_VERSION = 1;
@@ -229,10 +230,29 @@ export class TenantDO extends DurableObject<Env> {
       if (typeof mutation.base_seq !== "number") {
         return reject("update requires a numeric base_seq");
       }
-      if (mutation.base_seq !== currentSeq) {
-        return reject(
-          `stale base_seq ${mutation.base_seq} (ticket is at seq ${currentSeq}): run \`flat sync\` and retry`,
-        );
+      if (mutation.base_seq > currentSeq) {
+        return reject(`base_seq ${mutation.base_seq} is ahead of the ticket (seq ${currentSeq})`);
+      }
+      if (mutation.base_seq < currentSeq) {
+        // A stale base_seq alone is not a conflict: replay the log to find
+        // the fields the server changed since the client's base. Disjoint
+        // edits apply; a field both sides changed rejects the mutation whole
+        // (atomic per ticket). The log is never compacted in v1, so every
+        // mutation after base_seq is present.
+        const serverSets = this.sql
+          .exec(
+            "SELECT payload FROM mutation_log WHERE entity_id = ? AND seq > ?",
+            mutation.entity_id,
+            mutation.base_seq,
+          )
+          .toArray()
+          .map((row) => (JSON.parse(row.payload as string) as Mutation).set);
+        const conflicting = conflictingFields(set, serverSets);
+        if (conflicting.length > 0) {
+          return reject(
+            `conflicting edits to ${conflicting.join(", ")} (ticket is at seq ${currentSeq}): run \`flat sync --merge\``,
+          );
+        }
       }
       const seq = this.nextSeq();
       this.sql.exec(
