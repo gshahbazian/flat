@@ -6,6 +6,10 @@ to real humans. Companies stand up their own instance and own their data.
 
 Status: design complete (3 interview rounds). Ready for milestone sign-off.
 
+`002_permissions_system.md` defines authentication, enrollment, roles, token
+access, attribution, and project ownership. It supersedes the earlier details
+in this document.
+
 ## Core thesis
 
 Agents are bad at clicking UIs and great at grep. So the primary *read*
@@ -22,15 +26,15 @@ back. Structured writes also work via CLI commands and MCP tools.
 | CLI + local MCP | Rust |
 | Schema sharing | Rust structs are source of truth; codegen TS types (typeshare / schemars -> JSON Schema); round-trip fixture tests in CI |
 | Tenancy | One company = one deployment (single tenant). Sub-teams own **projects** |
-| Hierarchy | Tenant -> projects -> tickets. No teams table in v1; members are tenant-level; a project optionally lists owner emails |
+| Hierarchy | Tenant -> projects -> tickets. No teams table in v1; members are tenant-level; projects list owner member IDs but remain visible to all members |
 | Storage | One **tenant DO** (DO SQLite): all tables + one global ordered mutation log |
 | Mirror | Out-of-repo: `~/.flat/<tenant-host>/` (`FLAT_DIR` overrides, `flat path` prints). Two-way editing, `flat push` |
 | Filenames | Stable key-only: `AUTH-142.md` |
 | Freshness | Explicit `flat sync` + `flat sync --watch` (WebSocket). No daemon in v1 |
 | v1 entities | Projects, members, tickets, comments, labels |
 | Deferred | Teams, milestones, cycles, ticket relations, attachments (R2), custom fields, custom statuses, OAuth, hosted multi-tenant service |
-| Identity | Email (matches `git config user.email`); tenant `members` table |
-| Auth | Bearer API tokens per-human or per-agent; agent tokens carry `on_behalf_of: <email>`. Deploy emits admin token; `flat member add` / `flat token create` |
+| Identity | Enrollment binds each token to a tenant member email. `git config user.email` may supply a CLI default or warning but grants no identity or access |
+| Auth | One-time tenant setup, invitation enrollment, and per-installation human or agent bearer tokens. See `002_permissions_system.md` |
 | MCP | v1 ships both: local stdio (`flat mcp`) and remote (Worker, streamable HTTP, bearer auth, Cloudflare agents SDK) |
 | Hosting | Self-host only in v1: `wrangler deploy` into the company's own account |
 | License | Apache-2.0 |
@@ -41,8 +45,8 @@ back. Structured writes also work via CLI commands and MCP tools.
 ```
 Cloudflare (company's own account)     Developer / agent machine
 ----------------------------------    --------------------------------------
-Worker (HTTP API, auth,                flat CLI (Rust)
-        remote MCP)                      ├─ ~/.flat/<tenant>/AUTH/AUTH-142.md  <── agent reads/edits via bash
+Worker (HTTP API, remote MCP;          flat CLI (Rust)
+        auth in the DO — 002)            ├─ ~/.flat/<tenant>/AUTH/AUTH-142.md  <── agent reads/edits via bash
   └─ Tenant Durable Object               ├─ base copies + SQLite state db
      (SQLite: projects, tickets,         └─ flat mcp (stdio)                  <── local agent tool calls
       comments, labels, members,
@@ -85,10 +89,10 @@ round-trip every message shape in CI.
 {
   "mutation_id": "01JD...ULID",      // client-generated, idempotency key
   "op": "update",                    // create | update | delete
-  "entity": "ticket",                // ticket | comment | project | member | label
+  "entity": "ticket",                // ticket | comment | project | label
   "entity_id": "01JC...ULID",
   "base_seq": 4021,                  // seq the client last saw for this entity
-  "set": { "status": "in_progress", "assignee": "gabe@acme.com" },
+  "set": { "status": "in_progress", "assignee": "01JB...ULID" },
   "labels_add": ["auth"],
   "labels_remove": []
 }
@@ -96,6 +100,8 @@ round-trip every message shape in CI.
 
 - Scalar fields: last-value `set`. List fields (labels): add/remove deltas,
   so concurrent taggers don't clobber each other.
+- `assignee` travels as a member ULID. The CLI resolves the email in the file
+  to a ULID from the synced members list before pushing; files keep emails.
 - **Idempotency**: server keeps an `applied_mutations` table; a replayed
   `mutation_id` returns the original result instead of double-applying.
   Kept forever in v1. (Agents retry on every timeout — this is day-one
@@ -114,9 +120,11 @@ POST /sync
 
 - `protocol_version` handshake; server rejects versions below its minimum.
 - `flat sync --watch`: WebSocket to the DO (hibernation-friendly); frames
-  reuse the delta format.
+  reuse the delta format and may carry a watermark without entity data.
 - Bootstrap: `GET /snapshot` — paginated JSON of all entities + the seq
   watermark it represents.
+- Sequence numbers are cursors and may skip secret-only administrative
+  mutations. Clients resync only after an explicit `resync_required`.
 - **Compaction clause (encoded now, exercised never in v1):** the server may
   compact the mutation log below a floor; a client whose `last_seq` predates
   the floor receives `resync_required` and must take a fresh snapshot.
@@ -172,7 +180,8 @@ Fix in PR #482.
   `<!-- flat:comments -->` sentinel. Edits below the sentinel (or a mangled
   sentinel) reject that ticket's push: "comments are read-only — use
   `flat comment AUTH-142`".
-- `(for <email>)` in a comment heading renders `on_behalf_of` attribution.
+- `(for <email>)` in a comment heading renders server-derived agent
+  attribution. Clients cannot submit the acting member.
 - Priorities are **named strings**, not ints — self-documenting for agents.
 
 ## Enums
@@ -248,3 +257,7 @@ Exercises every architectural bet before MCP enters the picture:
 
 Then: comments, `--watch`, FTS + `search`, local MCP, remote MCP, admin
 commands, docs + example AGENTS.md snippet.
+
+Auth in the first milestone is one shared bearer token checked in the Worker
+— a placeholder. The real system in `002_permissions_system.md` is its own
+milestone and replaces that placeholder.
