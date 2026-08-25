@@ -242,7 +242,11 @@ fn run() -> Result<()> {
             email,
             tenant_name,
         } => {
-            let token_name = name.unwrap_or_else(default_token_name);
+            let token_name = if setup || invite || recover {
+                new_token_name(name)?
+            } else {
+                String::new()
+            };
             let (bearer, snapshot) = if setup {
                 let credential = credential("FLAT_SETUP_CODE", "Setup code")?;
                 let email = required_value(email, "Admin email")?;
@@ -329,6 +333,7 @@ fn run() -> Result<()> {
                 .clone();
             let skipped =
                 checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
+            checkout.apply_tombstones(&response.tombstones)?;
             report_kept(&checkout, &skipped);
             if skipped.is_empty() {
                 checkout.state.last_seq = response.latest_seq;
@@ -352,6 +357,7 @@ fn run() -> Result<()> {
             }
             let skipped =
                 checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
+            checkout.apply_tombstones(&response.tombstones)?;
             let unresolved = if merge {
                 merge_skipped(&mut checkout, &skipped)?
             } else {
@@ -392,8 +398,9 @@ fn run() -> Result<()> {
                 );
             }
             println!(
-                "synced {} tickets (seq {})",
-                response.deltas.len(),
+                "synced {} changes ({} deleted, seq {})",
+                response.deltas.len() + response.tombstones.len(),
+                response.tombstones.len(),
                 response.latest_seq
             );
         }
@@ -472,6 +479,24 @@ fn default_token_name() -> String {
         .unwrap_or_else(|| "flat-cli".to_string())
 }
 
+fn new_token_name(explicit: Option<String>) -> Result<String> {
+    if let Some(name) = explicit {
+        let name = name.trim().to_string();
+        flat_schema::validate_token_name(&name).map_err(anyhow::Error::msg)?;
+        return Ok(name);
+    }
+
+    let hostname = default_token_name();
+    let name = if flat_schema::validate_token_name(&hostname).is_ok() {
+        prompt_default("CLI name", &hostname)?
+    } else {
+        eprintln!("local hostname {hostname:?} is not a valid CLI name");
+        prompt("CLI name")?
+    };
+    flat_schema::validate_token_name(&name).map_err(anyhow::Error::msg)?;
+    Ok(name)
+}
+
 fn prompt(label: &str) -> Result<String> {
     print!("{label}: ");
     io::stdout().flush()?;
@@ -482,6 +507,18 @@ fn prompt(label: &str) -> Result<String> {
         bail!("{label} is required");
     }
     Ok(value)
+}
+
+fn prompt_default(label: &str, default: &str) -> Result<String> {
+    print!("{label} [{default}]: ");
+    io::stdout().flush()?;
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(default.to_string());
+    }
+    Ok(value.to_string())
 }
 
 fn credential(environment: &str, label: &str) -> Result<String> {
@@ -531,6 +568,9 @@ fn bulk_invite(
     output: &std::path::Path,
     expires: Option<u64>,
 ) -> Result<()> {
+    if output == std::path::Path::new("-") {
+        bail!("--out - is not allowed; invitation secrets must be written to a private file");
+    }
     let raw = fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
     let mut lines = raw.lines();
     if lines.next().map(str::trim) != Some("email,role") {
@@ -757,16 +797,7 @@ fn delete_ticket(checkout: &mut Checkout, key: &str) -> Result<()> {
         .iter()
         .find(|applied| applied.mutation_id == mutation_id)
         .context("server returned no result")?;
-    for path in [checkout.mirror_path(key), checkout.base_path(key)] {
-        match fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(error).with_context(|| format!("removing {}", path.display()))
-            }
-        }
-    }
-    checkout.state.tickets.remove(key);
+    checkout.apply_tombstones(&response.tombstones)?;
     checkout.state.last_seq = response.latest_seq;
     checkout.save_state()?;
     println!("deleted {key}");
@@ -910,6 +941,7 @@ fn push(checkout: &mut Checkout) -> Result<()> {
     // server changed). last_seq only advances on a clean push so a later sync
     // re-delivers anything skipped here.
     let skipped = checkout.apply_deltas(&response.deltas, &conflicted, &pushed)?;
+    checkout.apply_tombstones(&response.tombstones)?;
     report_kept(checkout, &skipped);
     if conflicted.is_empty() && skipped.is_empty() {
         checkout.state.last_seq = response.latest_seq;

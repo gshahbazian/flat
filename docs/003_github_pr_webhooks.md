@@ -3,8 +3,8 @@
 Close a ticket when a pull request that names it merges into the repository's
 default branch.
 
-Status: proposal. This document chooses the install path and records the
-behavior we need before implementation starts.
+Status: implemented for the HTTP ticket-sync milestone. GitHub API write-back,
+App installation, and activity/comment rendering remain out of scope.
 
 ## Goal
 

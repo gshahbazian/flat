@@ -99,10 +99,29 @@ fn emails() {
 
 #[test]
 fn mutation_canonical_json() {
-    let path = format!("{}/fixtures/mutation.json", env!("CARGO_MANIFEST_DIR"));
-    let mutation: Mutation = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(
-        flat_schema::canonical_mutation_json(&mutation).unwrap(),
-        r#"{"base_seq":42,"entity":"ticket","entity_id":"01JG4C2Q4V8XKZ3W5D9E7F2H6M","mutation_id":"01JG4C3TA0PQRSTVWXYZ012345","op":"update","set":{"status":"in_review","title":"Fix OAuth token refresh race"}}"#,
+    #[derive(serde::Deserialize)]
+    struct CanonicalMutation {
+        mutation: Mutation,
+        canonical_json: String,
+    }
+    let path = format!(
+        "{}/fixtures/canonical_mutation.json",
+        env!("CARGO_MANIFEST_DIR")
     );
+    let fixture: CanonicalMutation =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(
+        flat_schema::canonical_mutation_json(&fixture.mutation).unwrap(),
+        fixture.canonical_json,
+    );
+}
+
+#[test]
+fn token_names() {
+    for name in ["gabe-macbook", "ci_1", "flat.cli"] {
+        assert!(flat_schema::validate_token_name(name).is_ok(), "{name:?}");
+    }
+    for name in ["", "bad name", "-leading", &"a".repeat(65)] {
+        assert!(flat_schema::validate_token_name(name).is_err(), "{name:?}");
+    }
 }

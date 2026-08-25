@@ -4,10 +4,16 @@ A ticket system with no UI, designed for AI agents: tickets sync down to plain
 markdown files that agents grep, edit, and push back. See
 [docs/001_initial_system.md](docs/001_initial_system.md) for the full design.
 
-Current state: per-member permissions and GitHub PR webhooks. A deployment is
-claimed once, admins invite members, each installation or agent has a distinct
-credential, and the Durable Object enforces role, access, and token-kind
-permissions. Signed GitHub pull-request webhooks can silently close tickets.
+Current implemented slice: per-member permissions for the HTTP ticket-sync and
+administration surfaces, plus GitHub PR webhooks. A deployment is claimed once,
+admins invite members, each installation or agent has a distinct credential,
+and the Durable Object enforces role, access, and token-kind permissions.
+Signed GitHub pull-request webhooks can silently close tickets.
+
+The broader accepted design is not complete yet. WebSocket/watch sessions,
+search and remote MCP, comments, labels, projects, assignments, force pushes,
+native OS-keychain storage, and the operator-recovery deployment runbook remain
+explicit follow-up work.
 
 ## Layout
 

@@ -15,6 +15,7 @@ import {
   type SyncRequest,
   type SyncResponse,
   type Ticket,
+  type TicketTombstone,
 } from "./schema.gen";
 import type { Env } from "./index";
 import { conflictingFields } from "./conflict";
@@ -47,11 +48,11 @@ CREATE TABLE IF NOT EXISTS tickets (
   key TEXT NOT NULL UNIQUE,
   title TEXT NOT NULL,
   body TEXT NOT NULL,
-  status TEXT NOT NULL,
-  seq INTEGER NOT NULL
+  status TEXT NOT NULL CHECK (status IN ('backlog', 'todo', 'in_progress', 'in_review', 'done', 'canceled')),
+  seq INTEGER NOT NULL CHECK (seq >= 0)
 );
 CREATE TABLE IF NOT EXISTS mutation_log (
-  seq INTEGER PRIMARY KEY,
+  seq INTEGER PRIMARY KEY CHECK (seq >= 0),
   mutation_id TEXT NOT NULL UNIQUE,
   entity_id TEXT NOT NULL,
   payload TEXT NOT NULL
@@ -75,6 +76,21 @@ const DEFAULT_ENROLLMENT_SECONDS = 24 * 60 * 60;
 const MAX_ENROLLMENT_SECONDS = 7 * 24 * 60 * 60;
 const DEFAULT_AGENT_SECONDS = 30 * 24 * 60 * 60;
 const MAX_AGENT_SECONDS = 90 * 24 * 60 * 60;
+const LAST_USED_WRITE_INTERVAL_MS = 5 * 60 * 1000;
+const MAX_SEQUENCE = 0xffff_ffff;
+const MAX_GITHUB_BODY_BYTES = 1024 * 1024;
+const MAX_GITHUB_DELIVERY_LENGTH = 128;
+const MAX_GITHUB_REPOSITORY_LENGTH = 256;
+const MAX_GITHUB_URL_LENGTH = 2048;
+const MAX_GITHUB_TITLE_LENGTH = 1024;
+
+class PrincipalChangedError extends Error {
+  constructor(readonly status: 401 | 403, readonly code: "invalid_token" | "forbidden") {
+    super(code);
+  }
+}
+
+class DuplicateTokenNameError extends Error {}
 
 interface TokenRow {
   id: string;
@@ -165,12 +181,37 @@ async function requestObject(request: Request): Promise<Record<string, unknown> 
   }
 }
 
+async function boundedBody(request: Request, maximumBytes: number): Promise<ArrayBuffer | null> {
+  if (request.body === null) return new ArrayBuffer(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    length += value.byteLength;
+    if (length > maximumBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return body.buffer;
+}
+
 export class TenantDO extends DurableObject<Env> {
   private sql: SqlStorage;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    this.sql.exec("PRAGMA foreign_keys = ON");
     this.sql.exec(BOOTSTRAP_SCHEMA);
     runMigrations(this.sql, (closure) => this.ctx.storage.transactionSync(closure));
   }
@@ -193,10 +234,20 @@ export class TenantDO extends DurableObject<Env> {
     const principal = await this.authenticate(request);
     if (principal instanceof Response) return principal;
 
+    try {
+      return await this.handleAuthenticated(request, url, principal);
+    } catch (error) {
+      if (error instanceof PrincipalChangedError) return jsonError(error.status, error.code);
+      throw error;
+    }
+  }
+
+  private async handleAuthenticated(request: Request, url: URL, principal: Principal): Promise<Response> {
+    const { pathname } = url;
     if (request.method === "POST" && pathname === "/sync") return this.handleSync(request, principal);
     if (request.method === "GET" && pathname === "/snapshot") return this.handleSnapshot(principal);
     if (request.method === "POST" && pathname === "/hooks/github/setup") {
-      return this.handleGithubSetup(url, principal);
+      return this.handleGithubSetup(request, url, principal);
     }
     if (request.method === "GET" && pathname === "/members") return this.handleMembers(url, principal);
     if (request.method === "POST" && pathname === "/members/invite") {
@@ -291,7 +342,15 @@ export class TenantDO extends DurableObject<Env> {
     if (row.expires_at !== null && Date.parse(row.expires_at) <= Date.now()) return jsonError(401, "invalid_token");
     if (row.member_status !== MemberStatus.Active) return jsonError(401, "invalid_token");
 
-    this.sql.exec("UPDATE tokens SET last_used_at = ? WHERE id = ?", isoNow(), row.id);
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - LAST_USED_WRITE_INTERVAL_MS).toISOString();
+    this.sql.exec(
+      `UPDATE tokens SET last_used_at = ? WHERE id = ?
+       AND (last_used_at IS NULL OR last_used_at < ?)`,
+      now.toISOString(),
+      row.id,
+      cutoff,
+    );
     return {
       memberId: row.member_id,
       email: row.email,
@@ -302,6 +361,35 @@ export class TenantDO extends DurableObject<Env> {
       access: row.access,
       createdBy: row.created_by,
     };
+  }
+
+  private requireCurrentPrincipal(principal: Principal, action: Action): Principal {
+    const row = this.sql.exec(
+      `SELECT t.*, m.email, m.role, m.status AS member_status
+       FROM tokens t JOIN members m ON m.id = t.member_id WHERE t.id = ?`,
+      principal.tokenId,
+    ).toArray()[0] as unknown as TokenRow | undefined;
+    const expired = row !== undefined && row.expires_at !== null
+      && Date.parse(row.expires_at) <= Date.now();
+    const verifierAvailable = row !== undefined
+      && this.keys().some((key) => key.id === row.verifier_key_id);
+    if (!row || row.member_id !== principal.memberId || row.revoked_at !== null || expired
+      || row.member_status !== MemberStatus.Active || !verifierAvailable) {
+      throw new PrincipalChangedError(401, "invalid_token");
+    }
+
+    const current: Principal = {
+      memberId: row.member_id,
+      email: row.email,
+      role: row.role,
+      tokenId: row.id,
+      tokenKind: row.kind,
+      tokenName: row.name,
+      access: row.access,
+      createdBy: row.created_by,
+    };
+    if (!may(current, action)) throw new PrincipalChangedError(403, "forbidden");
+    return current;
   }
 
   private async handleSetup(request: Request): Promise<Response> {
@@ -371,7 +459,8 @@ export class TenantDO extends DurableObject<Env> {
     if (!body) return jsonError(400, "invalid_json");
     const req = body as unknown as SyncRequest;
     if (req.protocol_version !== PROTOCOL_VERSION) return jsonError(400, "unsupported_protocol_version");
-    if (!Array.isArray(req.mutations) || typeof req.last_seq !== "number") {
+    if (!Array.isArray(req.mutations) || !Number.isSafeInteger(req.last_seq)
+      || req.last_seq < 0 || req.last_seq > MAX_SEQUENCE) {
       return jsonError(400, "malformed_sync_request");
     }
 
@@ -385,6 +474,7 @@ export class TenantDO extends DurableObject<Env> {
     const applied: AppliedMutation[] = [];
     const conflicts: MutationConflict[] = [];
     this.ctx.storage.transactionSync(() => {
+      const currentPrincipal = this.requireCurrentPrincipal(principal, "work.read");
       for (const mutation of req.mutations) {
         const reject = (reason: string): void => {
           conflicts.push({
@@ -398,7 +488,7 @@ export class TenantDO extends DurableObject<Env> {
           continue;
         }
         const action = this.mutationAction(mutation);
-        if (!action || !may(principal, action)) {
+        if (!action || !may(currentPrincipal, action)) {
           reject("forbidden");
           continue;
         }
@@ -410,7 +500,7 @@ export class TenantDO extends DurableObject<Env> {
           mutation.mutation_id,
         ).toArray()[0];
         if (prior) {
-          if (prior.actor_member_id !== principal.memberId || prior.mutation_hash !== hash) {
+          if (prior.actor_member_id !== currentPrincipal.memberId || prior.mutation_hash !== hash) {
             reject("mutation_id_reused");
             continue;
           }
@@ -430,12 +520,13 @@ export class TenantDO extends DurableObject<Env> {
            VALUES (?, ?, ?, ?, ?, ?)`,
           mutation.mutation_id,
           stored,
-          principal.memberId,
-          principal.tokenId,
+          currentPrincipal.memberId,
+          currentPrincipal.tokenId,
           hash,
           stored,
         );
-        this.audit(outcome.seq, `ticket.${mutation.op}`, principal, principal.tokenKind, "ticket", mutation.entity_id, {
+        this.audit(outcome.seq, `ticket.${mutation.op}`, currentPrincipal, currentPrincipal.tokenKind,
+          "ticket", mutation.entity_id, {
           mutation_id: mutation.mutation_id,
         });
         applied.push(outcome);
@@ -446,6 +537,7 @@ export class TenantDO extends DurableObject<Env> {
       applied,
       conflicts,
       deltas: this.ticketsSince(req.last_seq),
+      tombstones: this.tombstonesSince(req.last_seq),
       members: this.memberProfiles(),
       latest_seq: this.latestSeq(),
     };
@@ -494,7 +586,13 @@ export class TenantDO extends DurableObject<Env> {
     }
 
     if (mutation.op === MutationOp.Create) {
-      if (this.sql.exec("SELECT 1 FROM tickets WHERE id = ?", mutation.entity_id).toArray().length > 0) {
+      if (mutation.base_seq !== undefined) return reject("create must not include base_seq");
+      if (this.sql.exec(
+        `SELECT 1 FROM tickets WHERE id = ?
+         UNION ALL SELECT 1 FROM ticket_tombstones WHERE id = ? LIMIT 1`,
+        mutation.entity_id,
+        mutation.entity_id,
+      ).toArray().length > 0) {
         return reject(`ticket ${mutation.entity_id} already exists`);
       }
       if (title == null) return reject("create requires set.title");
@@ -518,12 +616,21 @@ export class TenantDO extends DurableObject<Env> {
     const rows = this.sql.exec("SELECT key, seq FROM tickets WHERE id = ?", mutation.entity_id).toArray();
     if (rows.length === 0) return reject(`unknown ticket ${mutation.entity_id}`);
     const { key, seq: currentSeq } = rows[0] as { key: string; seq: number };
-    if (typeof mutation.base_seq !== "number") return reject(`${mutation.op} requires a numeric base_seq`);
+    if (typeof mutation.base_seq !== "number" || !Number.isSafeInteger(mutation.base_seq)
+      || mutation.base_seq < 0 || mutation.base_seq > MAX_SEQUENCE) {
+      return reject(`${mutation.op} requires a valid base_seq`);
+    }
     if (mutation.base_seq > currentSeq) {
       return reject(`base_seq ${mutation.base_seq} is ahead of the ticket (seq ${currentSeq})`);
     }
     if (mutation.op === MutationOp.Delete) {
       const seq = this.nextSeq();
+      this.sql.exec(
+        "INSERT INTO ticket_tombstones (id, key, seq) VALUES (?, ?, ?)",
+        mutation.entity_id,
+        key,
+        seq,
+      );
       this.sql.exec("DELETE FROM tickets WHERE id = ?", mutation.entity_id);
       this.log(mutation, seq);
       return { mutation_id: mutation.mutation_id, entity_id: mutation.entity_id, key, seq };
@@ -555,8 +662,11 @@ export class TenantDO extends DurableObject<Env> {
     return { mutation_id: mutation.mutation_id, entity_id: mutation.entity_id, key, seq };
   }
 
-  private async handleGithubSetup(url: URL, principal: Principal): Promise<Response> {
-    if (!may(principal, "audit.read")) return jsonError(403, "forbidden");
+  private async handleGithubSetup(request: Request, url: URL, principal: Principal): Promise<Response> {
+    if (!may(principal, "integration.github.manage")) return jsonError(403, "forbidden");
+    const body = await boundedBody(request, 16 * 1024);
+    if (body === null) return jsonError(413, "payload_too_large");
+    const currentPrincipal = this.requireCurrentPrincipal(principal, "integration.github.manage");
     const rotate = url.searchParams.get("rotate") === "1";
     let secret = this.optionalMeta("github_webhook_secret");
     if (rotate) {
@@ -568,7 +678,7 @@ export class TenantDO extends DurableObject<Env> {
           replacement,
         );
         const seq = this.nextSeq();
-        this.audit(seq, "github.secret.rotate", principal, principal.tokenKind,
+        this.audit(seq, "github.secret.rotate", currentPrincipal, currentPrincipal.tokenKind,
           "integration", "github", {});
       });
       secret = replacement;
@@ -577,31 +687,39 @@ export class TenantDO extends DurableObject<Env> {
       const candidate = randomHexSecret();
       this.ctx.storage.transactionSync(() => {
         this.sql.exec(
-          "INSERT OR IGNORE INTO meta (key, value) VALUES ('github_webhook_secret', ?)",
+          "INSERT INTO meta (key, value) VALUES ('github_webhook_secret', ?)",
           candidate,
         );
-        const inserted = Number(this.sql.exec("SELECT changes() AS count").one().count) === 1;
-        if (!inserted) return;
         const seq = this.nextSeq();
-        this.audit(seq, "github.secret.create", principal, principal.tokenKind, "integration", "github", {});
+        this.audit(seq, "github.secret.create", currentPrincipal, currentPrincipal.tokenKind,
+          "integration", "github", {});
       });
-      secret = this.meta("github_webhook_secret");
+      secret = candidate;
     }
     return Response.json({ secret }, { headers: { "Cache-Control": "no-store" } });
   }
 
   private async handleGithub(request: Request): Promise<Response> {
-    const rawBody = await request.arrayBuffer();
+    const contentType = request.headers.get("Content-Type") ?? "";
+    if (!/^application\/json(?:\s*;.*)?$/i.test(contentType)) return jsonError(415, "unsupported_media_type");
+    const event = request.headers.get("X-GitHub-Event");
+    const delivery = request.headers.get("X-GitHub-Delivery");
+    if (!event || !delivery) return jsonError(400, "missing_github_headers");
+    if (event.length > 64 || delivery.length > MAX_GITHUB_DELIVERY_LENGTH) {
+      return jsonError(400, "invalid_github_headers");
+    }
+    const contentLength = request.headers.get("Content-Length");
+    if (contentLength !== null) {
+      const length = Number(contentLength);
+      if (!Number.isSafeInteger(length) || length < 0) return jsonError(400, "invalid_content_length");
+      if (length > MAX_GITHUB_BODY_BYTES) return jsonError(413, "github_payload_too_large");
+    }
+    const rawBody = await boundedBody(request, MAX_GITHUB_BODY_BYTES);
+    if (rawBody === null) return jsonError(413, "github_payload_too_large");
     const secret = this.optionalMeta("github_webhook_secret") ?? "";
     const valid = secret.length > 0
       && await verifyGithubSignature(secret, rawBody, request.headers.get("X-Hub-Signature-256"));
     if (!valid) return jsonError(401, "invalid_github_signature");
-
-    const event = request.headers.get("X-GitHub-Event");
-    const delivery = request.headers.get("X-GitHub-Delivery");
-    if (!event || !delivery) return jsonError(400, "missing_github_headers");
-    const contentType = request.headers.get("Content-Type") ?? "";
-    if (!/^application\/json(?:\s*;.*)?$/i.test(contentType)) return jsonError(415, "unsupported_media_type");
 
     let payload: GithubPullRequestPayload;
     try {
@@ -623,8 +741,16 @@ export class TenantDO extends DurableObject<Env> {
     }
     if (!pull.merged || pull.base.ref !== repository.default_branch) return emptyOk();
     const pullNumber = pull.number ?? payload.number;
-    if (typeof pullNumber !== "number" || typeof pull.title !== "string" || typeof pull.html_url !== "string"
-      || typeof repository.full_name !== "string") {
+    const validBody = pull.body === undefined || pull.body === null || typeof pull.body === "string";
+    if (!Number.isSafeInteger(pullNumber) || (pullNumber as number) <= 0
+      || typeof pull.title !== "string" || typeof pull.html_url !== "string"
+      || typeof repository.full_name !== "string" || !validBody) {
+      return jsonError(400, "invalid_github_payload");
+    }
+    if (pull.title.length > MAX_GITHUB_TITLE_LENGTH
+      || repository.full_name.length > MAX_GITHUB_REPOSITORY_LENGTH
+      || pull.html_url.length > MAX_GITHUB_URL_LENGTH || pull.base.ref.length > 255
+      || repository.default_branch.length > 255) {
       return jsonError(400, "invalid_github_payload");
     }
 
@@ -719,7 +845,10 @@ export class TenantDO extends DurableObject<Env> {
     const now = isoNow();
     const expiresAt = addSeconds(now, seconds);
     this.ctx.storage.transactionSync(() => {
-      for (const item of prepared) this.insertInvitation(item.email, item.role, item.enrollment, principal, now, expiresAt);
+      const currentPrincipal = this.requireCurrentPrincipal(principal, "member.invite");
+      for (const item of prepared) {
+        this.insertInvitation(item.email, item.role, item.enrollment, currentPrincipal, now, expiresAt);
+      }
     });
     return Response.json({ invitations: prepared.map((item) => ({
       email: item.email,
@@ -742,7 +871,10 @@ export class TenantDO extends DurableObject<Env> {
     const enrollment = await this.prepareCredential("flat_inv");
     const now = isoNow();
     const expiresAt = addSeconds(now, seconds);
-    this.ctx.storage.transactionSync(() => this.insertInvitation(email, role, enrollment, principal, now, expiresAt));
+    this.ctx.storage.transactionSync(() => {
+      const currentPrincipal = this.requireCurrentPrincipal(principal, "member.invite");
+      this.insertInvitation(email, role, enrollment, currentPrincipal, now, expiresAt);
+    });
     return Response.json({ email, role, expires_at: expiresAt, invitation_code: enrollment.credential }, {
       headers: { "Cache-Control": "no-store" },
     });
@@ -770,6 +902,7 @@ export class TenantDO extends DurableObject<Env> {
         now,
       );
     }
+    this.expireEnrollments(now, memberId, "invite");
     this.sql.exec(
       "UPDATE enrollments SET revoked_at = ? WHERE member_id = ? AND kind = 'invite' AND consumed_at IS NULL AND revoked_at IS NULL",
       now,
@@ -841,7 +974,7 @@ export class TenantDO extends DurableObject<Env> {
       if (error instanceof Error && error.message === "invalid_member_state") {
         return jsonError(409, "invalid_member_state");
       }
-      if (String(error).includes("tokens_one_live_name")) return jsonError(409, "duplicate_token_name");
+      if (error instanceof DuplicateTokenNameError) return jsonError(409, "duplicate_token_name");
       throw error;
     }
     return Response.json({ token: token.credential, member: this.memberProfile(enrollment.member_id), snapshot: this.snapshot() }, {
@@ -861,9 +994,9 @@ export class TenantDO extends DurableObject<Env> {
     const verifier = row?.secret_verifier ?? "0".repeat(64);
     const valid = await verifyHmac(key, parsed.secret, verifier);
     if (!row || !valid || key.id !== row.verifier_key_id) return jsonError(401, "invalid_enrollment");
-    if (row.revoked_at) return jsonError(410, "enrollment_revoked");
     if (row.consumed_at) return jsonError(410, "enrollment_consumed");
     if (Date.parse(row.expires_at) <= Date.now()) return jsonError(410, "enrollment_expired");
+    if (row.revoked_at) return jsonError(410, "enrollment_revoked");
     if (row.kind !== kind) return jsonError(409, "invalid_enrollment_kind");
     return row;
   }
@@ -921,6 +1054,8 @@ export class TenantDO extends DurableObject<Env> {
     const expiresAt = addSeconds(now, lifetime);
     let revokedTokenIds: string[] = [];
     this.ctx.storage.transactionSync(() => {
+      let currentPrincipal = principal;
+      if (principal) currentPrincipal = this.requireCurrentPrincipal(principal, "member.recover");
       revokedTokenIds = this.sql.exec(
         "SELECT id FROM tokens WHERE member_id = ? AND revoked_at IS NULL",
         member.id,
@@ -941,7 +1076,7 @@ export class TenantDO extends DurableObject<Env> {
         member.id,
         enrollment.verifier,
         enrollment.keyId,
-        principal?.memberId ?? null,
+        currentPrincipal?.memberId ?? null,
         actorKind,
         now,
         expiresAt,
@@ -954,7 +1089,7 @@ export class TenantDO extends DurableObject<Env> {
         );
       }
       const seq = this.nextSeq();
-      this.audit(seq, "member.recover", principal, actorKind, "member", member.id, {
+      this.audit(seq, "member.recover", currentPrincipal, actorKind, "member", member.id, {
         enrollment_id: enrollment.id,
         revoked_token_ids: revokedTokenIds,
       });
@@ -982,14 +1117,9 @@ export class TenantDO extends DurableObject<Env> {
     const now = isoNow();
     const expiresAt = addSeconds(now, DEFAULT_ENROLLMENT_SECONDS);
     this.ctx.storage.transactionSync(() => {
+      const currentPrincipal = this.requireCurrentPrincipal(principal, "member.upgrade");
+      this.expireEnrollments(now, member.id, "upgrade");
       if (live) this.sql.exec("UPDATE enrollments SET revoked_at = ? WHERE id = ?", now, live.id);
-      this.sql.exec(
-        `UPDATE enrollments SET revoked_at = ? WHERE member_id = ? AND kind = 'upgrade'
-         AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at <= ?`,
-        now,
-        member.id,
-        now,
-      );
       this.sql.exec(
         `INSERT INTO enrollments
          (id, member_id, kind, secret_verifier, verifier_key_id, intended_role, intended_access,
@@ -1000,12 +1130,12 @@ export class TenantDO extends DurableObject<Env> {
         enrollment.verifier,
         enrollment.keyId,
         intended,
-        principal.memberId,
+        currentPrincipal.memberId,
         now,
         expiresAt,
       );
       const seq = this.nextSeq();
-      this.audit(seq, "member.upgrade", principal, principal.tokenKind, "member", member.id, {
+      this.audit(seq, "member.upgrade", currentPrincipal, currentPrincipal.tokenKind, "member", member.id, {
         enrollment_id: enrollment.id,
         intended_access: intended,
       });
@@ -1033,18 +1163,21 @@ export class TenantDO extends DurableObject<Env> {
     const now = isoNow();
     try {
       this.ctx.storage.transactionSync(() => {
+        const currentPrincipal = this.requireCurrentPrincipal(principal, "token.self.upgrade");
         const current = this.enrollmentById(enrollment.id);
         if (!current || current.consumed_at || current.revoked_at) throw new Error("enrollment_consumed");
         if (current.member_role === null
           || !validTokenAccess(current.member_role, TokenKind.Human, enrollment.intended_access as TokenAccess)) {
           throw new Error("upgrade_not_allowed");
         }
-        this.sql.exec("UPDATE tokens SET access = ? WHERE id = ?", enrollment.intended_access, principal.tokenId);
+        this.sql.exec("UPDATE tokens SET access = ? WHERE id = ?", enrollment.intended_access,
+          currentPrincipal.tokenId);
         this.sql.exec("UPDATE enrollments SET consumed_at = ? WHERE id = ?", now, enrollment.id);
         const seq = this.nextSeq();
-        this.audit(seq, "token.upgrade", principal, principal.tokenKind, "token", principal.tokenId, {
+        this.audit(seq, "token.upgrade", currentPrincipal, currentPrincipal.tokenKind,
+          "token", currentPrincipal.tokenId, {
           enrollment_id: enrollment.id,
-          from: principal.access,
+          from: currentPrincipal.access,
           to: enrollment.intended_access,
         });
       });
@@ -1074,10 +1207,11 @@ export class TenantDO extends DurableObject<Env> {
       member.id,
     ).toArray()[0];
     this.ctx.storage.transactionSync(() => {
+      const currentPrincipal = this.requireCurrentPrincipal(principal, "member.cancel");
       this.sql.exec("DELETE FROM enrollments WHERE member_id = ?", member.id);
       this.sql.exec("DELETE FROM members WHERE id = ?", member.id);
       const seq = this.nextSeq();
-      this.audit(seq, "member.cancel", principal, principal.tokenKind, "member", member.id, {
+      this.audit(seq, "member.cancel", currentPrincipal, currentPrincipal.tokenKind, "member", member.id, {
         email,
         intended_role: invitation?.intended_role ?? null,
         invited_by: invitation?.created_by ?? null,
@@ -1107,6 +1241,7 @@ export class TenantDO extends DurableObject<Env> {
     let revokedTokenIds: string[] = [];
     try {
       this.ctx.storage.transactionSync(() => {
+        const currentPrincipal = this.requireCurrentPrincipal(principal, action);
         if (status === MemberStatus.Suspended && member.role === Role.Admin
           && member.status === MemberStatus.Active && this.activeAdminCount() === 1) {
           throw new Error("last_active_admin");
@@ -1129,7 +1264,7 @@ export class TenantDO extends DurableObject<Env> {
           this.sql.exec("UPDATE members SET status = 'active', suspended_at = NULL WHERE id = ?", member.id);
         }
         const seq = this.nextSeq();
-        this.audit(seq, action, principal, principal.tokenKind, "member", member.id, {
+        this.audit(seq, action, currentPrincipal, currentPrincipal.tokenKind, "member", member.id, {
           revoked_token_ids: revokedTokenIds,
         });
       });
@@ -1169,6 +1304,11 @@ export class TenantDO extends DurableObject<Env> {
     const revokedTokenIds: string[] = [];
     try {
       this.ctx.storage.transactionSync(() => {
+        const currentPrincipal = this.requireCurrentPrincipal(principal, "member.change_role");
+        const currentMember = this.memberById(member.id);
+        if (!currentMember || currentMember.role !== previousRole || currentMember.status !== member.status) {
+          throw new Error("member_changed");
+        }
         if (previousRole === Role.Admin && nextRole !== Role.Admin
           && member.status === MemberStatus.Active && this.activeAdminCount() === 1) {
           throw new Error("last_active_admin");
@@ -1197,13 +1337,7 @@ export class TenantDO extends DurableObject<Env> {
           if (nextRole === Role.Viewer) this.sql.exec("DELETE FROM project_owners WHERE member_id = ?", member.id);
         }
         if (enrollment) {
-          this.sql.exec(
-            `UPDATE enrollments SET revoked_at = ? WHERE member_id = ? AND kind = 'upgrade'
-             AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at <= ?`,
-            now,
-            member.id,
-            now,
-          );
+          this.expireEnrollments(now, member.id, "upgrade");
           this.sql.exec(
             `INSERT INTO enrollments
              (id, member_id, kind, secret_verifier, verifier_key_id, intended_role, intended_access,
@@ -1214,13 +1348,14 @@ export class TenantDO extends DurableObject<Env> {
             enrollment.verifier,
             enrollment.keyId,
             nextCeiling,
-            principal.memberId,
+            currentPrincipal.memberId,
             now,
             addSeconds(now, DEFAULT_ENROLLMENT_SECONDS),
           );
         }
         const seq = this.nextSeq();
-        this.audit(seq, "member.change_role", principal, principal.tokenKind, "member", member.id, {
+        this.audit(seq, "member.change_role", currentPrincipal, currentPrincipal.tokenKind,
+          "member", member.id, {
           from: previousRole,
           to: nextRole,
           revoked_token_ids: revokedTokenIds,
@@ -1230,6 +1365,9 @@ export class TenantDO extends DurableObject<Env> {
     } catch (error) {
       if (error instanceof Error && error.message === "last_active_admin") {
         return jsonError(409, "last_active_admin");
+      }
+      if (error instanceof Error && error.message === "member_changed") {
+        return jsonError(409, "member_changed");
       }
       throw error;
     }
@@ -1251,12 +1389,16 @@ export class TenantDO extends DurableObject<Env> {
     if (pending && all) return jsonError(422, "invalid_member_filter");
     if (pending) {
       if (!may(principal, "invitation.list")) return jsonError(403, "forbidden");
+      const now = isoNow();
+      this.expireEnrollments(now, undefined, "invite");
       const members = this.sql.exec(
         `SELECT m.id, m.email, e.intended_role AS role, e.created_by AS invited_by,
                 e.created_at, e.expires_at
          FROM members m JOIN enrollments e ON e.member_id = m.id
-         WHERE m.status = 'pending' AND e.kind = 'invite' AND e.consumed_at IS NULL AND e.revoked_at IS NULL
+         WHERE m.status = 'pending' AND e.kind = 'invite' AND e.consumed_at IS NULL
+           AND e.revoked_at IS NULL AND e.expires_at > ?
          ORDER BY m.email`,
+        now,
       ).toArray();
       return Response.json({ members });
     }
@@ -1303,17 +1445,30 @@ export class TenantDO extends DurableObject<Env> {
     const expiresAt = expiresIn === null || expiresIn === 0 ? null : addSeconds(now, expiresIn);
     try {
       this.ctx.storage.transactionSync(() => {
-        this.insertToken(token, target.id, kind, name, access, principal.memberId, issuedVia, expiresAt, now);
+        const action = target.id === principal.memberId ? "token.self.create" : "token.other.create_agent";
+        const currentPrincipal = this.requireCurrentPrincipal(principal, action);
+        const currentTarget = this.memberById(target.id);
+        if (!currentTarget || currentTarget.status !== MemberStatus.Active || currentTarget.role === null
+          || !validTokenAccess(currentTarget.role, kind, access)) {
+          throw new Error("member_changed");
+        }
+        if (currentTarget.id === currentPrincipal.memberId
+          && this.accessRank(access) > this.accessRank(currentPrincipal.access)) {
+          throw new PrincipalChangedError(403, "forbidden");
+        }
+        this.insertToken(token, currentTarget.id, kind, name, access, currentPrincipal.memberId,
+          issuedVia, expiresAt, now);
         const seq = this.nextSeq();
-        this.audit(seq, "token.create", principal, principal.tokenKind, "token", token.id, {
-          member_id: target.id,
+        this.audit(seq, "token.create", currentPrincipal, currentPrincipal.tokenKind, "token", token.id, {
+          member_id: currentTarget.id,
           kind,
           access,
           issued_via: issuedVia,
         });
       });
     } catch (error) {
-      if (String(error).includes("tokens_one_live_name")) return jsonError(409, "duplicate_token_name");
+      if (error instanceof DuplicateTokenNameError) return jsonError(409, "duplicate_token_name");
+      if (error instanceof Error && error.message === "member_changed") return jsonError(409, "member_changed");
       throw error;
     }
     return Response.json({ token: token.credential, metadata: this.tokenMetadata(token.id) }, {
@@ -1349,9 +1504,12 @@ export class TenantDO extends DurableObject<Env> {
     if (!own && !may(principal, "token.other.revoke")) return jsonError(403, "forbidden");
     if (target.revoked_at === null) {
       this.ctx.storage.transactionSync(() => {
+        const action = own ? "token.self.revoke" : "token.other.revoke";
+        const currentPrincipal = this.requireCurrentPrincipal(principal, action);
         this.sql.exec("UPDATE tokens SET revoked_at = ? WHERE id = ?", isoNow(), body.token_id);
         const seq = this.nextSeq();
-        this.audit(seq, "token.revoke", principal, principal.tokenKind, "token", body.token_id as string, {});
+        this.audit(seq, "token.revoke", currentPrincipal, currentPrincipal.tokenKind,
+          "token", body.token_id as string, {});
       });
       this.closeTokenSessions([body.token_id]);
     }
@@ -1382,6 +1540,19 @@ export class TenantDO extends DurableObject<Env> {
     expiresAt: string | null,
     now: string,
   ): void {
+    this.sql.exec(
+      `UPDATE tokens SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL
+       AND expires_at IS NOT NULL AND expires_at <= ?`,
+      now,
+      memberId,
+      now,
+    );
+    const duplicate = this.sql.exec(
+      "SELECT 1 FROM tokens WHERE member_id = ? AND lower(name) = lower(?) AND revoked_at IS NULL",
+      memberId,
+      name,
+    ).toArray().length > 0;
+    if (duplicate) throw new DuplicateTokenNameError();
     this.sql.exec(
       `INSERT INTO tokens
        (id, member_id, kind, name, access, secret_verifier, verifier_key_id, created_by,
@@ -1440,14 +1611,31 @@ export class TenantDO extends DurableObject<Env> {
     return row ? row as unknown as MemberRow : null;
   }
 
+  private expireEnrollments(now: string, memberId?: string, kind?: EnrollmentRow["kind"]): void {
+    let query = `UPDATE enrollments SET revoked_at = ?
+                 WHERE consumed_at IS NULL AND revoked_at IS NULL AND expires_at <= ?`;
+    const args: unknown[] = [now, now];
+    if (memberId !== undefined) {
+      query += " AND member_id = ?";
+      args.push(memberId);
+    }
+    if (kind !== undefined) {
+      query += " AND kind = ?";
+      args.push(kind);
+    }
+    this.sql.exec(query, ...args);
+  }
+
   private liveUpgrade(memberId: string): EnrollmentRow | null {
+    const now = isoNow();
+    this.expireEnrollments(now, memberId, "upgrade");
     const row = this.sql.exec(
       `SELECT e.*, m.status AS member_status, m.role AS member_role
        FROM enrollments e JOIN members m ON m.id = e.member_id
        WHERE e.member_id = ? AND e.kind = 'upgrade' AND e.consumed_at IS NULL AND e.revoked_at IS NULL
-       AND e.expires_at > ?`,
+      AND e.expires_at > ?`,
       memberId,
-      isoNow(),
+      now,
     ).toArray()[0];
     return row ? row as unknown as EnrollmentRow : null;
   }
@@ -1539,6 +1727,17 @@ export class TenantDO extends DurableObject<Env> {
       title: row.title as string,
       body: row.body as string,
       status: row.status as Status,
+      seq: row.seq as number,
+    }));
+  }
+
+  private tombstonesSince(seq: number): TicketTombstone[] {
+    return this.sql.exec(
+      "SELECT id, key, seq FROM ticket_tombstones WHERE seq > ? ORDER BY seq",
+      seq,
+    ).toArray().map((row) => ({
+      id: row.id as string,
+      key: row.key as string,
       seq: row.seq as number,
     }));
   }

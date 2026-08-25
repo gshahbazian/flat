@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use flat_schema::{Mutation, Ticket};
+use flat_schema::{Mutation, Ticket, TicketTombstone};
 use serde::{Deserialize, Serialize};
 
 use crate::markdown;
@@ -219,6 +219,27 @@ impl Checkout {
         Ok(skipped)
     }
 
+    /// Applies authoritative server deletions to the mirror, base copy, and
+    /// sync state so a later restore cannot resurrect the ticket.
+    pub fn apply_tombstones(&mut self, tombstones: &[TicketTombstone]) -> Result<()> {
+        for tombstone in tombstones {
+            for path in [
+                self.mirror_path(&tombstone.key),
+                self.base_path(&tombstone.key),
+            ] {
+                match fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| format!("removing {}", path.display()))
+                    }
+                }
+            }
+            self.state.tickets.remove(&tombstone.key);
+        }
+        Ok(())
+    }
+
     /// Writes the outcome of a three-way merge: the merged content (possibly
     /// holding conflict markers) becomes the mirror file, while the base copy
     /// and state advance to the server row — so the next `flat push` sends
@@ -333,4 +354,55 @@ fn ensure_private_dir(path: &Path) -> Result<()> {
             .with_context(|| format!("setting permissions on {}", path.display()))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use flat_schema::{Status, TicketTombstone};
+
+    use super::*;
+
+    fn checkout(name: &str) -> Checkout {
+        let host_dir = std::env::temp_dir().join(format!("flat-store-{name}-{}", ulid::Ulid::new()));
+        Checkout {
+            config: Config {
+                server: "https://flat.example".to_string(),
+                token: "test-token".to_string(),
+            },
+            state: State::default(),
+            host_dir,
+        }
+    }
+
+    #[test]
+    fn tombstone_removes_a_second_checkouts_mirror_and_base() {
+        let ticket = Ticket {
+            id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M".to_string(),
+            key: "DEMO-1".to_string(),
+            title: "Delete me".to_string(),
+            body: String::new(),
+            status: Status::Todo,
+            seq: 2,
+        };
+        let mut first = checkout("first");
+        let mut second = checkout("second");
+        let rendered = markdown::render(&ticket);
+        first.write_ticket(&ticket, &rendered, &rendered).unwrap();
+        second.write_ticket(&ticket, &rendered, &rendered).unwrap();
+
+        let tombstone = TicketTombstone {
+            id: ticket.id.clone(),
+            key: ticket.key.clone(),
+            seq: 3,
+        };
+        second.apply_tombstones(&[tombstone]).unwrap();
+
+        assert!(!second.mirror_path(&ticket.key).exists());
+        assert!(!second.base_path(&ticket.key).exists());
+        assert!(!second.state.tickets.contains_key(&ticket.key));
+        assert!(second.restore_missing().unwrap().is_empty());
+
+        std::fs::remove_dir_all(first.host_dir()).unwrap();
+        std::fs::remove_dir_all(second.host_dir()).unwrap();
+    }
 }

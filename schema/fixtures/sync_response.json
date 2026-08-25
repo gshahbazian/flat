@@ -24,6 +24,13 @@
       "seq": 43
     }
   ],
+  "tombstones": [
+    {
+      "id": "01JG4C1N8KZYXWVTSRQPNMKJHG",
+      "key": "DEMO-1",
+      "seq": 42
+    }
+  ],
   "members": [],
   "latest_seq": 43
 }

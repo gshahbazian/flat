@@ -23,6 +23,8 @@ describe("closingTicketKeys", () => {
     ["> Fixes DEMO-1", []],
     ["    Fixes DEMO-1", []],
     ["~~~ts\nFixes DEMO-1\n~~~", []],
+    ["````ts\n```\nFixes DEMO-1\n````", []],
+    ["~~~~ts\n```\nFixes DEMO-1\n~~~~", []],
   ])("parses %j", (text, expected) => {
     expect(closingTicketKeys(text, null)).toEqual(expected);
   });

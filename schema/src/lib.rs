@@ -169,6 +169,16 @@ pub struct Ticket {
     pub seq: u32,
 }
 
+/// A server deletion that removes the corresponding local mirror state.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TicketTombstone {
+    pub id: String,
+    pub key: String,
+    /// Seq assigned to the delete mutation.
+    pub seq: u32,
+}
+
 #[typeshare]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -281,6 +291,9 @@ pub struct SyncResponse {
     pub conflicts: Vec<MutationConflict>,
     /// Full rows for every ticket changed since the request's `last_seq`.
     pub deltas: Vec<Ticket>,
+    /// Tickets deleted since `last_seq`.
+    #[serde(default)]
+    pub tombstones: Vec<TicketTombstone>,
     /// Current safe profiles. Administrative sequence gaps may occur without
     /// exposing their private records.
     #[serde(default)]
@@ -297,4 +310,19 @@ pub struct Snapshot {
     pub members: Vec<MemberProfile>,
     /// The seq watermark this snapshot represents.
     pub latest_seq: u32,
+}
+
+/// Token names are portable ASCII identifiers used in CLI and audit output.
+pub fn validate_token_name(name: &str) -> Result<(), String> {
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > 64 || !bytes[0].is_ascii_alphanumeric() {
+        return Err("invalid_token_name".into());
+    }
+    if bytes[1..]
+        .iter()
+        .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("invalid_token_name".into());
+    }
+    Ok(())
 }

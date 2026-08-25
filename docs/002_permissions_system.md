@@ -3,6 +3,12 @@
 Status: accepted design. This document extends `001_initial_system.md` and
 supersedes its bootstrap and member-enrollment details.
 
+Implementation note: the current milestone covers tenant setup, enrollment,
+token/member administration, audit, and authorization for the HTTP ticket-sync
+surface. WebSocket/watch, search, remote MCP, comments, labels, projects,
+assignments, force push, native keychain storage, and the operator-recovery
+deployment procedure remain deferred slices of this accepted design.
+
 In particular:
 
 - Deployment emits a one-time setup secret, not a permanent admin token.

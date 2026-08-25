@@ -19,7 +19,9 @@ import {
   type SyncResponse,
   type Ticket,
   type TicketSet,
+  type TicketTombstone,
 } from "../src/schema.gen";
+import { canonicalJson } from "../src/crypto";
 import { invalidEmail, invalidTitle } from "../src/validate";
 
 function fixture(name: string): unknown {
@@ -61,6 +63,11 @@ function ticket(v: unknown): Ticket {
     status: oneOf(raw.status, Object.values(Status)),
     seq: num(raw.seq),
   };
+}
+
+function tombstone(v: unknown): TicketTombstone {
+  const raw = obj(v, ["id", "key", "seq"]);
+  return { id: str(raw.id), key: str(raw.key), seq: num(raw.seq) };
 }
 
 function ticketSet(v: unknown): TicketSet {
@@ -126,14 +133,16 @@ function member(v: unknown): MemberProfile {
 }
 
 function syncResponse(v: unknown): SyncResponse {
-  const raw = obj(v, ["applied", "conflicts", "deltas", "members", "latest_seq"]);
+  const raw = obj(v, ["applied", "conflicts", "deltas", "tombstones", "members", "latest_seq"]);
   expect(raw.applied).toBeInstanceOf(Array);
   expect(raw.conflicts).toBeInstanceOf(Array);
   expect(raw.deltas).toBeInstanceOf(Array);
+  expect(raw.tombstones).toBeInstanceOf(Array);
   return {
     applied: (raw.applied as unknown[]).map(appliedMutation),
     conflicts: (raw.conflicts as unknown[]).map(mutationConflict),
     deltas: (raw.deltas as unknown[]).map(ticket),
+    tombstones: (raw.tombstones as unknown[]).map(tombstone),
     members: (raw.members as unknown[]).map(member),
     latest_seq: num(raw.latest_seq),
   };
@@ -168,6 +177,11 @@ describe("schema fixtures round-trip through the generated types", () => {
 
   test("snapshot", () => {
     expect(snapshot(fixture("snapshot"))).toEqual(fixture("snapshot"));
+  });
+
+  test("canonical mutation encoding", () => {
+    const value = fixture("canonical_mutation") as { mutation: Mutation; canonical_json: string };
+    expect(canonicalJson(value.mutation)).toBe(value.canonical_json);
   });
 });
 

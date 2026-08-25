@@ -10,14 +10,15 @@ const PHRASE = new RegExp(
 function stripMarkdown(value: string): string {
   let text = value.replace(/<!--[\s\S]*?-->/g, "");
   const lines = text.split(/\r?\n/);
-  let fence: "`" | "~" | null = null;
+  let fence: { marker: "`" | "~"; length: number } | null = null;
   const kept: string[] = [];
   for (const line of lines) {
     const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
     if (fenceMatch) {
       const marker = fenceMatch[1][0] as "`" | "~";
-      if (fence === null) fence = marker;
-      else if (fence === marker) fence = null;
+      const length = fenceMatch[1].length;
+      if (fence === null) fence = { marker, length };
+      else if (fence.marker === marker && length >= fence.length) fence = null;
       kept.push("");
       continue;
     }

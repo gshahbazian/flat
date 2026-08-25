@@ -116,6 +116,14 @@ export interface Ticket {
 	seq: number;
 }
 
+/** A server deletion that removes the corresponding local mirror state. */
+export interface TicketTombstone {
+	id: string;
+	key: string;
+	/** Seq assigned to the delete mutation. */
+	seq: number;
+}
+
 /** Bootstrap payload from `GET /snapshot`. */
 export interface Snapshot {
 	tickets: Ticket[];
@@ -136,6 +144,8 @@ export interface SyncResponse {
 	conflicts: MutationConflict[];
 	/** Full rows for every ticket changed since the request's `last_seq`. */
 	deltas: Ticket[];
+	/** Tickets deleted since `last_seq`. */
+	tombstones: TicketTombstone[];
 	/** Current safe profiles. Administrative sequence gaps may occur without exposing their private records. */
 	members: MemberProfile[];
 	latest_seq: number;

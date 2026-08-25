@@ -30,6 +30,7 @@ export const ACTIONS = [
   "token.other.list",
   "token.other.revoke",
   "token.other.create_agent",
+  "integration.github.manage",
   "audit.read",
 ] as const;
 
@@ -88,6 +89,7 @@ export function may(
     "token.other.list",
     "token.other.revoke",
     "token.other.create_agent",
+    "integration.github.manage",
     "audit.read",
   ];
   if (adminActions.includes(action)) {

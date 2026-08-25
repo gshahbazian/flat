@@ -141,8 +141,12 @@ function canonicalize(value: unknown): unknown {
   return result;
 }
 
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalize(value));
+}
+
 export async function canonicalSha256(value: unknown): Promise<string> {
-  const bytes = new TextEncoder().encode(JSON.stringify(canonicalize(value)));
+  const bytes = new TextEncoder().encode(canonicalJson(value));
   return bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
 }
 

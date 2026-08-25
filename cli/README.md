@@ -33,6 +33,12 @@ Notes:
   long as any mirror file still contains them.
 - Deleting a mirror file discards its local edits: `flat sync` restores the
   last synced server state from the base copy.
+- A ticket deleted on the server arrives as a tombstone. Sync removes its
+  mirror file, base copy, and local state so another checkout cannot restore a
+  stale copy.
+- Setup, invitation, and recovery default the new human token name to the
+  local hostname and let the user edit it before submission. `--name` keeps
+  non-interactive enrollment available.
 - `flat new` journals its mutation under `.flat/pending/` before sending; if
   the response is lost, the next `flat sync` replays the same mutation_id
   (idempotent server-side) instead of a rerun creating a duplicate ticket.
