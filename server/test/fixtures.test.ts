@@ -3,7 +3,9 @@
 // unknown fields), then require the typed value to deep-equal the fixture.
 // The Rust twin of this test is schema/tests/fixtures.rs.
 import { readFileSync } from "node:fs";
+
 import { describe, expect, test } from "vitest";
+
 import {
   Entity,
   MutationOp,
@@ -25,7 +27,9 @@ import { canonicalJson } from "../src/crypto";
 import { invalidEmail, invalidTitle } from "../src/validate";
 
 function fixture(name: string): unknown {
-  return JSON.parse(readFileSync(new URL(`../../schema/fixtures/${name}.json`, import.meta.url), "utf8"));
+  return JSON.parse(
+    readFileSync(new URL(`../../schema/fixtures/${name}.json`, import.meta.url), "utf8"),
+  );
 }
 
 type Raw = Record<string, unknown>;

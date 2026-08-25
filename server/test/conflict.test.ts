@@ -1,6 +1,7 @@
 // Field-level conflict detection: an update against a stale base_seq is
 // rejected only where it sets a field the server also changed since.
 import { describe, expect, test } from "vitest";
+
 import { conflictingFields, fieldsSet } from "../src/conflict";
 import { Status, type TicketSet } from "../src/schema.gen";
 
@@ -20,11 +21,15 @@ describe("fieldsSet", () => {
 
 describe("conflictingFields", () => {
   test("disjoint edits do not conflict", () => {
-    expect(conflictingFields({ title: "mine" }, [{ status: Status.Done }, { body: "b" }])).toEqual([]);
+    expect(conflictingFields({ title: "mine" }, [{ status: Status.Done }, { body: "b" }])).toEqual(
+      [],
+    );
   });
 
   test("a field both sides set conflicts", () => {
-    expect(conflictingFields({ title: "mine", body: "b" }, [{ title: "theirs" }])).toEqual(["title"]);
+    expect(conflictingFields({ title: "mine", body: "b" }, [{ title: "theirs" }])).toEqual([
+      "title",
+    ]);
   });
 
   test("server changes accumulate across log entries", () => {

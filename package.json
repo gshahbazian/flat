@@ -1,4 +1,16 @@
 {
   "name": "flat-monorepo",
-  "private": true
+  "private": true,
+  "scripts": {
+    "check": "pnpm format:check && pnpm lint && pnpm -r typecheck && pnpm -r test",
+    "format": "oxfmt '**/*.{ts,tsx,mts,cts}'",
+    "format:check": "oxfmt --check '**/*.{ts,tsx,mts,cts}'",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint --fix ."
+  },
+  "devDependencies": {
+    "oxfmt": "^0.64.0",
+    "oxlint": "^1.79.0",
+    "oxlint-tsgolint": "^7.0.2001"
+  }
 }

@@ -8,6 +8,7 @@ export function invalidTitle(title: string): string | null {
   if (title.trim().length === 0) {
     return "title must not be empty";
   }
+  // oxlint-disable-next-line eslint/no-control-regex -- This intentionally matches Unicode control characters.
   if (/[\u0000-\u001f\u007f-\u009f]/.test(title)) {
     return "title must be a single line without control characters";
   }

@@ -51,7 +51,9 @@ pub fn parse(content: &str) -> Result<TicketFile> {
     let mut title = None;
     let mut status = None;
     loop {
-        let line = lines.next().context("frontmatter is missing its closing `---`")?;
+        let line = lines
+            .next()
+            .context("frontmatter is missing its closing `---`")?;
         if line == "---" {
             break;
         }
@@ -99,7 +101,11 @@ mod tests {
     fn render_parse_round_trips() {
         for t in [
             ticket("hello", Status::Todo, ""),
-            ticket("fix: colons: everywhere", Status::InProgress, "line one\n\nline two"),
+            ticket(
+                "fix: colons: everywhere",
+                Status::InProgress,
+                "line one\n\nline two",
+            ),
             ticket("done thing", Status::Done, "trailing newline\n"),
         ] {
             let parsed = parse(&render(&t)).unwrap();
@@ -112,7 +118,8 @@ mod tests {
 
     #[test]
     fn rejects_unknown_fields() {
-        let err = parse("---\nid: DEMO-1\ntitle: x\nstatus: todo\npriority: high\n---\n").unwrap_err();
+        let err =
+            parse("---\nid: DEMO-1\ntitle: x\nstatus: todo\npriority: high\n---\n").unwrap_err();
         assert!(err.to_string().contains("unknown frontmatter field"));
     }
 

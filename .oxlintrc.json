@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error",
+    "perf": "error",
+    "suspicious": "error"
+  },
+  "ignorePatterns": ["server/src/schema.gen.ts"],
+  "plugins": ["eslint", "import", "oxc", "promise", "typescript", "unicorn", "vitest"],
+  "rules": {
+    "eslint/curly": ["error", "multi-line"],
+    "eslint/no-else-return": "error",
+    "eslint/no-lonely-if": "error",
+    "typescript/consistent-type-imports": "error",
+    "typescript/no-explicit-any": "error",
+    "vitest/valid-expect": "off"
+  },
+  "options": {
+    "reportUnusedDisableDirectives": "error",
+    "typeAware": true
+  },
+  "overrides": [
+    {
+      "files": ["server/src/tenant.ts"],
+      "rules": {
+        "typescript/no-unnecessary-type-conversion": "off",
+        "typescript/no-unsafe-type-assertion": "off"
+      }
+    },
+    {
+      "files": ["server/test/**/*.ts"],
+      "rules": {
+        "typescript/no-unsafe-type-assertion": "off"
+      }
+    }
+  ]
+}
