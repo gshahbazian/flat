@@ -277,5 +277,43 @@ describe.sequential("TenantDO integration", () => {
     expect((await json(worker, "/hooks/github", delivery)).response.status).toBe(200);
     const afterReplay = await json<{ latest_seq: number }>(worker, "/snapshot", authenticated(adminToken));
     expect(afterReplay.body.latest_seq).toBe(afterMerge.body.latest_seq);
+
+    const reusedMutation = await json<{
+      applied: Array<{ mutation_id: string; entity_id: string }>;
+      conflicts: Array<{ mutation_id: string; entity_id: string; reason: string }>;
+    }>(worker, "/sync", authenticated(adminToken, {
+      protocol_version: 1,
+      last_seq: afterReplay.body.latest_seq,
+      mutations: [
+        {
+          mutation_id: "reused-in-one-request",
+          op: "create",
+          entity: "ticket",
+          entity_id: "01JG4C8F3NZYXWVTSRQPNMKJHG",
+          set: { title: "First use of the ID" },
+        },
+        {
+          mutation_id: "reused-in-one-request",
+          op: "create",
+          entity: "ticket",
+          entity_id: "01JG4CBG4PZYXWVTSRQPNMKJHG",
+          set: { title: "Different use of the ID" },
+        },
+      ],
+    }));
+    expect(reusedMutation.response.status).toBe(200);
+    expect(reusedMutation.body.applied).toEqual([
+      expect.objectContaining({
+        mutation_id: "reused-in-one-request",
+        entity_id: "01JG4C8F3NZYXWVTSRQPNMKJHG",
+      }),
+    ]);
+    expect(reusedMutation.body.conflicts).toEqual([
+      expect.objectContaining({
+        mutation_id: "reused-in-one-request",
+        entity_id: "01JG4CBG4PZYXWVTSRQPNMKJHG",
+        reason: "mutation_id_reused",
+      }),
+    ]);
   }, 30_000);
 });

@@ -242,6 +242,10 @@ fn run() -> Result<()> {
             email,
             tenant_name,
         } => {
+            if !setup && !invite && !recover && !token {
+                bail!("choose one enrollment mode: --setup, --invite, --recover, or --token");
+            }
+            store::preflight_init(&root, &server)?;
             let token_name = if setup || invite || recover {
                 new_token_name(name)?
             } else {
@@ -289,7 +293,7 @@ fn run() -> Result<()> {
                 let snapshot = Client::new(&server, &bearer).snapshot()?;
                 (bearer, snapshot)
             } else {
-                bail!("choose one enrollment mode: --setup, --invite, --recover, or --token");
+                unreachable!("enrollment mode validated before preflight")
             };
             initialize_checkout(&root, server, bearer, snapshot)?;
         }
@@ -457,8 +461,11 @@ fn initialize_checkout(
     token: String,
     snapshot: flat_schema::Snapshot,
 ) -> Result<()> {
-    store::save_config(root, &Config { server, token })?;
-    let mut checkout = Checkout::open(root)?;
+    let config = Config { server, token };
+    // Persist the only copy of a newly issued bearer token before rebuilding
+    // the mirror. A failed rebuild can then be retried without re-enrollment.
+    store::save_config(root, &config)?;
+    let mut checkout = Checkout::initialize(root, config)?;
     checkout.reset()?;
     checkout.apply_deltas(&snapshot.tickets, &HashSet::new(), &HashMap::new())?;
     checkout.state.last_seq = snapshot.latest_seq;
@@ -524,7 +531,14 @@ fn prompt_default(label: &str, default: &str) -> Result<String> {
 fn credential(environment: &str, label: &str) -> Result<String> {
     match std::env::var(environment) {
         Ok(value) if !value.is_empty() => Ok(value),
-        _ => prompt(label),
+        _ => {
+            let value = rpassword::prompt_password(format!("{label}: "))?;
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                bail!("{label} is required");
+            }
+            Ok(value)
+        }
     }
 }
 
@@ -797,11 +811,20 @@ fn delete_ticket(checkout: &mut Checkout, key: &str) -> Result<()> {
         .iter()
         .find(|applied| applied.mutation_id == mutation_id)
         .context("server returned no result")?;
-    checkout.apply_tombstones(&response.tombstones)?;
-    checkout.state.last_seq = response.latest_seq;
-    checkout.save_state()?;
+    apply_delete_changes(checkout, &response)?;
     println!("deleted {key}");
     Ok(())
+}
+
+fn apply_delete_changes(checkout: &mut Checkout, response: &SyncResponse) -> Result<Vec<Ticket>> {
+    let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
+    checkout.apply_tombstones(&response.tombstones)?;
+    report_kept(checkout, &skipped);
+    if skipped.is_empty() {
+        checkout.state.last_seq = response.latest_seq;
+    }
+    checkout.save_state()?;
+    Ok(skipped)
 }
 
 /// Sends mutations, with any journaled pending mutations replayed first
@@ -997,4 +1020,70 @@ fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<usize> {
         }
     }
     Ok(unresolved)
+}
+
+#[cfg(test)]
+mod tests {
+    use flat_schema::{Status, TicketTombstone};
+
+    use super::*;
+
+    fn ticket(id: &str, key: &str, title: &str, seq: u32) -> Ticket {
+        Ticket {
+            id: id.to_string(),
+            key: key.to_string(),
+            title: title.to_string(),
+            body: String::new(),
+            status: Status::Todo,
+            seq,
+        }
+    }
+
+    #[test]
+    fn delete_applies_unrelated_deltas_before_advancing_watermark() {
+        let root = std::env::temp_dir().join(format!("flat-delete-{}", Ulid::new()));
+        let config = Config {
+            server: "https://flat.example".to_string(),
+            token: "test-token".to_string(),
+        };
+        store::save_config(&root, &config).unwrap();
+        let mut checkout = Checkout::open(&root).unwrap();
+        let deleted = ticket("01JG4C2Q4V8XKZ3W5D9E7F2H6M", "DEMO-1", "Delete me", 1);
+        let unrelated = ticket("01JG4C5E2MZYXWVTSRQPNMKJHG", "DEMO-2", "Before", 2);
+        checkout
+            .apply_deltas(
+                &[deleted.clone(), unrelated.clone()],
+                &HashSet::new(),
+                &HashMap::new(),
+            )
+            .unwrap();
+        checkout.state.last_seq = 2;
+        checkout.save_state().unwrap();
+
+        let updated = ticket(&unrelated.id, &unrelated.key, "After", 3);
+        let response = SyncResponse {
+            applied: Vec::new(),
+            conflicts: Vec::new(),
+            deltas: vec![updated.clone()],
+            tombstones: vec![TicketTombstone {
+                id: deleted.id.clone(),
+                key: deleted.key.clone(),
+                seq: 4,
+            }],
+            members: Vec::new(),
+            latest_seq: 4,
+        };
+
+        assert!(apply_delete_changes(&mut checkout, &response)
+            .unwrap()
+            .is_empty());
+        assert_eq!(checkout.state.last_seq, 4);
+        assert!(!checkout.mirror_path(&deleted.key).exists());
+        assert_eq!(
+            fs::read_to_string(checkout.mirror_path(&updated.key)).unwrap(),
+            markdown::render(&updated)
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

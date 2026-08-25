@@ -464,18 +464,13 @@ export class TenantDO extends DurableObject<Env> {
       return jsonError(400, "malformed_sync_request");
     }
 
-    const hashes = new Map<string, string>();
-    for (const mutation of req.mutations) {
-      if (typeof mutation?.mutation_id === "string") {
-        hashes.set(mutation.mutation_id, await canonicalSha256(mutation));
-      }
-    }
+    const hashes = await Promise.all(req.mutations.map((mutation) => canonicalSha256(mutation)));
 
     const applied: AppliedMutation[] = [];
     const conflicts: MutationConflict[] = [];
     this.ctx.storage.transactionSync(() => {
       const currentPrincipal = this.requireCurrentPrincipal(principal, "work.read");
-      for (const mutation of req.mutations) {
+      for (const [index, mutation] of req.mutations.entries()) {
         const reject = (reason: string): void => {
           conflicts.push({
             mutation_id: String(mutation?.mutation_id ?? ""),
@@ -493,7 +488,7 @@ export class TenantDO extends DurableObject<Env> {
           continue;
         }
 
-        const hash = hashes.get(mutation.mutation_id) as string;
+        const hash = hashes[index];
         const prior = this.sql.exec(
           `SELECT actor_member_id, mutation_hash, COALESCE(stored_result, result) AS stored_result
            FROM applied_mutations WHERE mutation_id = ?`,
