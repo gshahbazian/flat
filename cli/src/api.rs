@@ -2,6 +2,8 @@
 
 use anyhow::{anyhow, Context, Result};
 use flat_schema::{Snapshot, SyncRequest, SyncResponse};
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 
 pub struct Client {
     server: String,
@@ -36,16 +38,48 @@ impl Client {
             .call();
         parse_response(response, "GET /snapshot")
     }
+
+    pub fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T> {
+        let response = self
+            .agent
+            .post(&format!("{}{}", self.server, path))
+            .set("Authorization", &format!("Bearer {}", self.token))
+            .set("Content-Type", "application/json")
+            .send_string(&serde_json::to_string(body)?);
+        parse_response(response, &format!("POST {path}"))
+    }
+
+    pub fn post_public<T: DeserializeOwned>(server: &str, path: &str, body: &Value) -> Result<T> {
+        let response = ureq::post(&format!("{}{}", server.trim_end_matches('/'), path))
+            .set("Content-Type", "application/json")
+            .send_string(&serde_json::to_string(body)?);
+        parse_response(response, &format!("POST {path}"))
+    }
+
+    pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let response = self
+            .agent
+            .get(&format!("{}{}", self.server, path))
+            .set("Authorization", &format!("Bearer {}", self.token))
+            .call();
+        parse_response(response, &format!("GET {path}"))
+    }
 }
 
-fn parse_response<T: serde::de::DeserializeOwned>(
+fn parse_response<T: DeserializeOwned>(
     response: Result<ureq::Response, ureq::Error>,
     what: &str,
 ) -> Result<T> {
     match response {
         Ok(response) => {
-            let body = response.into_string().with_context(|| format!("{what}: reading body"))?;
-            serde_json::from_str(&body).with_context(|| format!("{what}: unexpected response: {body}"))
+            let mut body = response
+                .into_string()
+                .with_context(|| format!("{what}: reading body"))?;
+            if body.trim().is_empty() {
+                body = "null".to_string();
+            }
+            serde_json::from_str(&body)
+                .with_context(|| format!("{what}: unexpected response: {body}"))
         }
         Err(ureq::Error::Status(code, response)) => {
             let body = response.into_string().unwrap_or_default();

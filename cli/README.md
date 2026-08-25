@@ -3,11 +3,18 @@
 The Rust `flat` CLI.
 
 ```
-flat init --server URL --token TOKEN   # connect + first snapshot
+flat init URL --setup                  # claim a new tenant
+flat init URL --invite                 # redeem an invitation
+flat init URL --recover                # redeem a recovery enrollment
+flat init URL --token                  # configure an existing FLAT_TOKEN
 flat new TITLE                         # create a ticket, materialize DEMO-N.md
 flat sync [--merge]                    # pull server changes into the mirror
 flat push                              # send locally edited files back
 flat path                              # print the mirror location
+flat member ...                        # invitations, roles, suspension, recovery
+flat token ...                         # per-installation and agent credentials
+flat audit ls                          # admin-only audit log
+flat github [--rotate]                 # GitHub webhook settings
 ```
 
 The mirror lives at `~/.flat/<host>/DEMO/DEMO-N.md` (`FLAT_DIR` overrides the

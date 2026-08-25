@@ -13,3 +13,27 @@ export function invalidTitle(title: string): string | null {
   }
   return null;
 }
+
+const ASCII_TRIM = /^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g;
+
+export function invalidEmail(value: unknown): string | null {
+  if (typeof value !== "string" || /[^\x00-\x7f]/.test(value)) return null;
+  const email = value.replace(ASCII_TRIM, "").toLowerCase();
+  if (/[\x00-\x20\x7f]/.test(email)) return null;
+  const parts = email.split("@");
+  if (parts.length !== 2 || parts[0].length === 0) return null;
+  const labels = parts[1].split(".");
+  if (labels.length < 2 || labels.some((label) => label.length === 0)) return null;
+  return email;
+}
+
+export function invalidTenantName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const name = value.trim();
+  if (name.length === 0 || Array.from(name).length > 80) return null;
+  return name;
+}
+
+export function invalidTokenName(name: string): boolean {
+  return !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name);
+}

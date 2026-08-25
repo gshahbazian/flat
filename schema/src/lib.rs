@@ -29,6 +29,79 @@ pub fn validate_title(title: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Normalize the ASCII email form used for member identity.
+pub fn normalize_email(email: &str) -> Result<String, String> {
+    let email = email
+        .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
+        .to_ascii_lowercase();
+    if !email.is_ascii()
+        || email
+            .chars()
+            .any(|c| c.is_ascii_whitespace() || c.is_ascii_control())
+    {
+        return Err("invalid_email".into());
+    }
+
+    let mut parts = email.split('@');
+    let local = parts.next().unwrap_or_default();
+    let domain = parts.next().unwrap_or_default();
+    if local.is_empty() || domain.is_empty() || parts.next().is_some() {
+        return Err("invalid_email".into());
+    }
+    let labels: Vec<&str> = domain.split('.').collect();
+    if labels.len() < 2 || labels.iter().any(|label| label.is_empty()) {
+        return Err("invalid_email".into());
+    }
+    Ok(email)
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    Admin,
+    Member,
+    Viewer,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemberStatus {
+    Pending,
+    Active,
+    Suspended,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenKind {
+    Human,
+    Agent,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenAccess {
+    Read,
+    Write,
+    Admin,
+}
+
+/// The non-sensitive member profile included in normal sync data.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemberProfile {
+    pub id: String,
+    pub email: String,
+    pub role: Role,
+    pub status: MemberStatus,
+    pub created_at: String,
+    pub activated_at: Option<String>,
+}
+
 /// Ticket workflow state.
 #[typeshare]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,7 +146,10 @@ impl std::str::FromStr for Status {
             .find(|status| status.as_str() == s)
             .ok_or_else(|| {
                 let expected: Vec<&str> = Status::ALL.iter().map(|s| s.as_str()).collect();
-                format!("unknown status {s:?} (expected one of: {})", expected.join(", "))
+                format!(
+                    "unknown status {s:?} (expected one of: {})",
+                    expected.join(", ")
+                )
             })
     }
 }
@@ -99,6 +175,7 @@ pub struct Ticket {
 pub enum MutationOp {
     Create,
     Update,
+    Delete,
 }
 
 #[typeshare]
@@ -125,8 +202,9 @@ pub struct TicketSet {
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mutation {
-    /// Client-generated ULID; the idempotency key. Replaying a mutation_id
-    /// returns the original result instead of double-applying.
+    /// Opaque unique idempotency key. CLI-generated values are ULIDs, while
+    /// trusted integrations may use a namespaced string. The server never
+    /// parses or orders mutations by this value.
     pub mutation_id: String,
     pub op: MutationOp,
     pub entity: Entity,
@@ -139,6 +217,32 @@ pub struct Mutation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_seq: Option<u32>,
     pub set: TicketSet,
+}
+
+/// Canonical JSON used when binding an idempotency key to a mutation. Object
+/// keys are lexicographically ordered at every level and absent optional
+/// fields stay omitted. Transport metadata is not part of this value.
+pub fn canonical_mutation_json(mutation: &Mutation) -> Result<String, serde_json::Error> {
+    fn sorted(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Array(values) => {
+                serde_json::Value::Array(values.into_iter().map(sorted).collect())
+            }
+            serde_json::Value::Object(values) => {
+                let mut entries: Vec<_> = values.into_iter().collect();
+                entries.sort_by(|left, right| left.0.cmp(&right.0));
+                serde_json::Value::Object(
+                    entries
+                        .into_iter()
+                        .map(|(key, value)| (key, sorted(value)))
+                        .collect(),
+                )
+            }
+            value => value,
+        }
+    }
+
+    serde_json::to_string(&sorted(serde_json::to_value(mutation)?))
 }
 
 #[typeshare]
@@ -177,6 +281,10 @@ pub struct SyncResponse {
     pub conflicts: Vec<MutationConflict>,
     /// Full rows for every ticket changed since the request's `last_seq`.
     pub deltas: Vec<Ticket>,
+    /// Current safe profiles. Administrative sequence gaps may occur without
+    /// exposing their private records.
+    #[serde(default)]
+    pub members: Vec<MemberProfile>,
     pub latest_seq: u32,
 }
 
@@ -185,6 +293,8 @@ pub struct SyncResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub tickets: Vec<Ticket>,
+    #[serde(default)]
+    pub members: Vec<MemberProfile>,
     /// The seq watermark this snapshot represents.
     pub latest_seq: u32,
 }

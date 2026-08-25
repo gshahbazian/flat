@@ -1,0 +1,16 @@
+{
+  "valid": [
+    { "input": "maya@acme.com", "normalized": "maya@acme.com" },
+    { "input": " Maya@Acme.COM ", "normalized": "maya@acme.com" },
+    { "input": "a@sub.acme.com", "normalized": "a@sub.acme.com" }
+  ],
+  "invalid": [
+    "maya@acme",
+    "@acme.com",
+    "a b@acme.com",
+    "a@@acme.com",
+    "a@.com",
+    "a@acme..com",
+    "é@acme.com"
+  ]
+}

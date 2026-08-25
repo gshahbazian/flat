@@ -4,12 +4,10 @@ A ticket system with no UI, designed for AI agents: tickets sync down to plain
 markdown files that agents grep, edit, and push back. See
 [docs/001_initial_system.md](docs/001_initial_system.md) for the full design.
 
-Current state: the second tracer bullet — concurrent edits. A push against a
-stale base applies as long as it touches only fields the server hasn't
-changed; a field both sides changed rejects the ticket whole, and
-`flat sync --merge` three-way merges the server's changes into the edited
-file, leaving git-style conflict markers where the edits overlap. One seeded
-`DEMO` project, one bearer token.
+Current state: per-member permissions and GitHub PR webhooks. A deployment is
+claimed once, admins invite members, each installation or agent has a distinct
+credential, and the Durable Object enforces role, access, and token-kind
+permissions. Signed GitHub pull-request webhooks can silently close tickets.
 
 ## Layout
 
@@ -23,13 +21,14 @@ file, leaving git-style conflict markers where the edits overlap. One seeded
 ## Quickstart (local)
 
 ```sh
-# terminal 1: the server (token for local dev is in server/.dev.vars)
+# terminal 1: the server
 cd server && pnpm install && pnpm dev
 
 # terminal 2: the CLI
 cargo build
 alias flat=target/debug/flat
-flat init --server http://localhost:8787 --token dev-token
+flat init http://localhost:8787 --setup
+# local setup code: flat_setup_CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk
 flat new "Fix OAuth token refresh race"   # -> DEMO-1  ~/.flat/localhost-8787/DEMO/DEMO-1.md
 $EDITOR "$(flat path)/DEMO/DEMO-1.md"     # edit title, status, body
 flat push
@@ -69,5 +68,17 @@ instead, delete the file: `flat sync` restores the last synced server state.
 
 ```sh
 cd infra && pnpm install
-FLAT_TOKEN=<bearer token> ALCHEMY_PASSWORD=<state passphrase> pnpm deploy
+ALCHEMY_PASSWORD=<state passphrase> pnpm deploy
 ```
+
+Deployment generates and prints the one-time `flat_setup_...` credential. The
+credential HMAC key and setup verifier are encrypted in Alchemy state; no
+shared deployment-wide bearer token is installed.
+
+After initialization, an admin can run `flat github` to print the exact
+payload URL and tenant webhook secret. Configure a repository or organization
+webhook for pull-request events with JSON content. The secret is tenant-wide:
+every repository sharing it can close any ticket in that tenant, so group only
+repositories with the same trust level. GitHub does not automatically retry a
+failed delivery; redeliver it from delivery history. Flat stores a receipt by
+delivery GUID, making redelivery idempotent.

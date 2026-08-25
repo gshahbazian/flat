@@ -1,21 +1,26 @@
-// Cloudflare infrastructure as code (Alchemy: https://alchemy.run).
-//
-//   FLAT_TOKEN=<bearer token> ALCHEMY_PASSWORD=<state passphrase> pnpm deploy
-//
-// Local development doesn't go through here — that's `pnpm dev` in /server,
-// which reads server/wrangler.jsonc and server/.dev.vars.
+// Cloudflare infrastructure as code. Alchemy keeps the generated credential
+// material encrypted in state, so repeat deploys retain the same HMAC key.
+import { createHmac } from "node:crypto";
 import alchemy from "alchemy";
 import { DurableObjectNamespace, Worker } from "alchemy/cloudflare";
-
-const flatToken = process.env.FLAT_TOKEN;
-if (!flatToken) {
-  throw new Error("set FLAT_TOKEN: the bearer token clients will use against this deployment");
-}
+import { RandomString } from "alchemy/random";
 
 const app = await alchemy("flat");
 
-// The single tenant DO: one instance holds every table and the ordered
-// mutation log. SQLite-backed, matching server/wrangler.jsonc's migration.
+const hmacMaterial = await RandomString("credential-hmac-key", { length: 32, encoding: "base64" });
+const setupMaterial = await RandomString("one-time-setup-secret", { length: 32, encoding: "base64" });
+
+function base64url(value: string): string {
+  return value.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+const keyId = "v1";
+const hmacSecret = base64url(hmacMaterial.value.unencrypted);
+const setupCredential = `flat_setup_${base64url(setupMaterial.value.unencrypted)}`;
+const setupVerifier = createHmac("sha256", Buffer.from(hmacSecret.replace(/-/g, "+").replace(/_/g, "/"), "base64"))
+  .update(setupCredential)
+  .digest("hex");
+
 const tenant = DurableObjectNamespace("tenant", {
   className: "TenantDO",
   sqlite: true,
@@ -28,10 +33,12 @@ export const server = await Worker("server", {
   url: true,
   bindings: {
     TENANT: tenant,
-    FLAT_TOKEN: alchemy.secret(flatToken),
+    FLAT_HMAC_KEYS: alchemy.secret(JSON.stringify([{ id: keyId, secret: hmacSecret }])),
+    FLAT_SETUP_VERIFIER: alchemy.secret(`${keyId}:${setupVerifier}`),
   },
 });
 
 console.log(`flat server: ${server.url}`);
+console.log(`one-time setup code: ${setupCredential}`);
 
 await app.finalize();
