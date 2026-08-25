@@ -43,9 +43,7 @@ export const server = await Worker('server', {
   url: true,
   bindings: {
     TENANT: tenant,
-    FLAT_HMAC_KEYS: alchemy.secret(
-      JSON.stringify([{ id: keyId, secret: hmacSecret }])
-    ),
+    FLAT_HMAC_KEYS: alchemy.secret(JSON.stringify([{ id: keyId, secret: hmacSecret }])),
     FLAT_SETUP_VERIFIER: alchemy.secret(`${keyId}:${setupVerifier}`),
   },
 })

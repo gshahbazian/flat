@@ -2,11 +2,7 @@ import { describe, expect, test } from 'vitest'
 
 import { may, roleCeiling, type Principal } from '../src/policy'
 import { Role, TokenAccess, TokenKind } from '../src/schema.gen'
-import {
-  invalidEmail,
-  invalidTenantName,
-  invalidTokenName,
-} from '../src/validate'
+import { invalidEmail, invalidTenantName, invalidTokenName } from '../src/validate'
 
 function principal(overrides: Partial<Principal> = {}): Principal {
   return {
@@ -26,20 +22,12 @@ describe('permission policy', () => {
   test('intersects role, token access, and token kind', () => {
     expect(may(principal(), 'ticket.update')).toBe(true)
     expect(may(principal({ role: Role.Viewer }), 'ticket.update')).toBe(false)
-    expect(may(principal({ access: TokenAccess.Read }), 'ticket.update')).toBe(
-      false
+    expect(may(principal({ access: TokenAccess.Read }), 'ticket.update')).toBe(false)
+    expect(may(principal({ role: Role.Admin, access: TokenAccess.Admin }), 'member.invite')).toBe(
+      true
     )
     expect(
-      may(
-        principal({ role: Role.Admin, access: TokenAccess.Admin }),
-        'member.invite'
-      )
-    ).toBe(true)
-    expect(
-      may(
-        principal({ role: Role.Admin, access: TokenAccess.Admin }),
-        'integration.github.manage'
-      )
+      may(principal({ role: Role.Admin, access: TokenAccess.Admin }), 'integration.github.manage')
     ).toBe(true)
     expect(may(principal(), 'integration.github.manage')).toBe(false)
     expect(
@@ -55,18 +43,12 @@ describe('permission policy', () => {
   })
 
   test('project owners and admins may manage project metadata', () => {
-    expect(may(principal(), 'project.update', { ownerIds: ['member-1'] })).toBe(
-      true
-    )
+    expect(may(principal(), 'project.update', { ownerIds: ['member-1'] })).toBe(true)
     expect(may(principal(), 'project.update', { ownerIds: [] })).toBe(false)
     expect(
-      may(
-        principal({ role: Role.Admin, access: TokenAccess.Admin }),
-        'project.update',
-        {
-          ownerIds: [],
-        }
-      )
+      may(principal({ role: Role.Admin, access: TokenAccess.Admin }), 'project.update', {
+        ownerIds: [],
+      })
     ).toBe(true)
   })
 
@@ -84,15 +66,9 @@ describe('permission validation', () => {
     expect(invalidEmail(email)).toBe(expected)
   })
 
-  test.each([
-    'maya@acme',
-    '@acme.com',
-    'a b@acme.com',
-    'a@@acme.com',
-    'a@.com',
-    'é@acme.com',
-  ])('rejects invalid email %j', (email) =>
-    expect(invalidEmail(email)).toBeNull()
+  test.each(['maya@acme', '@acme.com', 'a b@acme.com', 'a@@acme.com', 'a@.com', 'é@acme.com'])(
+    'rejects invalid email %j',
+    (email) => expect(invalidEmail(email)).toBeNull()
   )
 
   test('validates tenant and token names', () => {

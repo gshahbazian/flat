@@ -8,10 +8,7 @@ import { Status, type TicketSet } from '../src/schema.gen'
 describe('fieldsSet', () => {
   test('lists only the fields present', () => {
     expect(fieldsSet({ title: 'x' })).toEqual(['title'])
-    expect(fieldsSet({ status: Status.Done, body: 'b' })).toEqual([
-      'status',
-      'body',
-    ])
+    expect(fieldsSet({ status: Status.Done, body: 'b' })).toEqual(['status', 'body'])
     expect(fieldsSet({})).toEqual([])
   })
 
@@ -24,18 +21,15 @@ describe('fieldsSet', () => {
 
 describe('conflictingFields', () => {
   test('disjoint edits do not conflict', () => {
-    expect(
-      conflictingFields({ title: 'mine' }, [
-        { status: Status.Done },
-        { body: 'b' },
-      ])
-    ).toEqual([])
+    expect(conflictingFields({ title: 'mine' }, [{ status: Status.Done }, { body: 'b' }])).toEqual(
+      []
+    )
   })
 
   test('a field both sides set conflicts', () => {
-    expect(
-      conflictingFields({ title: 'mine', body: 'b' }, [{ title: 'theirs' }])
-    ).toEqual(['title'])
+    expect(conflictingFields({ title: 'mine', body: 'b' }, [{ title: 'theirs' }])).toEqual([
+      'title',
+    ])
   })
 
   test('server changes accumulate across log entries', () => {

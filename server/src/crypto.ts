@@ -8,16 +8,12 @@ const BASE64URL = /^[A-Za-z0-9_-]+$/
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/
 
 function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join(
-    ''
-  )
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function hexToBytes(value: string): Uint8Array | null {
   if (!/^[0-9a-fA-F]+$/.test(value) || value.length % 2 !== 0) return null
-  return Uint8Array.from(value.match(/.{2}/g) ?? [], (pair) =>
-    Number.parseInt(pair, 16)
-  )
+  return Uint8Array.from(value.match(/.{2}/g) ?? [], (pair) => Number.parseInt(pair, 16))
 }
 
 function base64urlToBytes(value: string): Uint8Array | null {
@@ -70,13 +66,10 @@ export function newUlid(now = Date.now()): string {
 async function importHmacKey(key: HmacKey) {
   const bytes = base64urlToBytes(key.secret)
   if (!bytes || bytes.length < 32) throw new Error(`invalid HMAC key ${key.id}`)
-  return crypto.subtle.importKey(
-    'raw',
-    bytes,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign', 'verify']
-  )
+  return crypto.subtle.importKey('raw', bytes, { name: 'HMAC', hash: 'SHA-256' }, false, [
+    'sign',
+    'verify',
+  ])
 }
 
 export function parseKeyRing(raw: string | undefined): HmacKey[] {
@@ -136,10 +129,7 @@ export interface ParsedCredential {
   secret: string
 }
 
-export function parseCredential(
-  value: unknown,
-  prefix: string
-): ParsedCredential | null {
+export function parseCredential(value: unknown, prefix: string): ParsedCredential | null {
   if (typeof value !== 'string') return null
   const marker = `${prefix}_`
   if (!value.startsWith(marker)) return null
@@ -166,13 +156,11 @@ function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize)
   if (value === null || typeof value !== 'object') return value
   const result: Record<string, unknown> = {}
-  for (const [key, child] of Object.entries(value).toSorted(
-    ([left], [right]) => {
-      if (left < right) return -1
-      if (left > right) return 1
-      return 0
-    }
-  )) {
+  for (const [key, child] of Object.entries(value).toSorted(([left], [right]) => {
+    if (left < right) return -1
+    if (left > right) return 1
+    return 0
+  })) {
     if (child !== undefined) result[key] = canonicalize(child)
   }
   return result
@@ -184,9 +172,7 @@ export function canonicalJson(value: unknown): string {
 
 export async function canonicalSha256(value: unknown): Promise<string> {
   const bytes = new TextEncoder().encode(canonicalJson(value))
-  return bytesToHex(
-    new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))
-  )
+  return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
 }
 
 export function configuredVerifier(

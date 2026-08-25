@@ -45,9 +45,7 @@ function keysInField(value: string): string[] {
     keys.push(match[1])
     let rest = text.slice((match.index ?? 0) + match[0].length)
     while (true) {
-      const separator = rest.match(
-        /^(?:(?:[ \t]*,[ \t]*(?:and[ \t]+)?)|(?:[ \t]+and[ \t]+))+/i
-      )
+      const separator = rest.match(/^(?:(?:[ \t]*,[ \t]*(?:and[ \t]+)?)|(?:[ \t]+and[ \t]+))+/i)
       if (!separator) break
       rest = rest.slice(separator[0].length)
       const next = rest.match(KEY_AT_START)
@@ -59,10 +57,7 @@ function keysInField(value: string): string[] {
   return keys
 }
 
-export function closingTicketKeys(
-  title: string,
-  body: string | null
-): string[] {
+export function closingTicketKeys(title: string, body: string | null): string[] {
   const result: string[] = []
   const seen = new Set<string>()
   for (const key of [...keysInField(title), ...keysInField(body ?? '')]) {
@@ -79,9 +74,8 @@ export async function verifyGithubSignature(
   header: string | null
 ): Promise<boolean> {
   if (!header || !/^sha256=[0-9a-fA-F]{64}$/.test(header)) return false
-  const expected = Uint8Array.from(
-    header.slice(7).match(/.{2}/g) ?? [],
-    (pair) => Number.parseInt(pair, 16)
+  const expected = Uint8Array.from(header.slice(7).match(/.{2}/g) ?? [], (pair) =>
+    Number.parseInt(pair, 16)
   )
   const key = await crypto.subtle.importKey(
     'raw',

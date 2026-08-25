@@ -28,10 +28,7 @@ import { invalidEmail, invalidTitle } from '../src/validate'
 
 function fixture(name: string): unknown {
   return JSON.parse(
-    readFileSync(
-      new URL(`../../schema/fixtures/${name}.json`, import.meta.url),
-      'utf8'
-    )
+    readFileSync(new URL(`../../schema/fixtures/${name}.json`, import.meta.url), 'utf8')
   )
 }
 
@@ -81,23 +78,13 @@ function ticketSet(v: unknown): TicketSet {
   const raw = obj(v, ['title', 'status', 'body'])
   return {
     title: raw.title === undefined ? undefined : str(raw.title),
-    status:
-      raw.status === undefined
-        ? undefined
-        : oneOf(raw.status, Object.values(Status)),
+    status: raw.status === undefined ? undefined : oneOf(raw.status, Object.values(Status)),
     body: raw.body === undefined ? undefined : str(raw.body),
   }
 }
 
 function mutation(v: unknown): Mutation {
-  const raw = obj(v, [
-    'mutation_id',
-    'op',
-    'entity',
-    'entity_id',
-    'base_seq',
-    'set',
-  ])
+  const raw = obj(v, ['mutation_id', 'op', 'entity', 'entity_id', 'base_seq', 'set'])
   return {
     mutation_id: str(raw.mutation_id),
     op: oneOf(raw.op, Object.values(MutationOp)),
@@ -138,14 +125,7 @@ function mutationConflict(v: unknown): MutationConflict {
 }
 
 function member(v: unknown): MemberProfile {
-  const raw = obj(v, [
-    'id',
-    'email',
-    'role',
-    'status',
-    'created_at',
-    'activated_at',
-  ])
+  const raw = obj(v, ['id', 'email', 'role', 'status', 'created_at', 'activated_at'])
   return {
     id: str(raw.id),
     email: str(raw.email),
@@ -157,14 +137,7 @@ function member(v: unknown): MemberProfile {
 }
 
 function syncResponse(v: unknown): SyncResponse {
-  const raw = obj(v, [
-    'applied',
-    'conflicts',
-    'deltas',
-    'tombstones',
-    'members',
-    'latest_seq',
-  ])
+  const raw = obj(v, ['applied', 'conflicts', 'deltas', 'tombstones', 'members', 'latest_seq'])
   expect(raw.applied).toBeInstanceOf(Array)
   expect(raw.conflicts).toBeInstanceOf(Array)
   expect(raw.deltas).toBeInstanceOf(Array)
@@ -199,15 +172,11 @@ describe('schema fixtures round-trip through the generated types', () => {
   })
 
   test('sync_request', () => {
-    expect(syncRequest(fixture('sync_request'))).toEqual(
-      fixture('sync_request')
-    )
+    expect(syncRequest(fixture('sync_request'))).toEqual(fixture('sync_request'))
   })
 
   test('sync_response', () => {
-    expect(syncResponse(fixture('sync_response'))).toEqual(
-      fixture('sync_response')
-    )
+    expect(syncResponse(fixture('sync_response'))).toEqual(fixture('sync_response'))
   })
 
   test('snapshot', () => {

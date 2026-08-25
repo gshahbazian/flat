@@ -32,41 +32,33 @@ describe('closingTicketKeys', () => {
   })
 
   test('scans title and body separately and de-duplicates in first-seen order', () => {
-    expect(
-      closingTicketKeys('Fixes DEMO-1', 'Closes AUTH-2. Resolves DEMO-1')
-    ).toEqual(['DEMO-1', 'AUTH-2'])
+    expect(closingTicketKeys('Fixes DEMO-1', 'Closes AUTH-2. Resolves DEMO-1')).toEqual([
+      'DEMO-1',
+      'AUTH-2',
+    ])
   })
 })
 
 describe('verifyGithubSignature', () => {
   test("matches GitHub's published HMAC vector", async () => {
     const body = new TextEncoder().encode('Hello, World!')
-    const header =
-      'sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17'
-    expect(
-      await verifyGithubSignature(
-        "It's a Secret to Everybody",
-        body.buffer,
-        header
-      )
-    ).toBe(true)
+    const header = 'sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17'
+    expect(await verifyGithubSignature("It's a Secret to Everybody", body.buffer, header)).toBe(
+      true
+    )
   })
 
   test('accepts an exact HMAC over Unicode bytes', async () => {
     const secret = "It's a Secret to Everybody"
     const body = new TextEncoder().encode('Hello, 世界')
     const digest = createHmac('sha256', secret).update(body).digest('hex')
-    expect(
-      await verifyGithubSignature(secret, body.buffer, `sha256=${digest}`)
-    ).toBe(true)
+    expect(await verifyGithubSignature(secret, body.buffer, `sha256=${digest}`)).toBe(true)
   })
 
   test.each([null, 'sha1=abc', 'sha256=abc', `sha256=${'z'.repeat(64)}`])(
     'rejects malformed signature %j',
     async (header) => {
-      expect(
-        await verifyGithubSignature('secret', new ArrayBuffer(0), header)
-      ).toBe(false)
+      expect(await verifyGithubSignature('secret', new ArrayBuffer(0), header)).toBe(false)
     }
   )
 })

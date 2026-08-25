@@ -58,10 +58,7 @@ export function roleCeiling(role: Role): TokenAccess {
   return TokenAccess.Read
 }
 
-export function accessAtLeast(
-  actual: TokenAccess,
-  required: TokenAccess
-): boolean {
+export function accessAtLeast(actual: TokenAccess, required: TokenAccess): boolean {
   return ACCESS_RANK[actual] >= ACCESS_RANK[required]
 }
 
@@ -70,11 +67,7 @@ export function may(
   action: Action,
   resource: { ownerIds?: string[]; targetMemberId?: string } = {}
 ): boolean {
-  if (
-    action === 'work.read' ||
-    action === 'work.search' ||
-    action === 'member.list'
-  ) {
+  if (action === 'work.read' || action === 'work.search' || action === 'member.list') {
     return accessAtLeast(principal.access, TokenAccess.Read)
   }
 
@@ -111,22 +104,14 @@ export function may(
     if (!accessAtLeast(principal.access, TokenAccess.Write)) return false
     if (principal.role === Role.Admin) return true
     return (
-      principal.role === Role.Member &&
-      resource.ownerIds?.includes(principal.memberId) === true
+      principal.role === Role.Member && resource.ownerIds?.includes(principal.memberId) === true
     )
   }
 
-  return (
-    principal.role !== Role.Viewer &&
-    accessAtLeast(principal.access, TokenAccess.Write)
-  )
+  return principal.role !== Role.Viewer && accessAtLeast(principal.access, TokenAccess.Write)
 }
 
-export function validTokenAccess(
-  role: Role,
-  kind: TokenKind,
-  access: TokenAccess
-): boolean {
+export function validTokenAccess(role: Role, kind: TokenKind, access: TokenAccess): boolean {
   if (kind === TokenKind.Agent && access === TokenAccess.Admin) return false
   return accessAtLeast(roleCeiling(role), access)
 }

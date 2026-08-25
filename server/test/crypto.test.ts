@@ -1,10 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import {
-  canonicalSha256,
-  createCredential,
-  parseCredential,
-} from '../src/crypto'
+import { canonicalSha256, createCredential, parseCredential } from '../src/crypto'
 
 describe('credential format', () => {
   test('round-trips a generated token credential', () => {

@@ -13,20 +13,10 @@ import {
   verifyHmac,
   type HmacKey,
 } from './crypto'
-import {
-  closingTicketKeys,
-  verifyGithubSignature,
-  type GithubPullRequestPayload,
-} from './github'
+import { closingTicketKeys, verifyGithubSignature, type GithubPullRequestPayload } from './github'
 import type { Env } from './index'
 import { runMigrations } from './migrations'
-import {
-  may,
-  roleCeiling,
-  validTokenAccess,
-  type Action,
-  type Principal,
-} from './policy'
+import { may, roleCeiling, validTokenAccess, type Action, type Principal } from './policy'
 import {
   Entity,
   MemberStatus,
@@ -45,12 +35,7 @@ import {
   type Ticket,
   type TicketTombstone,
 } from './schema.gen'
-import {
-  invalidEmail,
-  invalidTenantName,
-  invalidTitle,
-  invalidTokenName,
-} from './validate'
+import { invalidEmail, invalidTenantName, invalidTitle, invalidTokenName } from './validate'
 
 export const PROTOCOL_VERSION = 1
 
@@ -179,10 +164,7 @@ function addSeconds(timestamp: string, seconds: number): string {
   return new Date(Date.parse(timestamp) + seconds * 1000).toISOString()
 }
 
-function enumValue<T extends string>(
-  value: unknown,
-  allowed: ReadonlySet<T>
-): T | null {
+function enumValue<T extends string>(value: unknown, allowed: ReadonlySet<T>): T | null {
   if (typeof value !== 'string') return null
   for (const item of allowed) {
     if (item === value) return item
@@ -190,25 +172,15 @@ function enumValue<T extends string>(
   return null
 }
 
-function duration(
-  value: unknown,
-  fallback: number,
-  maximum: number
-): number | null {
+function duration(value: unknown, fallback: number, maximum: number): number | null {
   if (value === undefined) return fallback
-  if (
-    !Number.isInteger(value) ||
-    (value as number) <= 0 ||
-    (value as number) > maximum
-  ) {
+  if (!Number.isInteger(value) || (value as number) <= 0 || (value as number) > maximum) {
     return null
   }
   return value as number
 }
 
-async function requestObject(
-  request: Request
-): Promise<Record<string, unknown> | null> {
+async function requestObject(request: Request): Promise<Record<string, unknown> | null> {
   try {
     const value = await request.json<unknown>()
     if (value === null || typeof value !== 'object' || Array.isArray(value)) {
@@ -220,10 +192,7 @@ async function requestObject(
   }
 }
 
-async function boundedBody(
-  request: Request,
-  maximumBytes: number
-): Promise<ArrayBuffer | null> {
+async function boundedBody(request: Request, maximumBytes: number): Promise<ArrayBuffer | null> {
   if (request.body === null) return new ArrayBuffer(0)
   const reader = request.body.getReader()
   const chunks: Uint8Array[] = []
@@ -258,9 +227,7 @@ export class TenantDO extends DurableObject<Env> {
     this.sql = ctx.storage.sql
     this.sql.exec('PRAGMA foreign_keys = ON')
     this.sql.exec(BOOTSTRAP_SCHEMA)
-    runMigrations(this.sql, (closure) =>
-      this.ctx.storage.transactionSync(closure)
-    )
+    runMigrations(this.sql, (closure) => this.ctx.storage.transactionSync(closure))
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -356,11 +323,7 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   private initialized(): boolean {
-    return (
-      this.sql
-        .exec('SELECT 1 FROM tenant_metadata WHERE singleton = 1')
-        .toArray().length > 0
-    )
+    return this.sql.exec('SELECT 1 FROM tenant_metadata WHERE singleton = 1').toArray().length > 0
   }
 
   private keys(): HmacKey[] {
@@ -385,12 +348,10 @@ export class TenantDO extends DurableObject<Env> {
   ): Promise<boolean> {
     const value = typeof credential === 'string' ? credential : ''
     const wellFormed =
-      value.startsWith(`${prefix}_`) &&
-      /^[A-Za-z0-9_-]{43,}$/.test(value.slice(prefix.length + 1))
+      value.startsWith(`${prefix}_`) && /^[A-Za-z0-9_-]{43,}$/.test(value.slice(prefix.length + 1))
     const parsed = configuredVerifier(configured)
     const keys = this.keys()
-    const key =
-      keys.find((candidate) => candidate.id === parsed?.keyId) ?? keys[0]
+    const key = keys.find((candidate) => candidate.id === parsed?.keyId) ?? keys[0]
     const verifier = parsed?.verifier ?? '0'.repeat(64)
     const matches = await verifyHmac(key, value, verifier)
     return wellFormed && parsed !== null && matches
@@ -398,9 +359,7 @@ export class TenantDO extends DurableObject<Env> {
 
   private async authenticate(request: Request): Promise<Principal | Response> {
     const authorization = request.headers.get('Authorization')
-    const raw = authorization?.startsWith('Bearer ')
-      ? authorization.slice(7)
-      : ''
+    const raw = authorization?.startsWith('Bearer ') ? authorization.slice(7) : ''
     const parsed = parseCredential(raw, 'flat_pat')
     const rows = parsed
       ? this.sql
@@ -413,8 +372,7 @@ export class TenantDO extends DurableObject<Env> {
       : []
     const row = rows[0] as unknown as TokenRow | undefined
     const keys = this.keys()
-    const key =
-      keys.find((candidate) => candidate.id === row?.verifier_key_id) ?? keys[0]
+    const key = keys.find((candidate) => candidate.id === row?.verifier_key_id) ?? keys[0]
     const verifier = row?.secret_verifier ?? '0'.repeat(64)
     const secret = parsed?.secret ?? 'invalid'
     const matches = await verifyHmac(key, secret, verifier)
@@ -431,9 +389,7 @@ export class TenantDO extends DurableObject<Env> {
     }
 
     const now = new Date()
-    const cutoff = new Date(
-      now.getTime() - LAST_USED_WRITE_INTERVAL_MS
-    ).toISOString()
+    const cutoff = new Date(now.getTime() - LAST_USED_WRITE_INTERVAL_MS).toISOString()
     this.sql.exec(
       `UPDATE tokens SET last_used_at = ? WHERE id = ?
        AND (last_used_at IS NULL OR last_used_at < ?)`,
@@ -453,10 +409,7 @@ export class TenantDO extends DurableObject<Env> {
     }
   }
 
-  private requireCurrentPrincipal(
-    principal: Principal,
-    action: Action
-  ): Principal {
+  private requireCurrentPrincipal(principal: Principal, action: Action): Principal {
     const row = this.sql
       .exec(
         `SELECT t.*, m.email, m.role, m.status AS member_status
@@ -465,12 +418,9 @@ export class TenantDO extends DurableObject<Env> {
       )
       .toArray()[0] as unknown as TokenRow | undefined
     const expired =
-      row !== undefined &&
-      row.expires_at !== null &&
-      Date.parse(row.expires_at) <= Date.now()
+      row !== undefined && row.expires_at !== null && Date.parse(row.expires_at) <= Date.now()
     const verifierAvailable =
-      row !== undefined &&
-      this.keys().some((key) => key.id === row.verifier_key_id)
+      row !== undefined && this.keys().some((key) => key.id === row.verifier_key_id)
     if (
       !row ||
       row.member_id !== principal.memberId ||
@@ -512,8 +462,7 @@ export class TenantDO extends DurableObject<Env> {
     const tenantName = invalidTenantName(body.tenant_name ?? body.display_name)
     if (tenantName === null) return jsonError(422, 'invalid_tenant_name')
     const rawTokenName = body.token_name ?? body.cli_name ?? body.name
-    const tokenName =
-      typeof rawTokenName === 'string' ? rawTokenName.trim() : ''
+    const tokenName = typeof rawTokenName === 'string' ? rawTokenName.trim() : ''
     if (invalidTokenName(tokenName)) return jsonError(422, 'invalid_token_name')
 
     const token = await this.prepareCredential('flat_pat')
@@ -548,24 +497,13 @@ export class TenantDO extends DurableObject<Env> {
           now
         )
         const seq = this.nextSeq()
-        this.audit(
-          seq,
-          'tenant.setup',
-          null,
-          'deployment',
-          'tenant',
-          'tenant',
-          {
-            member_id: memberId,
-            token_id: token.id,
-          }
-        )
+        this.audit(seq, 'tenant.setup', null, 'deployment', 'tenant', 'tenant', {
+          member_id: memberId,
+          token_id: token.id,
+        })
       })
     } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message === 'setup_already_completed'
-      ) {
+      if (error instanceof Error && error.message === 'setup_already_completed') {
         return jsonError(409, 'setup_already_completed')
       }
       throw error
@@ -582,10 +520,7 @@ export class TenantDO extends DurableObject<Env> {
     )
   }
 
-  private async handleSync(
-    request: Request,
-    principal: Principal
-  ): Promise<Response> {
+  private async handleSync(request: Request, principal: Principal): Promise<Response> {
     if (!may(principal, 'work.read')) return jsonError(403, 'forbidden')
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
@@ -602,17 +537,12 @@ export class TenantDO extends DurableObject<Env> {
       return jsonError(400, 'malformed_sync_request')
     }
 
-    const hashes = await Promise.all(
-      req.mutations.map((mutation) => canonicalSha256(mutation))
-    )
+    const hashes = await Promise.all(req.mutations.map((mutation) => canonicalSha256(mutation)))
 
     const applied: AppliedMutation[] = []
     const conflicts: MutationConflict[] = []
     this.ctx.storage.transactionSync(() => {
-      const currentPrincipal = this.requireCurrentPrincipal(
-        principal,
-        'work.read'
-      )
+      const currentPrincipal = this.requireCurrentPrincipal(principal, 'work.read')
       for (const [index, mutation] of req.mutations.entries()) {
         const reject = (reason: string): void => {
           conflicts.push({
@@ -621,10 +551,7 @@ export class TenantDO extends DurableObject<Env> {
             reason,
           })
         }
-        if (
-          typeof mutation?.mutation_id !== 'string' ||
-          mutation.mutation_id.length === 0
-        ) {
+        if (typeof mutation?.mutation_id !== 'string' || mutation.mutation_id.length === 0) {
           reject('mutation_id is required')
           continue
         }
@@ -643,10 +570,7 @@ export class TenantDO extends DurableObject<Env> {
           )
           .toArray()[0]
         if (prior) {
-          if (
-            prior.actor_member_id !== currentPrincipal.memberId ||
-            prior.mutation_hash !== hash
-          ) {
+          if (prior.actor_member_id !== currentPrincipal.memberId || prior.mutation_hash !== hash) {
             reject('mutation_id_reused')
             continue
           }
@@ -730,10 +654,7 @@ export class TenantDO extends DurableObject<Env> {
     if (mutation.entity !== Entity.Ticket) {
       return reject(`unknown entity ${JSON.stringify(mutation.entity)}`)
     }
-    if (
-      typeof mutation.entity_id !== 'string' ||
-      mutation.entity_id.length === 0
-    ) {
+    if (typeof mutation.entity_id !== 'string' || mutation.entity_id.length === 0) {
       return reject('entity_id is required')
     }
     const set = mutation.set ?? {}
@@ -807,9 +728,7 @@ export class TenantDO extends DurableObject<Env> {
       return reject(`${mutation.op} requires a valid base_seq`)
     }
     if (mutation.base_seq > currentSeq) {
-      return reject(
-        `base_seq ${mutation.base_seq} is ahead of the ticket (seq ${currentSeq})`
-      )
+      return reject(`base_seq ${mutation.base_seq} is ahead of the ticket (seq ${currentSeq})`)
     }
     if (mutation.op === MutationOp.Delete) {
       const seq = this.nextSeq()
@@ -877,10 +796,7 @@ export class TenantDO extends DurableObject<Env> {
     }
     const body = await boundedBody(request, 16 * 1024)
     if (body === null) return jsonError(413, 'payload_too_large')
-    const currentPrincipal = this.requireCurrentPrincipal(
-      principal,
-      'integration.github.manage'
-    )
+    const currentPrincipal = this.requireCurrentPrincipal(principal, 'integration.github.manage')
     const rotate = url.searchParams.get('rotate') === '1'
     let secret = this.optionalMeta('github_webhook_secret')
     if (rotate) {
@@ -924,10 +840,7 @@ export class TenantDO extends DurableObject<Env> {
       })
       secret = candidate
     }
-    return Response.json(
-      { secret },
-      { headers: { 'Cache-Control': 'no-store' } }
-    )
+    return Response.json({ secret }, { headers: { 'Cache-Control': 'no-store' } })
   }
 
   private async handleGithub(request: Request): Promise<Response> {
@@ -956,26 +869,16 @@ export class TenantDO extends DurableObject<Env> {
     const secret = this.optionalMeta('github_webhook_secret') ?? ''
     const valid =
       secret.length > 0 &&
-      (await verifyGithubSignature(
-        secret,
-        rawBody,
-        request.headers.get('X-Hub-Signature-256')
-      ))
+      (await verifyGithubSignature(secret, rawBody, request.headers.get('X-Hub-Signature-256')))
     if (!valid) return jsonError(401, 'invalid_github_signature')
 
     let payload: GithubPullRequestPayload
     try {
-      payload = JSON.parse(
-        new TextDecoder().decode(rawBody)
-      ) as GithubPullRequestPayload
+      payload = JSON.parse(new TextDecoder().decode(rawBody)) as GithubPullRequestPayload
     } catch {
       return jsonError(400, 'invalid_json')
     }
-    if (
-      payload === null ||
-      typeof payload !== 'object' ||
-      Array.isArray(payload)
-    ) {
+    if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
       return jsonError(400, 'invalid_github_payload')
     }
     if (event === 'ping' || event !== 'pull_request') return emptyOk()
@@ -997,10 +900,7 @@ export class TenantDO extends DurableObject<Env> {
       return emptyOk()
     }
     const pullNumber = pull.number ?? payload.number
-    const validBody =
-      pull.body === undefined ||
-      pull.body === null ||
-      typeof pull.body === 'string'
+    const validBody = pull.body === undefined || pull.body === null || typeof pull.body === 'string'
     if (
       !Number.isSafeInteger(pullNumber) ||
       (pullNumber as number) <= 0 ||
@@ -1024,12 +924,8 @@ export class TenantDO extends DurableObject<Env> {
     const keys = closingTicketKeys(pull.title, pull.body ?? null)
     this.ctx.storage.transactionSync(() => {
       if (
-        this.sql
-          .exec(
-            'SELECT 1 FROM github_deliveries WHERE delivery_id = ?',
-            delivery
-          )
-          .toArray().length > 0
+        this.sql.exec('SELECT 1 FROM github_deliveries WHERE delivery_id = ?', delivery).toArray()
+          .length > 0
       ) {
         return
       }
@@ -1075,19 +971,11 @@ export class TenantDO extends DurableObject<Env> {
         if ('reason' in outcome) {
           throw new Error(`GitHub mutation rejected: ${outcome.reason}`)
         }
-        this.audit(
-          outcome.seq,
-          'ticket.update',
-          null,
-          'webhook',
-          'ticket',
-          ticketId,
-          {
-            mutation_id: mutation.mutation_id,
-            source: 'github',
-            delivery_id: delivery,
-          }
-        )
+        this.audit(outcome.seq, 'ticket.update', null, 'webhook', 'ticket', ticketId, {
+          mutation_id: mutation.mutation_id,
+          source: 'github',
+          delivery_id: delivery,
+        })
         results.push({
           key,
           ticket_id: ticketId,
@@ -1110,10 +998,7 @@ export class TenantDO extends DurableObject<Env> {
     return emptyOk()
   }
 
-  private async handleInvitation(
-    request: Request,
-    principal: Principal
-  ): Promise<Response> {
+  private async handleInvitation(request: Request, principal: Principal): Promise<Response> {
     if (!may(principal, 'member.invite')) return jsonError(403, 'forbidden')
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
@@ -1170,10 +1055,7 @@ export class TenantDO extends DurableObject<Env> {
     const now = isoNow()
     const expiresAt = addSeconds(now, seconds)
     this.ctx.storage.transactionSync(() => {
-      const currentPrincipal = this.requireCurrentPrincipal(
-        principal,
-        'member.invite'
-      )
+      const currentPrincipal = this.requireCurrentPrincipal(principal, 'member.invite')
       for (const item of prepared) {
         this.insertInvitation(
           item.email,
@@ -1223,18 +1105,8 @@ export class TenantDO extends DurableObject<Env> {
     const now = isoNow()
     const expiresAt = addSeconds(now, seconds)
     this.ctx.storage.transactionSync(() => {
-      const currentPrincipal = this.requireCurrentPrincipal(
-        principal,
-        'member.invite'
-      )
-      this.insertInvitation(
-        email,
-        role,
-        enrollment,
-        currentPrincipal,
-        now,
-        expiresAt
-      )
+      const currentPrincipal = this.requireCurrentPrincipal(principal, 'member.invite')
+      this.insertInvitation(email, role, enrollment, currentPrincipal, now, expiresAt)
     })
     return Response.json(
       {
@@ -1292,18 +1164,10 @@ export class TenantDO extends DurableObject<Env> {
       expiresAt
     )
     const seq = this.nextSeq()
-    this.audit(
-      seq,
-      'member.invite',
-      principal,
-      principal.tokenKind,
-      'member',
-      memberId,
-      {
-        email,
-        role,
-      }
-    )
+    this.audit(seq, 'member.invite', principal, principal.tokenKind, 'member', memberId, {
+      email,
+      role,
+    })
   }
 
   private async handleEnrollmentRedemption(
@@ -1314,8 +1178,7 @@ export class TenantDO extends DurableObject<Env> {
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
     const rawTokenName = body.token_name ?? body.cli_name ?? body.name
-    const tokenName =
-      typeof rawTokenName === 'string' ? rawTokenName.trim() : ''
+    const tokenName = typeof rawTokenName === 'string' ? rawTokenName.trim() : ''
     if (invalidTokenName(tokenName)) return jsonError(422, 'invalid_token_name')
     let enrollmentCredential = body.credential ?? body.recovery_code
     if (kind === 'invite') {
@@ -1324,13 +1187,11 @@ export class TenantDO extends DurableObject<Env> {
     const enrollment = await this.verifyEnrollment(enrollmentCredential, kind)
     if (enrollment instanceof Response) return enrollment
     if (
-      enrollment.member_status !==
-      (kind === 'invite' ? MemberStatus.Pending : MemberStatus.Active)
+      enrollment.member_status !== (kind === 'invite' ? MemberStatus.Pending : MemberStatus.Active)
     ) {
       return jsonError(409, 'invalid_member_state')
     }
-    const role =
-      kind === 'invite' ? enrollment.intended_role : enrollment.member_role
+    const role = kind === 'invite' ? enrollment.intended_role : enrollment.member_role
     if (role === null) return jsonError(409, 'invalid_enrollment_state')
     const token = await this.prepareCredential('flat_pat')
     const now = isoNow()
@@ -1340,8 +1201,7 @@ export class TenantDO extends DurableObject<Env> {
         if (!current || current.consumed_at || current.revoked_at) {
           throw new Error('enrollment_consumed')
         }
-        const expectedStatus =
-          kind === 'invite' ? MemberStatus.Pending : MemberStatus.Active
+        const expectedStatus = kind === 'invite' ? MemberStatus.Pending : MemberStatus.Active
         if (current.member_status !== expectedStatus) {
           throw new Error('invalid_member_state')
         }
@@ -1353,11 +1213,7 @@ export class TenantDO extends DurableObject<Env> {
             enrollment.member_id
           )
         }
-        this.sql.exec(
-          'UPDATE enrollments SET consumed_at = ? WHERE id = ?',
-          now,
-          enrollment.id
-        )
+        this.sql.exec('UPDATE enrollments SET consumed_at = ? WHERE id = ?', now, enrollment.id)
         this.insertToken(
           token,
           enrollment.member_id,
@@ -1370,18 +1226,10 @@ export class TenantDO extends DurableObject<Env> {
           now
         )
         const seq = this.nextSeq()
-        this.audit(
-          seq,
-          `${kind}.redeem`,
-          null,
-          'enrollment',
-          'member',
-          enrollment.member_id,
-          {
-            enrollment_id: enrollment.id,
-            token_id: token.id,
-          }
-        )
+        this.audit(seq, `${kind}.redeem`, null, 'enrollment', 'member', enrollment.member_id, {
+          enrollment_id: enrollment.id,
+          token_id: token.id,
+        })
       })
     } catch (error) {
       if (error instanceof Error && error.message === 'enrollment_consumed') {
@@ -1418,8 +1266,7 @@ export class TenantDO extends DurableObject<Env> {
     if (!parsed) return jsonError(422, 'invalid_credential_format')
     const row = this.enrollmentById(parsed.id)
     const keys = this.keys()
-    const key =
-      keys.find((candidate) => candidate.id === row?.verifier_key_id) ?? keys[0]
+    const key = keys.find((candidate) => candidate.id === row?.verifier_key_id) ?? keys[0]
     const verifier = row?.secret_verifier ?? '0'.repeat(64)
     const valid = await verifyHmac(key, parsed.secret, verifier)
     if (!row || !valid || key.id !== row.verifier_key_id) {
@@ -1445,10 +1292,7 @@ export class TenantDO extends DurableObject<Env> {
     return row ? (row as unknown as EnrollmentRow) : null
   }
 
-  private async handleRecovery(
-    request: Request,
-    principal: Principal
-  ): Promise<Response> {
+  private async handleRecovery(request: Request, principal: Principal): Promise<Response> {
     if (!may(principal, 'member.recover')) return jsonError(403, 'forbidden')
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
@@ -1467,17 +1311,12 @@ export class TenantDO extends DurableObject<Env> {
       this.env.FLAT_OPERATOR_RECOVERY_VERIFIER
     )
     const verifier = this.env.FLAT_OPERATOR_RECOVERY_VERIFIER ?? ''
-    const consumed =
-      this.optionalMeta('consumed_operator_recovery_verifier') === verifier
+    const consumed = this.optionalMeta('consumed_operator_recovery_verifier') === verifier
     if (!valid || consumed) return jsonError(401, 'invalid_operator_recovery')
     const email = invalidEmail(body.email)
     if (email === null) return jsonError(422, 'invalid_email')
     const member = this.memberByEmail(email)
-    if (
-      !member ||
-      member.status !== MemberStatus.Active ||
-      member.role !== Role.Admin
-    ) {
+    if (!member || member.status !== MemberStatus.Active || member.role !== Role.Admin) {
       return jsonError(409, 'operator_recovery_target_invalid')
     }
     return this.createRecovery(email, null, 'deployment', verifier, 15 * 60)
@@ -1501,16 +1340,10 @@ export class TenantDO extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       let currentPrincipal = principal
       if (principal) {
-        currentPrincipal = this.requireCurrentPrincipal(
-          principal,
-          'member.recover'
-        )
+        currentPrincipal = this.requireCurrentPrincipal(principal, 'member.recover')
       }
       revokedTokenIds = this.sql
-        .exec(
-          'SELECT id FROM tokens WHERE member_id = ? AND revoked_at IS NULL',
-          member.id
-        )
+        .exec('SELECT id FROM tokens WHERE member_id = ? AND revoked_at IS NULL', member.id)
         .toArray()
         .map((row) => row.id as string)
       this.sql.exec(
@@ -1546,18 +1379,10 @@ export class TenantDO extends DurableObject<Env> {
         )
       }
       const seq = this.nextSeq()
-      this.audit(
-        seq,
-        'member.recover',
-        currentPrincipal,
-        actorKind,
-        'member',
-        member.id,
-        {
-          enrollment_id: enrollment.id,
-          revoked_token_ids: revokedTokenIds,
-        }
-      )
+      this.audit(seq, 'member.recover', currentPrincipal, actorKind, 'member', member.id, {
+        enrollment_id: enrollment.id,
+        revoked_token_ids: revokedTokenIds,
+      })
     })
     this.closeTokenSessions(revokedTokenIds)
     return Response.json(
@@ -1568,21 +1393,14 @@ export class TenantDO extends DurableObject<Env> {
     )
   }
 
-  private async handleUpgradeCreation(
-    request: Request,
-    principal: Principal
-  ): Promise<Response> {
+  private async handleUpgradeCreation(request: Request, principal: Principal): Promise<Response> {
     if (!may(principal, 'member.upgrade')) return jsonError(403, 'forbidden')
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
     const email = invalidEmail(body.email)
     if (email === null) return jsonError(422, 'invalid_email')
     const member = this.memberByEmail(email)
-    if (
-      !member ||
-      member.status !== MemberStatus.Active ||
-      member.role === null
-    ) {
+    if (!member || member.status !== MemberStatus.Active || member.role === null) {
       return jsonError(409, 'member_not_active')
     }
     const intended = roleCeiling(member.role)
@@ -1596,17 +1414,10 @@ export class TenantDO extends DurableObject<Env> {
     const now = isoNow()
     const expiresAt = addSeconds(now, DEFAULT_ENROLLMENT_SECONDS)
     this.ctx.storage.transactionSync(() => {
-      const currentPrincipal = this.requireCurrentPrincipal(
-        principal,
-        'member.upgrade'
-      )
+      const currentPrincipal = this.requireCurrentPrincipal(principal, 'member.upgrade')
       this.expireEnrollments(now, member.id, 'upgrade')
       if (live) {
-        this.sql.exec(
-          'UPDATE enrollments SET revoked_at = ? WHERE id = ?',
-          now,
-          live.id
-        )
+        this.sql.exec('UPDATE enrollments SET revoked_at = ? WHERE id = ?', now, live.id)
       }
       this.sql.exec(
         `INSERT INTO enrollments
@@ -1650,19 +1461,13 @@ export class TenantDO extends DurableObject<Env> {
     )
   }
 
-  private async handleTokenUpgrade(
-    request: Request,
-    principal: Principal
-  ): Promise<Response> {
+  private async handleTokenUpgrade(request: Request, principal: Principal): Promise<Response> {
     if (!may(principal, 'token.self.upgrade')) {
       return jsonError(403, 'forbidden')
     }
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
-    const enrollment = await this.verifyEnrollment(
-      body.credential ?? body.upgrade_code,
-      'upgrade'
-    )
+    const enrollment = await this.verifyEnrollment(body.credential ?? body.upgrade_code, 'upgrade')
     if (enrollment instanceof Response) return enrollment
     if (enrollment.member_id !== principal.memberId) {
       return jsonError(401, 'invalid_enrollment')
@@ -1670,28 +1475,16 @@ export class TenantDO extends DurableObject<Env> {
     if (enrollment.intended_access === null) {
       return jsonError(409, 'invalid_enrollment_state')
     }
-    if (
-      this.accessRank(principal.access) >=
-      this.accessRank(enrollment.intended_access)
-    ) {
+    if (this.accessRank(principal.access) >= this.accessRank(enrollment.intended_access)) {
       return jsonError(409, 'token_already_upgraded')
     }
-    if (
-      !validTokenAccess(
-        principal.role,
-        TokenKind.Human,
-        enrollment.intended_access
-      )
-    ) {
+    if (!validTokenAccess(principal.role, TokenKind.Human, enrollment.intended_access)) {
       return jsonError(409, 'upgrade_not_allowed')
     }
     const now = isoNow()
     try {
       this.ctx.storage.transactionSync(() => {
-        const currentPrincipal = this.requireCurrentPrincipal(
-          principal,
-          'token.self.upgrade'
-        )
+        const currentPrincipal = this.requireCurrentPrincipal(principal, 'token.self.upgrade')
         const current = this.enrollmentById(enrollment.id)
         if (!current || current.consumed_at || current.revoked_at) {
           throw new Error('enrollment_consumed')
@@ -1711,11 +1504,7 @@ export class TenantDO extends DurableObject<Env> {
           enrollment.intended_access,
           currentPrincipal.tokenId
         )
-        this.sql.exec(
-          'UPDATE enrollments SET consumed_at = ? WHERE id = ?',
-          now,
-          enrollment.id
-        )
+        this.sql.exec('UPDATE enrollments SET consumed_at = ? WHERE id = ?', now, enrollment.id)
         const seq = this.nextSeq()
         this.audit(
           seq,
@@ -1742,17 +1531,11 @@ export class TenantDO extends DurableObject<Env> {
     }
     return Response.json({
       access: enrollment.intended_access,
-      human_tokens_below: this.humanTokensBelow(
-        principal.memberId,
-        enrollment.intended_access
-      ),
+      human_tokens_below: this.humanTokensBelow(principal.memberId, enrollment.intended_access),
     })
   }
 
-  private async handleMemberCancel(
-    request: Request,
-    principal: Principal
-  ): Promise<Response> {
+  private async handleMemberCancel(request: Request, principal: Principal): Promise<Response> {
     if (!may(principal, 'member.cancel')) return jsonError(403, 'forbidden')
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
@@ -1769,10 +1552,7 @@ export class TenantDO extends DurableObject<Env> {
       )
       .toArray()[0]
     this.ctx.storage.transactionSync(() => {
-      const currentPrincipal = this.requireCurrentPrincipal(
-        principal,
-        'member.cancel'
-      )
+      const currentPrincipal = this.requireCurrentPrincipal(principal, 'member.cancel')
       this.sql.exec('DELETE FROM enrollments WHERE member_id = ?', member.id)
       this.sql.exec('DELETE FROM members WHERE id = ?', member.id)
       const seq = this.nextSeq()
@@ -1798,8 +1578,7 @@ export class TenantDO extends DurableObject<Env> {
     principal: Principal,
     status: MemberStatus.Suspended | MemberStatus.Active
   ): Promise<Response> {
-    const action =
-      status === MemberStatus.Suspended ? 'member.suspend' : 'member.reactivate'
+    const action = status === MemberStatus.Suspended ? 'member.suspend' : 'member.reactivate'
     if (!may(principal, action)) return jsonError(403, 'forbidden')
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
@@ -1832,10 +1611,7 @@ export class TenantDO extends DurableObject<Env> {
         }
         if (status === MemberStatus.Suspended) {
           revokedTokenIds = this.sql
-            .exec(
-              'SELECT id FROM tokens WHERE member_id = ? AND revoked_at IS NULL',
-              member.id
-            )
+            .exec('SELECT id FROM tokens WHERE member_id = ? AND revoked_at IS NULL', member.id)
             .toArray()
             .map((row) => row.id as string)
           this.sql.exec(
@@ -1854,10 +1630,7 @@ export class TenantDO extends DurableObject<Env> {
             now,
             member.id
           )
-          this.sql.exec(
-            'DELETE FROM project_owners WHERE member_id = ?',
-            member.id
-          )
+          this.sql.exec('DELETE FROM project_owners WHERE member_id = ?', member.id)
         } else {
           this.sql.exec(
             "UPDATE members SET status = 'active', suspended_at = NULL WHERE id = ?",
@@ -1865,17 +1638,9 @@ export class TenantDO extends DurableObject<Env> {
           )
         }
         const seq = this.nextSeq()
-        this.audit(
-          seq,
-          action,
-          currentPrincipal,
-          currentPrincipal.tokenKind,
-          'member',
-          member.id,
-          {
-            revoked_token_ids: revokedTokenIds,
-          }
-        )
+        this.audit(seq, action, currentPrincipal, currentPrincipal.tokenKind, 'member', member.id, {
+          revoked_token_ids: revokedTokenIds,
+        })
       })
     } catch (error) {
       if (error instanceof Error && error.message === 'last_active_admin') {
@@ -1887,10 +1652,7 @@ export class TenantDO extends DurableObject<Env> {
     return Response.json({ member: this.memberProfile(member.id) })
   }
 
-  private async handleMemberRole(
-    request: Request,
-    principal: Principal
-  ): Promise<Response> {
+  private async handleMemberRole(request: Request, principal: Principal): Promise<Response> {
     if (!may(principal, 'member.change_role')) {
       return jsonError(403, 'forbidden')
     }
@@ -1901,11 +1663,7 @@ export class TenantDO extends DurableObject<Env> {
     if (email === null) return jsonError(422, 'invalid_email')
     if (nextRole === null) return jsonError(422, 'invalid_role')
     const member = this.memberByEmail(email)
-    if (
-      !member ||
-      member.status === MemberStatus.Pending ||
-      member.role === null
-    ) {
+    if (!member || member.status === MemberStatus.Pending || member.role === null) {
       return jsonError(409, 'member_not_active')
     }
     const previousRole = member.role
@@ -1919,26 +1677,19 @@ export class TenantDO extends DurableObject<Env> {
     }
     const previousCeiling = roleCeiling(previousRole)
     const nextCeiling = roleCeiling(nextRole)
-    const demotion =
-      this.accessRank(nextCeiling) < this.accessRank(previousCeiling)
-    const promotion =
-      this.accessRank(nextCeiling) > this.accessRank(previousCeiling)
+    const demotion = this.accessRank(nextCeiling) < this.accessRank(previousCeiling)
+    const promotion = this.accessRank(nextCeiling) > this.accessRank(previousCeiling)
     const possibleUpgrade =
       promotion &&
       member.status === MemberStatus.Active &&
       !this.liveUpgrade(member.id) &&
       this.humanTokensBelow(member.id, nextCeiling) > 0
-    const enrollment = possibleUpgrade
-      ? await this.prepareCredential('flat_upg')
-      : null
+    const enrollment = possibleUpgrade ? await this.prepareCredential('flat_upg') : null
     const now = isoNow()
     const revokedTokenIds: string[] = []
     try {
       this.ctx.storage.transactionSync(() => {
-        const currentPrincipal = this.requireCurrentPrincipal(
-          principal,
-          'member.change_role'
-        )
+        const currentPrincipal = this.requireCurrentPrincipal(principal, 'member.change_role')
         const currentMember = this.memberById(member.id)
         if (
           !currentMember ||
@@ -1955,11 +1706,7 @@ export class TenantDO extends DurableObject<Env> {
         ) {
           throw new Error('last_active_admin')
         }
-        this.sql.exec(
-          'UPDATE members SET role = ? WHERE id = ?',
-          nextRole,
-          member.id
-        )
+        this.sql.exec('UPDATE members SET role = ? WHERE id = ?', nextRole, member.id)
         if (demotion) {
           for (const row of this.sql
             .exec(
@@ -1967,19 +1714,12 @@ export class TenantDO extends DurableObject<Env> {
               member.id
             )
             .toArray()) {
-            if (
-              this.accessRank(row.access as TokenAccess) >
-              this.accessRank(nextCeiling)
-            ) {
+            if (this.accessRank(row.access as TokenAccess) > this.accessRank(nextCeiling)) {
               revokedTokenIds.push(row.id as string)
             }
           }
           for (const id of revokedTokenIds) {
-            this.sql.exec(
-              'UPDATE tokens SET revoked_at = ? WHERE id = ?',
-              now,
-              id
-            )
+            this.sql.exec('UPDATE tokens SET revoked_at = ? WHERE id = ?', now, id)
           }
           this.sql.exec(
             `UPDATE enrollments SET revoked_at = ? WHERE member_id = ? AND kind = 'upgrade'
@@ -1992,10 +1732,7 @@ export class TenantDO extends DurableObject<Env> {
             nextCeiling
           )
           if (nextRole === Role.Viewer) {
-            this.sql.exec(
-              'DELETE FROM project_owners WHERE member_id = ?',
-              member.id
-            )
+            this.sql.exec('DELETE FROM project_owners WHERE member_id = ?', member.id)
           }
         }
         if (enrollment) {
@@ -2083,10 +1820,7 @@ export class TenantDO extends DurableObject<Env> {
     return Response.json({ members: profiles })
   }
 
-  private async handleTokenCreate(
-    request: Request,
-    principal: Principal
-  ): Promise<Response> {
+  private async handleTokenCreate(request: Request, principal: Principal): Promise<Response> {
     if (principal.tokenKind !== TokenKind.Human) {
       return jsonError(403, 'forbidden')
     }
@@ -2100,10 +1834,7 @@ export class TenantDO extends DurableObject<Env> {
     let target = this.memberById(principal.memberId)
     let issuedVia = 'self'
     if (body.for_email !== undefined) {
-      if (
-        !may(principal, 'token.other.create_agent') ||
-        kind !== TokenKind.Agent
-      ) {
+      if (!may(principal, 'token.other.create_agent') || kind !== TokenKind.Agent) {
         return jsonError(403, 'forbidden')
       }
       const email = invalidEmail(body.for_email)
@@ -2111,21 +1842,14 @@ export class TenantDO extends DurableObject<Env> {
       target = this.memberByEmail(email)
       issuedVia = 'admin_delegation'
     }
-    if (
-      !target ||
-      target.status !== MemberStatus.Active ||
-      target.role === null
-    ) {
+    if (!target || target.status !== MemberStatus.Active || target.role === null) {
       return jsonError(409, 'member_not_active')
     }
     let defaultAccess = roleCeiling(target.role)
     if (kind === TokenKind.Agent && defaultAccess === TokenAccess.Admin) {
       defaultAccess = TokenAccess.Write
     }
-    const access = enumValue<TokenAccess>(
-      body.access ?? defaultAccess,
-      TOKEN_ACCESS
-    )
+    const access = enumValue<TokenAccess>(body.access ?? defaultAccess, TOKEN_ACCESS)
     if (access === null || !validTokenAccess(target.role, kind, access)) {
       return jsonError(422, 'invalid_access')
     }
@@ -2135,8 +1859,7 @@ export class TenantDO extends DurableObject<Env> {
     ) {
       return jsonError(403, 'forbidden')
     }
-    const max =
-      kind === TokenKind.Agent ? MAX_AGENT_SECONDS : Number.MAX_SAFE_INTEGER
+    const max = kind === TokenKind.Agent ? MAX_AGENT_SECONDS : Number.MAX_SAFE_INTEGER
     const fallback = kind === TokenKind.Agent ? DEFAULT_AGENT_SECONDS : 0
     let expiresIn: number | null = null
     if (body.expires_in_seconds !== undefined || fallback > 0) {
@@ -2145,14 +1868,11 @@ export class TenantDO extends DurableObject<Env> {
     }
     const token = await this.prepareCredential('flat_pat')
     const now = isoNow()
-    const expiresAt =
-      expiresIn === null || expiresIn === 0 ? null : addSeconds(now, expiresIn)
+    const expiresAt = expiresIn === null || expiresIn === 0 ? null : addSeconds(now, expiresIn)
     try {
       this.ctx.storage.transactionSync(() => {
         const action =
-          target.id === principal.memberId
-            ? 'token.self.create'
-            : 'token.other.create_agent'
+          target.id === principal.memberId ? 'token.self.create' : 'token.other.create_agent'
         const currentPrincipal = this.requireCurrentPrincipal(principal, action)
         const currentTarget = this.memberById(target.id)
         if (
@@ -2234,10 +1954,7 @@ export class TenantDO extends DurableObject<Env> {
     return Response.json({ tokens: this.sql.exec(query, ...args).toArray() })
   }
 
-  private async handleTokenRevoke(
-    request: Request,
-    principal: Principal
-  ): Promise<Response> {
+  private async handleTokenRevoke(request: Request, principal: Principal): Promise<Response> {
     if (principal.tokenKind !== TokenKind.Human) {
       return jsonError(403, 'forbidden')
     }
@@ -2246,10 +1963,7 @@ export class TenantDO extends DurableObject<Env> {
       return jsonError(422, 'invalid_token_id')
     }
     const target = this.sql
-      .exec(
-        'SELECT id, member_id, revoked_at FROM tokens WHERE id = ?',
-        body.token_id
-      )
+      .exec('SELECT id, member_id, revoked_at FROM tokens WHERE id = ?', body.token_id)
       .toArray()[0]
     if (!target) return jsonError(404, 'token_not_found')
     const own = target.member_id === principal.memberId
@@ -2263,11 +1977,7 @@ export class TenantDO extends DurableObject<Env> {
       this.ctx.storage.transactionSync(() => {
         const action = own ? 'token.self.revoke' : 'token.other.revoke'
         const currentPrincipal = this.requireCurrentPrincipal(principal, action)
-        this.sql.exec(
-          'UPDATE tokens SET revoked_at = ? WHERE id = ?',
-          isoNow(),
-          body.token_id
-        )
+        this.sql.exec('UPDATE tokens SET revoked_at = ? WHERE id = ?', isoNow(), body.token_id)
         const seq = this.nextSeq()
         this.audit(
           seq,
@@ -2298,9 +2008,7 @@ export class TenantDO extends DurableObject<Env> {
         after
       )
       .toArray()
-      .map((row) =>
-        Object.assign({}, row, { metadata: JSON.parse(row.metadata as string) })
-      )
+      .map((row) => Object.assign({}, row, { metadata: JSON.parse(row.metadata as string) }))
     return Response.json({ events, latest_seq: this.latestSeq() })
   }
 
@@ -2385,24 +2093,16 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   private memberByEmail(email: string): MemberRow | null {
-    const row = this.sql
-      .exec('SELECT * FROM members WHERE email = ?', email)
-      .toArray()[0]
+    const row = this.sql.exec('SELECT * FROM members WHERE email = ?', email).toArray()[0]
     return row ? (row as unknown as MemberRow) : null
   }
 
   private memberById(id: string): MemberRow | null {
-    const row = this.sql
-      .exec('SELECT * FROM members WHERE id = ?', id)
-      .toArray()[0]
+    const row = this.sql.exec('SELECT * FROM members WHERE id = ?', id).toArray()[0]
     return row ? (row as unknown as MemberRow) : null
   }
 
-  private expireEnrollments(
-    now: string,
-    memberId?: string,
-    kind?: EnrollmentRow['kind']
-  ): void {
+  private expireEnrollments(now: string, memberId?: string, kind?: EnrollmentRow['kind']): void {
     let query = `UPDATE enrollments SET revoked_at = ?
                  WHERE consumed_at IS NULL AND revoked_at IS NULL AND expires_at <= ?`
     const args: unknown[] = [now, now]
@@ -2442,18 +2142,13 @@ export class TenantDO extends DurableObject<Env> {
         isoNow()
       )
       .toArray()
-      .filter(
-        (row) =>
-          this.accessRank(row.access as TokenAccess) < this.accessRank(access)
-      ).length
+      .filter((row) => this.accessRank(row.access as TokenAccess) < this.accessRank(access)).length
   }
 
   private activeAdminCount(): number {
     return Number(
       this.sql
-        .exec(
-          "SELECT COUNT(*) AS count FROM members WHERE status = 'active' AND role = 'admin'"
-        )
+        .exec("SELECT COUNT(*) AS count FROM members WHERE status = 'active' AND role = 'admin'")
         .one().count
     )
   }
@@ -2531,10 +2226,7 @@ export class TenantDO extends DurableObject<Env> {
 
   private ticketsSince(seq: number): Ticket[] {
     return this.sql
-      .exec(
-        'SELECT id, key, title, body, status, seq FROM tickets WHERE seq > ? ORDER BY seq',
-        seq
-      )
+      .exec('SELECT id, key, title, body, status, seq FROM tickets WHERE seq > ? ORDER BY seq', seq)
       .toArray()
       .map((row) => ({
         id: row.id as string,
@@ -2548,10 +2240,7 @@ export class TenantDO extends DurableObject<Env> {
 
   private tombstonesSince(seq: number): TicketTombstone[] {
     return this.sql
-      .exec(
-        'SELECT id, key, seq FROM ticket_tombstones WHERE seq > ? ORDER BY seq',
-        seq
-      )
+      .exec('SELECT id, key, seq FROM ticket_tombstones WHERE seq > ? ORDER BY seq', seq)
       .toArray()
       .map((row) => ({
         id: row.id as string,
@@ -2565,14 +2254,11 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   private meta(key: string): string {
-    return this.sql.exec('SELECT value FROM meta WHERE key = ?', key).one()
-      .value as string
+    return this.sql.exec('SELECT value FROM meta WHERE key = ?', key).one().value as string
   }
 
   private optionalMeta(key: string): string | null {
-    const row = this.sql
-      .exec('SELECT value FROM meta WHERE key = ?', key)
-      .toArray()[0]
+    const row = this.sql.exec('SELECT value FROM meta WHERE key = ?', key).toArray()[0]
     return row ? (row.value as string) : null
   }
 

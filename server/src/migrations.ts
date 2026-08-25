@@ -111,9 +111,7 @@ export function runMigrations(
   sql: SqlStorage,
   transactionSync: (closure: () => void) => void
 ): void {
-  const rawVersion = sql
-    .exec("SELECT value FROM meta WHERE key = 'schema_version'")
-    .one().value
+  const rawVersion = sql.exec("SELECT value FROM meta WHERE key = 'schema_version'").one().value
   if (typeof rawVersion !== 'string' && typeof rawVersion !== 'number') {
     throw new Error('invalid schema_version')
   }
@@ -131,10 +129,7 @@ export function runMigrations(
     const nextVersion = index + 1
     transactionSync(() => {
       sql.exec(MIGRATIONS[index])
-      sql.exec(
-        "UPDATE meta SET value = ? WHERE key = 'schema_version'",
-        String(nextVersion)
-      )
+      sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(nextVersion))
     })
   }
 }

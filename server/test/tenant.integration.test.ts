@@ -6,9 +6,7 @@ import { unstable_dev, type Unstable_DevWorker } from 'wrangler'
 const HMAC_KEY = Buffer.alloc(32, 7)
 const HMAC_SECRET = HMAC_KEY.toString('base64url')
 const SETUP_CREDENTIAL = `flat_setup_${Buffer.alloc(32, 9).toString('base64url')}`
-const SETUP_VERIFIER = createHmac('sha256', HMAC_KEY)
-  .update(SETUP_CREDENTIAL)
-  .digest('hex')
+const SETUP_VERIFIER = createHmac('sha256', HMAC_KEY).update(SETUP_CREDENTIAL).digest('hex')
 type WorkerRequestInit = NonNullable<Parameters<Unstable_DevWorker['fetch']>[1]>
 type WorkerResponse = Awaited<ReturnType<Unstable_DevWorker['fetch']>>
 
@@ -51,11 +49,7 @@ function authenticated(token: string, body?: unknown): WorkerRequestInit {
   return init
 }
 
-function githubRequest(
-  secret: string,
-  delivery: string,
-  payload: unknown
-): WorkerRequestInit {
+function githubRequest(secret: string, delivery: string, payload: unknown): WorkerRequestInit {
   const body = JSON.stringify(payload)
   const signature = createHmac('sha256', secret).update(body).digest('hex')
   return {
@@ -141,9 +135,7 @@ describe.sequential('TenantDO integration', () => {
     expect(create.response.status).toBe(200)
     expect(create.body.conflicts).toEqual([])
     const secondCheckoutSeq = create.body.latest_seq
-    const firstCreate = create.body.applied.find((item) =>
-      item.entity_id.endsWith('F2H6M')
-    )
+    const firstCreate = create.body.applied.find((item) => item.entity_id.endsWith('F2H6M'))
     expect(firstCreate).toBeDefined()
 
     const invitation = await json<{ invitation_code: string }>(
@@ -184,18 +176,14 @@ describe.sequential('TenantDO integration', () => {
             op: 'delete',
             entity: 'ticket',
             entity_id: '01JG4C5E2MZYXWVTSRQPNMKJHG',
-            base_seq: create.body.applied.find((item) =>
-              item.entity_id.endsWith('NMKJHG')
-            )?.seq,
+            base_seq: create.body.applied.find((item) => item.entity_id.endsWith('NMKJHG'))?.seq,
             set: {},
           },
         ],
       })
     )
     expect(mixed.response.status).toBe(200)
-    expect(mixed.body.applied.map((item) => item.mutation_id)).toEqual([
-      'member-update',
-    ])
+    expect(mixed.body.applied.map((item) => item.mutation_id)).toEqual(['member-update'])
     expect(mixed.body.conflicts).toEqual([
       expect.objectContaining({
         mutation_id: 'member-delete',
@@ -270,11 +258,7 @@ describe.sequential('TenantDO integration', () => {
     )
     expect(duplicate.response.status).toBe(409)
     expect(duplicate.body.error).toBe('duplicate_token_name')
-    const agentSnapshot = await json(
-      worker,
-      '/snapshot',
-      authenticated(agent.body.token)
-    )
+    const agentSnapshot = await json(worker, '/snapshot', authenticated(agent.body.token))
     expect(agentSnapshot.response.status).toBe(200)
     const revocation = await json(
       worker,
@@ -282,11 +266,7 @@ describe.sequential('TenantDO integration', () => {
       authenticated(adminToken, { token_id: agent.body.metadata.id })
     )
     expect(revocation.response.status).toBe(200)
-    const revokedSnapshot = await json(
-      worker,
-      '/snapshot',
-      authenticated(agent.body.token)
-    )
+    const revokedSnapshot = await json(worker, '/snapshot', authenticated(agent.body.token))
     expect(revokedSnapshot.response.status).toBe(401)
 
     const githubSetup = await json<{ secret: string }>(
@@ -329,33 +309,19 @@ describe.sequential('TenantDO integration', () => {
     const invalidDelivery = await json<{ error: string }>(
       worker,
       '/hooks/github',
-      githubRequest(
-        githubSetup.body.secret,
-        'delivery-invalid-body',
-        invalidBody
-      )
+      githubRequest(githubSetup.body.secret, 'delivery-invalid-body', invalidBody)
     )
     expect(invalidDelivery.response.status).toBe(400)
     expect(invalidDelivery.body.error).toBe('invalid_github_payload')
 
-    const delivery = githubRequest(
-      githubSetup.body.secret,
-      'delivery-7',
-      basePayload
-    )
-    expect(
-      (await json(worker, '/hooks/github', delivery)).response.status
-    ).toBe(200)
+    const delivery = githubRequest(githubSetup.body.secret, 'delivery-7', basePayload)
+    expect((await json(worker, '/hooks/github', delivery)).response.status).toBe(200)
     const afterMerge = await json<{
       tickets: Array<{ key: string; status: string }>
       latest_seq: number
     }>(worker, '/snapshot', authenticated(adminToken))
-    expect(
-      afterMerge.body.tickets.find((ticket) => ticket.key === 'DEMO-2')?.status
-    ).toBe('done')
-    expect(
-      (await json(worker, '/hooks/github', delivery)).response.status
-    ).toBe(200)
+    expect(afterMerge.body.tickets.find((ticket) => ticket.key === 'DEMO-2')?.status).toBe('done')
+    expect((await json(worker, '/hooks/github', delivery)).response.status).toBe(200)
     const afterReplay = await json<{ latest_seq: number }>(
       worker,
       '/snapshot',
