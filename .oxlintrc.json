@@ -21,13 +21,6 @@
   },
   "overrides": [
     {
-      "files": ["server/src/tenant.ts"],
-      "rules": {
-        "typescript/no-unnecessary-type-conversion": "off",
-        "typescript/no-unsafe-type-assertion": "off"
-      }
-    },
-    {
       "files": ["server/test/**/*.ts"],
       "rules": {
         "typescript/no-unsafe-type-assertion": "off"
