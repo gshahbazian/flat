@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
-import { Role, TokenAccess, TokenKind } from "../src/schema.gen";
+
 import { may, roleCeiling, type Principal } from "../src/policy";
+import { Role, TokenAccess, TokenKind } from "../src/schema.gen";
 import { invalidEmail, invalidTenantName, invalidTokenName } from "../src/validate";
 
 function principal(overrides: Partial<Principal> = {}): Principal {
@@ -22,19 +23,29 @@ describe("permission policy", () => {
     expect(may(principal(), "ticket.update")).toBe(true);
     expect(may(principal({ role: Role.Viewer }), "ticket.update")).toBe(false);
     expect(may(principal({ access: TokenAccess.Read }), "ticket.update")).toBe(false);
-    expect(may(principal({ role: Role.Admin, access: TokenAccess.Admin }), "member.invite")).toBe(true);
-    expect(may(principal({ role: Role.Admin, access: TokenAccess.Admin }), "integration.github.manage"))
-      .toBe(true);
+    expect(may(principal({ role: Role.Admin, access: TokenAccess.Admin }), "member.invite")).toBe(
+      true,
+    );
+    expect(
+      may(principal({ role: Role.Admin, access: TokenAccess.Admin }), "integration.github.manage"),
+    ).toBe(true);
     expect(may(principal(), "integration.github.manage")).toBe(false);
-    expect(may(principal({ role: Role.Admin, access: TokenAccess.Admin, tokenKind: TokenKind.Agent }),
-      "member.invite")).toBe(false);
+    expect(
+      may(
+        principal({ role: Role.Admin, access: TokenAccess.Admin, tokenKind: TokenKind.Agent }),
+        "member.invite",
+      ),
+    ).toBe(false);
   });
 
   test("project owners and admins may manage project metadata", () => {
     expect(may(principal(), "project.update", { ownerIds: ["member-1"] })).toBe(true);
     expect(may(principal(), "project.update", { ownerIds: [] })).toBe(false);
-    expect(may(principal({ role: Role.Admin, access: TokenAccess.Admin }), "project.update", { ownerIds: [] }))
-      .toBe(true);
+    expect(
+      may(principal({ role: Role.Admin, access: TokenAccess.Admin }), "project.update", {
+        ownerIds: [],
+      }),
+    ).toBe(true);
   });
 
   test("role ceilings match the design", () => {

@@ -93,15 +93,19 @@ export function may(
     "audit.read",
   ];
   if (adminActions.includes(action)) {
-    return principal.role === Role.Admin
-      && principal.tokenKind === TokenKind.Human
-      && principal.access === TokenAccess.Admin;
+    return (
+      principal.role === Role.Admin &&
+      principal.tokenKind === TokenKind.Human &&
+      principal.access === TokenAccess.Admin
+    );
   }
 
   if (action === "project.update" || action === "project_owner.update") {
     if (!accessAtLeast(principal.access, TokenAccess.Write)) return false;
     if (principal.role === Role.Admin) return true;
-    return principal.role === Role.Member && resource.ownerIds?.includes(principal.memberId) === true;
+    return (
+      principal.role === Role.Member && resource.ownerIds?.includes(principal.memberId) === true
+    );
   }
 
   return principal.role !== Role.Viewer && accessAtLeast(principal.access, TokenAccess.Write);

@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { unstable_dev, type Unstable_DevWorker } from "wrangler";
 
@@ -28,7 +29,7 @@ async function json<T>(
   }
   const response = await worker.fetch(`http://flat.test${path}`, { ...init, headers });
   const text = await response.text();
-  return { response, body: text.length > 0 ? JSON.parse(text) as T : null as T };
+  return { response, body: text.length > 0 ? (JSON.parse(text) as T) : (null as T) };
 }
 
 function authenticated(token: string, body?: unknown): WorkerRequestInit {
@@ -99,26 +100,30 @@ describe.sequential("TenantDO integration", () => {
       applied: Array<{ entity_id: string; seq: number }>;
       conflicts: unknown[];
       latest_seq: number;
-    }>(worker, "/sync", authenticated(adminToken, {
-      protocol_version: 1,
-      last_seq: setup.body.snapshot.latest_seq,
-      mutations: [
-        {
-          mutation_id: "create-one",
-          op: "create",
-          entity: "ticket",
-          entity_id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M",
-          set: { title: "First ticket" },
-        },
-        {
-          mutation_id: "create-two",
-          op: "create",
-          entity: "ticket",
-          entity_id: "01JG4C5E2MZYXWVTSRQPNMKJHG",
-          set: { title: "Second ticket" },
-        },
-      ],
-    }));
+    }>(
+      worker,
+      "/sync",
+      authenticated(adminToken, {
+        protocol_version: 1,
+        last_seq: setup.body.snapshot.latest_seq,
+        mutations: [
+          {
+            mutation_id: "create-one",
+            op: "create",
+            entity: "ticket",
+            entity_id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M",
+            set: { title: "First ticket" },
+          },
+          {
+            mutation_id: "create-two",
+            op: "create",
+            entity: "ticket",
+            entity_id: "01JG4C5E2MZYXWVTSRQPNMKJHG",
+            set: { title: "Second ticket" },
+          },
+        ],
+      }),
+    );
     expect(create.response.status).toBe(200);
     expect(create.body.conflicts).toEqual([]);
     const secondCheckoutSeq = create.body.latest_seq;
@@ -133,35 +138,42 @@ describe.sequential("TenantDO integration", () => {
     expect(invitation.response.status).toBe(200);
     const enrollment = await json<{ token: string }>(worker, "/enroll/invite", {
       method: "POST",
-      body: JSON.stringify({ credential: invitation.body.invitation_code, token_name: "member-cli" }),
+      body: JSON.stringify({
+        credential: invitation.body.invitation_code,
+        token_name: "member-cli",
+      }),
     });
     expect(enrollment.response.status).toBe(200);
 
     const mixed = await json<{
       applied: Array<{ mutation_id: string; seq: number }>;
       conflicts: Array<{ mutation_id: string; reason: string }>;
-    }>(worker, "/sync", authenticated(enrollment.body.token, {
-      protocol_version: 1,
-      last_seq: secondCheckoutSeq,
-      mutations: [
-        {
-          mutation_id: "member-update",
-          op: "update",
-          entity: "ticket",
-          entity_id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M",
-          base_seq: firstCreate?.seq,
-          set: { title: "Member updated" },
-        },
-        {
-          mutation_id: "member-delete",
-          op: "delete",
-          entity: "ticket",
-          entity_id: "01JG4C5E2MZYXWVTSRQPNMKJHG",
-          base_seq: create.body.applied.find((item) => item.entity_id.endsWith("NMKJHG"))?.seq,
-          set: {},
-        },
-      ],
-    }));
+    }>(
+      worker,
+      "/sync",
+      authenticated(enrollment.body.token, {
+        protocol_version: 1,
+        last_seq: secondCheckoutSeq,
+        mutations: [
+          {
+            mutation_id: "member-update",
+            op: "update",
+            entity: "ticket",
+            entity_id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M",
+            base_seq: firstCreate?.seq,
+            set: { title: "Member updated" },
+          },
+          {
+            mutation_id: "member-delete",
+            op: "delete",
+            entity: "ticket",
+            entity_id: "01JG4C5E2MZYXWVTSRQPNMKJHG",
+            base_seq: create.body.applied.find((item) => item.entity_id.endsWith("NMKJHG"))?.seq,
+            set: {},
+          },
+        ],
+      }),
+    );
     expect(mixed.response.status).toBe(200);
     expect(mixed.body.applied.map((item) => item.mutation_id)).toEqual(["member-update"]);
     expect(mixed.body.conflicts).toEqual([
@@ -170,31 +182,45 @@ describe.sequential("TenantDO integration", () => {
 
     const deleteResponse = await json<{
       tombstones: Array<{ id: string; key: string; seq: number }>;
-    }>(worker, "/sync", authenticated(adminToken, {
-      protocol_version: 1,
-      last_seq: secondCheckoutSeq,
-      mutations: [{
-        mutation_id: "admin-delete",
-        op: "delete",
-        entity: "ticket",
-        entity_id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M",
-        base_seq: mixed.body.applied[0].seq,
-        set: {},
-      }],
-    }));
+    }>(
+      worker,
+      "/sync",
+      authenticated(adminToken, {
+        protocol_version: 1,
+        last_seq: secondCheckoutSeq,
+        mutations: [
+          {
+            mutation_id: "admin-delete",
+            op: "delete",
+            entity: "ticket",
+            entity_id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M",
+            base_seq: mixed.body.applied[0].seq,
+            set: {},
+          },
+        ],
+      }),
+    );
     expect(deleteResponse.response.status).toBe(200);
     expect(deleteResponse.body.tombstones).toEqual([
       expect.objectContaining({ id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M", key: "DEMO-1" }),
     ]);
 
-    for (const lastSeq of [-1, 1.5, 0x1_0000_0000]) {
-      const malformed = await json<{ error: string }>(worker, "/sync", authenticated(adminToken, {
-        protocol_version: 1,
-        last_seq: lastSeq,
-        mutations: [],
-      }));
-      expect(malformed.response.status).toBe(400);
-      expect(malformed.body.error).toBe("malformed_sync_request");
+    const malformed = await Promise.all(
+      [-1, 1.5, 0x1_0000_0000].map((lastSeq) =>
+        json<{ error: string }>(
+          worker,
+          "/sync",
+          authenticated(adminToken, {
+            protocol_version: 1,
+            last_seq: lastSeq,
+            mutations: [],
+          }),
+        ),
+      ),
+    );
+    for (const response of malformed) {
+      expect(response.response.status).toBe(400);
+      expect(response.body.error).toBe("malformed_sync_request");
     }
 
     const agent = await json<{ token: string; metadata: { id: string } }>(
@@ -268,39 +294,46 @@ describe.sequential("TenantDO integration", () => {
 
     const delivery = githubRequest(githubSetup.body.secret, "delivery-7", basePayload);
     expect((await json(worker, "/hooks/github", delivery)).response.status).toBe(200);
-    const afterMerge = await json<{ tickets: Array<{ key: string; status: string }>; latest_seq: number }>(
+    const afterMerge = await json<{
+      tickets: Array<{ key: string; status: string }>;
+      latest_seq: number;
+    }>(worker, "/snapshot", authenticated(adminToken));
+    expect(afterMerge.body.tickets.find((ticket) => ticket.key === "DEMO-2")?.status).toBe("done");
+    expect((await json(worker, "/hooks/github", delivery)).response.status).toBe(200);
+    const afterReplay = await json<{ latest_seq: number }>(
       worker,
       "/snapshot",
       authenticated(adminToken),
     );
-    expect(afterMerge.body.tickets.find((ticket) => ticket.key === "DEMO-2")?.status).toBe("done");
-    expect((await json(worker, "/hooks/github", delivery)).response.status).toBe(200);
-    const afterReplay = await json<{ latest_seq: number }>(worker, "/snapshot", authenticated(adminToken));
     expect(afterReplay.body.latest_seq).toBe(afterMerge.body.latest_seq);
 
     const reusedMutation = await json<{
       applied: Array<{ mutation_id: string; entity_id: string }>;
       conflicts: Array<{ mutation_id: string; entity_id: string; reason: string }>;
-    }>(worker, "/sync", authenticated(adminToken, {
-      protocol_version: 1,
-      last_seq: afterReplay.body.latest_seq,
-      mutations: [
-        {
-          mutation_id: "reused-in-one-request",
-          op: "create",
-          entity: "ticket",
-          entity_id: "01JG4C8F3NZYXWVTSRQPNMKJHG",
-          set: { title: "First use of the ID" },
-        },
-        {
-          mutation_id: "reused-in-one-request",
-          op: "create",
-          entity: "ticket",
-          entity_id: "01JG4CBG4PZYXWVTSRQPNMKJHG",
-          set: { title: "Different use of the ID" },
-        },
-      ],
-    }));
+    }>(
+      worker,
+      "/sync",
+      authenticated(adminToken, {
+        protocol_version: 1,
+        last_seq: afterReplay.body.latest_seq,
+        mutations: [
+          {
+            mutation_id: "reused-in-one-request",
+            op: "create",
+            entity: "ticket",
+            entity_id: "01JG4C8F3NZYXWVTSRQPNMKJHG",
+            set: { title: "First use of the ID" },
+          },
+          {
+            mutation_id: "reused-in-one-request",
+            op: "create",
+            entity: "ticket",
+            entity_id: "01JG4CBG4PZYXWVTSRQPNMKJHG",
+            set: { title: "Different use of the ID" },
+          },
+        ],
+      }),
+    );
     expect(reusedMutation.response.status).toBe(200);
     expect(reusedMutation.body.applied).toEqual([
       expect.objectContaining({

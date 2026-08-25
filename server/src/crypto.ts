@@ -66,7 +66,10 @@ export function newUlid(now = Date.now()): string {
 async function importHmacKey(key: HmacKey) {
   const bytes = base64urlToBytes(key.secret);
   if (!bytes || bytes.length < 32) throw new Error(`invalid HMAC key ${key.id}`);
-  return crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+  return crypto.subtle.importKey("raw", bytes, { name: "HMAC", hash: "SHA-256" }, false, [
+    "sign",
+    "verify",
+  ]);
 }
 
 export function parseKeyRing(raw: string | undefined): HmacKey[] {
@@ -80,21 +83,34 @@ export function parseKeyRing(raw: string | undefined): HmacKey[] {
   if (!Array.isArray(parsed) || parsed.length === 0) {
     throw new Error("FLAT_HMAC_KEYS must be a non-empty array");
   }
-  const keys = parsed as HmacKey[];
-  for (const key of keys) {
-    if (!key || typeof key.id !== "string" || typeof key.secret !== "string") {
-      throw new Error("FLAT_HMAC_KEYS contains an invalid key");
-    }
+  const keys: HmacKey[] = [];
+  for (const item of parsed) {
+    if (!isHmacKey(item)) throw new Error("FLAT_HMAC_KEYS contains an invalid key");
+    keys.push({ id: item.id, secret: item.secret });
   }
   return keys;
 }
 
+function isHmacKey(value: unknown): value is HmacKey {
+  if (value === null || typeof value !== "object") return false;
+  if (!("id" in value) || !("secret" in value)) return false;
+  return typeof value.id === "string" && typeof value.secret === "string";
+}
+
 export async function hmacHex(key: HmacKey, value: string): Promise<string> {
-  const mac = await crypto.subtle.sign("HMAC", await importHmacKey(key), new TextEncoder().encode(value));
+  const mac = await crypto.subtle.sign(
+    "HMAC",
+    await importHmacKey(key),
+    new TextEncoder().encode(value),
+  );
   return bytesToHex(new Uint8Array(mac));
 }
 
-export async function verifyHmac(key: HmacKey, value: string, expectedHex: string): Promise<boolean> {
+export async function verifyHmac(
+  key: HmacKey,
+  value: string,
+  expectedHex: string,
+): Promise<boolean> {
   const expected = hexToBytes(expectedHex);
   const mac = expected ?? new Uint8Array(32);
   const valid = await crypto.subtle.verify(
@@ -124,7 +140,11 @@ export function parseCredential(value: unknown, prefix: string): ParsedCredentia
   return { id, secret };
 }
 
-export function createCredential(prefix: string): { id: string; secret: string; credential: string } {
+export function createCredential(prefix: string): {
+  id: string;
+  secret: string;
+  credential: string;
+} {
   const id = newUlid();
   const secret = randomSecret();
   return { id, secret, credential: `${prefix}_${id}_${secret}` };
@@ -134,8 +154,11 @@ function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value === null || typeof value !== "object") return value;
   const result: Record<string, unknown> = {};
-  for (const key of Object.keys(value).sort()) {
-    const child = (value as Record<string, unknown>)[key];
+  for (const [key, child] of Object.entries(value).toSorted(([left], [right]) => {
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
+  })) {
     if (child !== undefined) result[key] = canonicalize(child);
   }
   return result;
@@ -150,7 +173,9 @@ export async function canonicalSha256(value: unknown): Promise<string> {
   return bytesToHex(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)));
 }
 
-export function configuredVerifier(value: string | undefined): { keyId: string; verifier: string } | null {
+export function configuredVerifier(
+  value: string | undefined,
+): { keyId: string; verifier: string } | null {
   if (!value) return null;
   const separator = value.indexOf(":");
   if (separator <= 0) return null;

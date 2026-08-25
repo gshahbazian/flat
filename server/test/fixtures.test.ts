@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 
 import { describe, expect, test } from "vitest";
 
+import { canonicalJson } from "../src/crypto";
 import {
   Entity,
   MutationOp,
@@ -23,7 +24,6 @@ import {
   type TicketSet,
   type TicketTombstone,
 } from "../src/schema.gen";
-import { canonicalJson } from "../src/crypto";
 import { invalidEmail, invalidTitle } from "../src/validate";
 
 function fixture(name: string): unknown {

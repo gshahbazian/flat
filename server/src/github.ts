@@ -15,7 +15,9 @@ function stripMarkdown(value: string): string {
   for (const line of lines) {
     const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
     if (fenceMatch) {
-      const marker = fenceMatch[1][0] as "`" | "~";
+      const rawMarker = fenceMatch[1][0];
+      if (rawMarker !== "`" && rawMarker !== "~") continue;
+      const marker = rawMarker;
       const length = fenceMatch[1].length;
       if (fence === null) fence = { marker, length };
       else if (fence.marker === marker && length >= fence.length) fence = null;
@@ -72,7 +74,9 @@ export async function verifyGithubSignature(
   header: string | null,
 ): Promise<boolean> {
   if (!header || !/^sha256=[0-9a-fA-F]{64}$/.test(header)) return false;
-  const expected = Uint8Array.from(header.slice(7).match(/.{2}/g) ?? [], (pair) => Number.parseInt(pair, 16));
+  const expected = Uint8Array.from(header.slice(7).match(/.{2}/g) ?? [], (pair) =>
+    Number.parseInt(pair, 16),
+  );
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),

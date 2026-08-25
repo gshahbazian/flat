@@ -425,7 +425,8 @@ mod tests {
     use super::*;
 
     fn checkout(name: &str) -> Checkout {
-        let host_dir = std::env::temp_dir().join(format!("flat-store-{name}-{}", ulid::Ulid::new()));
+        let host_dir =
+            std::env::temp_dir().join(format!("flat-store-{name}-{}", ulid::Ulid::new()));
         Checkout {
             config: Config {
                 server: "https://flat.example".to_string(),

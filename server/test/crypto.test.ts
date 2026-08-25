@@ -1,11 +1,15 @@
 import { describe, expect, test } from "vitest";
+
 import { canonicalSha256, createCredential, parseCredential } from "../src/crypto";
 
 describe("credential format", () => {
   test("round-trips a generated token credential", () => {
     const token = createCredential("flat_pat");
     expect(token.id).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/);
-    expect(parseCredential(token.credential, "flat_pat")).toEqual({ id: token.id, secret: token.secret });
+    expect(parseCredential(token.credential, "flat_pat")).toEqual({
+      id: token.id,
+      secret: token.secret,
+    });
   });
 
   test("parses positionally even when the secret contains underscores", () => {
@@ -24,7 +28,13 @@ describe("credential format", () => {
 });
 describe("canonical mutation hashing", () => {
   test("ignores object insertion order and omitted undefined fields", async () => {
-    const first = { mutation_id: "m", op: "update", entity: "ticket", entity_id: "t", set: { status: "done" } };
+    const first = {
+      mutation_id: "m",
+      op: "update",
+      entity: "ticket",
+      entity_id: "t",
+      set: { status: "done" },
+    };
     const second = {
       set: { status: "done", body: undefined },
       entity_id: "t",

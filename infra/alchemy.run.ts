@@ -1,6 +1,7 @@
 // Cloudflare infrastructure as code. Alchemy keeps the generated credential
 // material encrypted in state, so repeat deploys retain the same HMAC key.
 import { createHmac } from "node:crypto";
+
 import alchemy from "alchemy";
 import { DurableObjectNamespace, Worker } from "alchemy/cloudflare";
 import { RandomString } from "alchemy/random";
@@ -8,7 +9,10 @@ import { RandomString } from "alchemy/random";
 const app = await alchemy("flat");
 
 const hmacMaterial = await RandomString("credential-hmac-key", { length: 32, encoding: "base64" });
-const setupMaterial = await RandomString("one-time-setup-secret", { length: 32, encoding: "base64" });
+const setupMaterial = await RandomString("one-time-setup-secret", {
+  length: 32,
+  encoding: "base64",
+});
 
 function base64url(value: string): string {
   return value.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
@@ -17,7 +21,10 @@ function base64url(value: string): string {
 const keyId = "v1";
 const hmacSecret = base64url(hmacMaterial.value.unencrypted);
 const setupCredential = `flat_setup_${base64url(setupMaterial.value.unencrypted)}`;
-const setupVerifier = createHmac("sha256", Buffer.from(hmacSecret.replace(/-/g, "+").replace(/_/g, "/"), "base64"))
+const setupVerifier = createHmac(
+  "sha256",
+  Buffer.from(hmacSecret.replace(/-/g, "+").replace(/_/g, "/"), "base64"),
+)
   .update(setupCredential)
   .digest("hex");
 

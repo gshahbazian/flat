@@ -18,9 +18,11 @@ export function invalidTitle(title: string): string | null {
 const ASCII_TRIM = /^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g;
 
 export function invalidEmail(value: unknown): string | null {
-  if (typeof value !== "string" || /[^\x00-\x7f]/.test(value)) return null;
+  // oxlint-disable-next-line eslint/no-control-regex -- Reject anything outside ASCII, including the control-character range.
+  if (typeof value !== "string" || /[^\u0000-\u007f]/.test(value)) return null;
   const email = value.replace(ASCII_TRIM, "").toLowerCase();
-  if (/[\x00-\x20\x7f]/.test(email)) return null;
+  // oxlint-disable-next-line eslint/no-control-regex -- Reject ASCII whitespace and control characters.
+  if (/[\u0000-\u0020\u007f]/.test(email)) return null;
   const parts = email.split("@");
   if (parts.length !== 2 || parts[0].length === 0) return null;
   const labels = parts[1].split(".");

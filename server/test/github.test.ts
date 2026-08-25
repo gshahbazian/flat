@@ -1,5 +1,7 @@
 import { createHmac } from "node:crypto";
+
 import { describe, expect, test } from "vitest";
+
 import { closingTicketKeys, verifyGithubSignature } from "../src/github";
 
 describe("closingTicketKeys", () => {
@@ -30,8 +32,10 @@ describe("closingTicketKeys", () => {
   });
 
   test("scans title and body separately and de-duplicates in first-seen order", () => {
-    expect(closingTicketKeys("Fixes DEMO-1", "Closes AUTH-2. Resolves DEMO-1"))
-      .toEqual(["DEMO-1", "AUTH-2"]);
+    expect(closingTicketKeys("Fixes DEMO-1", "Closes AUTH-2. Resolves DEMO-1")).toEqual([
+      "DEMO-1",
+      "AUTH-2",
+    ]);
   });
 });
 
@@ -39,7 +43,9 @@ describe("verifyGithubSignature", () => {
   test("matches GitHub's published HMAC vector", async () => {
     const body = new TextEncoder().encode("Hello, World!");
     const header = "sha256=757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17";
-    expect(await verifyGithubSignature("It's a Secret to Everybody", body.buffer, header)).toBe(true);
+    expect(await verifyGithubSignature("It's a Secret to Everybody", body.buffer, header)).toBe(
+      true,
+    );
   });
 
   test("accepts an exact HMAC over Unicode bytes", async () => {

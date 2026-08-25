@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+
 import { isRoute } from "../src/routing";
 
 describe("Worker route matching", () => {
