@@ -99,6 +99,7 @@ pub struct MemberProfile {
     pub role: Role,
     pub status: MemberStatus,
     pub created_at: String,
+    #[typeshare(serialized_as = "NullableString")]
     pub activated_at: Option<String>,
 }
 
