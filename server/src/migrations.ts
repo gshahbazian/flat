@@ -1,4 +1,4 @@
-export const LATEST_SCHEMA_VERSION = 3;
+export const LATEST_SCHEMA_VERSION = 3
 
 const MIGRATIONS = [
   `CREATE TABLE github_deliveries (
@@ -105,21 +105,31 @@ const MIGRATIONS = [
     key TEXT NOT NULL UNIQUE,
     seq INTEGER NOT NULL UNIQUE CHECK (seq >= 0)
   )`,
-] as const;
+] as const
 
-export function runMigrations(sql: SqlStorage, transactionSync: (closure: () => void) => void): void {
-  const rawVersion = sql.exec("SELECT value FROM meta WHERE key = 'schema_version'").one().value;
-  const version = Number(rawVersion);
-  if (!Number.isInteger(version) || version < 0) throw new Error(`invalid schema_version ${rawVersion}`);
+export function runMigrations(
+  sql: SqlStorage,
+  transactionSync: (closure: () => void) => void
+): void {
+  const rawVersion = sql.exec("SELECT value FROM meta WHERE key = 'schema_version'").one().value
+  if (typeof rawVersion !== 'string' && typeof rawVersion !== 'number') {
+    throw new Error('invalid schema_version')
+  }
+  const version = Number(rawVersion)
+  if (!Number.isInteger(version) || version < 0) {
+    throw new Error(`invalid schema_version ${rawVersion}`)
+  }
   if (version > LATEST_SCHEMA_VERSION) {
-    throw new Error(`database schema ${version} is newer than server schema ${LATEST_SCHEMA_VERSION}`);
+    throw new Error(
+      `database schema ${version} is newer than server schema ${LATEST_SCHEMA_VERSION}`
+    )
   }
 
   for (let index = version; index < MIGRATIONS.length; index += 1) {
-    const nextVersion = index + 1;
+    const nextVersion = index + 1
     transactionSync(() => {
-      sql.exec(MIGRATIONS[index]);
-      sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(nextVersion));
-    });
+      sql.exec(MIGRATIONS[index])
+      sql.exec("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(nextVersion))
+    })
   }
 }

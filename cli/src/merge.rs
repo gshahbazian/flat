@@ -57,7 +57,10 @@ fn pick<T: PartialEq + Clone>(base: &T, local: &T, server: &T) -> Field<T> {
     } else if server == base || server == local {
         Field::Clean(local.clone())
     } else {
-        Field::Conflict { local: local.clone(), server: server.clone() }
+        Field::Conflict {
+            local: local.clone(),
+            server: server.clone(),
+        }
     }
 }
 
@@ -154,7 +157,12 @@ mod tests {
     use flat_schema::Status;
 
     fn file(title: &str, status: Status, body: &str) -> TicketFile {
-        TicketFile { key: "DEMO-1".into(), title: title.into(), status, body: body.into() }
+        TicketFile {
+            key: "DEMO-1".into(),
+            title: title.into(),
+            status,
+            body: body.into(),
+        }
     }
 
     fn server(title: &str, status: Status, body: &str) -> Ticket {
@@ -172,12 +180,22 @@ mod tests {
     fn has_markers_matches_generated_conflicts_only() {
         // Both kinds of block flat writes are detected...
         let base = file("t", Status::Todo, "line");
-        let frontmatter = merge(&base, &file("mine", Status::Todo, "line"), &server("theirs", Status::Todo, "line"));
-        let body = merge(&base, &file("t", Status::Todo, "mine"), &server("t", Status::Todo, "theirs"));
+        let frontmatter = merge(
+            &base,
+            &file("mine", Status::Todo, "line"),
+            &server("theirs", Status::Todo, "line"),
+        );
+        let body = merge(
+            &base,
+            &file("t", Status::Todo, "mine"),
+            &server("t", Status::Todo, "theirs"),
+        );
         assert!(has_markers(&frontmatter.content));
         assert!(has_markers(&body.content));
         // ...while ordinary body text that resembles markers is not.
-        assert!(!has_markers("```\n<<<<<<< HEAD\ntheirs\n=======\nours\n>>>>>>> main\n```"));
+        assert!(!has_markers(
+            "```\n<<<<<<< HEAD\ntheirs\n=======\nours\n>>>>>>> main\n```"
+        ));
         assert!(!has_markers("a setext heading\n=======\n"));
         assert!(!has_markers("resolved: kept the local side\n"));
     }
@@ -205,13 +223,28 @@ mod tests {
 
     #[test]
     fn disjoint_body_regions_merge_cleanly() {
-        let base = file("t", Status::Todo, "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight");
-        let local = file("t", Status::Todo, "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight");
-        let server = server("t", Status::Todo, "one\ntwo\nthree\nfour\nfive\nsix\nseven\nEIGHT");
+        let base = file(
+            "t",
+            Status::Todo,
+            "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight",
+        );
+        let local = file(
+            "t",
+            Status::Todo,
+            "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\neight",
+        );
+        let server = server(
+            "t",
+            Status::Todo,
+            "one\ntwo\nthree\nfour\nfive\nsix\nseven\nEIGHT",
+        );
         let merged = merge(&base, &local, &server);
         assert!(!merged.conflicted);
         let parsed = markdown::parse(&merged.content).unwrap();
-        assert_eq!(parsed.body, "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\nEIGHT");
+        assert_eq!(
+            parsed.body,
+            "ONE\ntwo\nthree\nfour\nfive\nsix\nseven\nEIGHT"
+        );
     }
 
     #[test]
@@ -221,7 +254,10 @@ mod tests {
         let server = server("t", Status::Done, "body");
         let merged = merge(&base, &local, &server);
         assert!(!merged.conflicted);
-        assert_eq!(markdown::parse(&merged.content).unwrap().status, Status::Done);
+        assert_eq!(
+            markdown::parse(&merged.content).unwrap().status,
+            Status::Done
+        );
     }
 
     #[test]
@@ -232,7 +268,11 @@ mod tests {
         let merged = merge(&base, &local, &server);
         assert!(merged.conflicted);
         let expected = "<<<<<<< local\ntitle: mine\n=======\ntitle: theirs\n>>>>>>> server\n";
-        assert!(merged.content.contains(expected), "got:\n{}", merged.content);
+        assert!(
+            merged.content.contains(expected),
+            "got:\n{}",
+            merged.content
+        );
         // The markers make the frontmatter unparseable, so a push of the
         // unresolved file fails even without the explicit marker guard.
         assert!(markdown::parse(&merged.content).is_err());
@@ -246,7 +286,9 @@ mod tests {
         let merged = merge(&base, &local, &server);
         assert!(merged.conflicted);
         assert!(
-            merged.content.contains("<<<<<<< local\nmine\n=======\ntheirs\n>>>>>>> server"),
+            merged
+                .content
+                .contains("<<<<<<< local\nmine\n=======\ntheirs\n>>>>>>> server"),
             "got:\n{}",
             merged.content
         );

@@ -11,7 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       # Round-trips the schema fixtures through the Rust types (schema/tests)
       # and runs the CLI unit tests.
       - run: cargo test --workspace
@@ -38,6 +44,10 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Check formatting
+        run: pnpm format:check
+      - name: Lint
+        run: pnpm lint
       - run: pnpm --dir server typecheck
       # Round-trips the schema fixtures through the generated TS types.
       - run: pnpm --dir server test

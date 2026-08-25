@@ -95,11 +95,16 @@ impl Checkout {
         ensure_private_dir(&host_dir)?;
         let state_path = host_dir.join(".flat").join("state.json");
         let state = match fs::read_to_string(&state_path) {
-            Ok(raw) => serde_json::from_str(&raw).with_context(|| format!("malformed {}", state_path.display()))?,
+            Ok(raw) => serde_json::from_str(&raw)
+                .with_context(|| format!("malformed {}", state_path.display()))?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => State::default(),
             Err(e) => return Err(e).context(format!("reading {}", state_path.display())),
         };
-        Ok(Checkout { config, state, host_dir })
+        Ok(Checkout {
+            config,
+            state,
+            host_dir,
+        })
     }
 
     /// Creates an empty checkout for snapshot initialization without parsing
@@ -128,7 +133,10 @@ impl Checkout {
     }
 
     pub fn base_path(&self, key: &str) -> PathBuf {
-        self.host_dir.join(".flat").join("base").join(format!("{key}.md"))
+        self.host_dir
+            .join(".flat")
+            .join("base")
+            .join(format!("{key}.md"))
     }
 
     fn pending_dir(&self) -> PathBuf {
@@ -153,7 +161,8 @@ impl Checkout {
         for path in paths {
             let raw = fs::read_to_string(&path)?;
             mutations.push(
-                serde_json::from_str(&raw).with_context(|| format!("malformed {}", path.display()))?,
+                serde_json::from_str(&raw)
+                    .with_context(|| format!("malformed {}", path.display()))?,
             );
         }
         Ok(mutations)
@@ -198,7 +207,10 @@ impl Checkout {
     pub fn save_state(&self) -> Result<()> {
         let path = self.host_dir.join(".flat").join("state.json");
         fs::create_dir_all(path.parent().unwrap())?;
-        write_atomic(&path, &format!("{}\n", serde_json::to_string_pretty(&self.state)?))
+        write_atomic(
+            &path,
+            &format!("{}\n", serde_json::to_string_pretty(&self.state)?),
+        )
     }
 
     /// Materializes server deltas into the mirror and base copies.
@@ -283,7 +295,10 @@ impl Checkout {
         write_atomic(&base_path, base)?;
         self.state.tickets.insert(
             ticket.key.clone(),
-            TicketState { id: ticket.id.clone(), seq: ticket.seq },
+            TicketState {
+                id: ticket.id.clone(),
+                seq: ticket.seq,
+            },
         );
         Ok(())
     }
@@ -330,7 +345,9 @@ impl Checkout {
 
 pub fn host_dir_name(server: &str) -> Result<String> {
     let url = url::Url::parse(server).with_context(|| format!("invalid server url {server:?}"))?;
-    let host = url.host_str().with_context(|| format!("server url {server:?} has no host"))?;
+    let host = url
+        .host_str()
+        .with_context(|| format!("server url {server:?} has no host"))?;
     Ok(match url.port() {
         Some(port) => format!("{host}-{port}"),
         None => host.to_string(),
@@ -345,7 +362,10 @@ fn write_atomic_mode(path: &Path, content: &str, mode: Option<u32>) -> Result<()
     // Append .tmp to the whole name (DEMO-1.md.tmp): `with_extension` would
     // produce DEMO-1.tmp, and a crashed write would leave what looks like a
     // ticket file in the mirror.
-    let mut name = path.file_name().context("path has no file name")?.to_os_string();
+    let mut name = path
+        .file_name()
+        .context("path has no file name")?
+        .to_os_string();
     name.push(".tmp");
     let tmp = path.with_file_name(name);
     // Recreate the tmp so `mode` applies from the first byte written — a
@@ -405,7 +425,8 @@ mod tests {
     use super::*;
 
     fn checkout(name: &str) -> Checkout {
-        let host_dir = std::env::temp_dir().join(format!("flat-store-{name}-{}", ulid::Ulid::new()));
+        let host_dir =
+            std::env::temp_dir().join(format!("flat-store-{name}-{}", ulid::Ulid::new()));
         Checkout {
             config: Config {
                 server: "https://flat.example".to_string(),
