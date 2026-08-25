@@ -1,9 +1,13 @@
-// Worker entry: bearer auth, then forward API routes to the single tenant DO.
+// Worker entry. Credential verification and authorization happen in the DO,
+// which is the final trust boundary for every transport.
 export { TenantDO } from "./tenant";
+import { isRoute } from "./routing";
 
 export interface Env {
   TENANT: DurableObjectNamespace;
-  FLAT_TOKEN: string;
+  FLAT_HMAC_KEYS: string;
+  FLAT_SETUP_VERIFIER?: string;
+  FLAT_OPERATOR_RECOVERY_VERIFIER?: string;
 }
 
 function error(status: number, message: string): Response {
@@ -12,23 +16,12 @@ function error(status: number, message: string): Response {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (!env.FLAT_TOKEN) {
-      return error(500, "server is missing the FLAT_TOKEN secret");
-    }
-    const auth = request.headers.get("Authorization");
-    if (auth !== `Bearer ${env.FLAT_TOKEN}`) {
-      return error(401, "missing or invalid bearer token");
-    }
-
     const { pathname } = new URL(request.url);
-    const isSync = request.method === "POST" && pathname === "/sync";
-    const isSnapshot = request.method === "GET" && pathname === "/snapshot";
-    if (!isSync && !isSnapshot) {
+    if (!isRoute(request.method, pathname)) {
       return error(404, `no route for ${request.method} ${pathname}`);
     }
 
-    // Single tenant: one deployment = one DO instance = one ordered log.
     const stub = env.TENANT.get(env.TENANT.idFromName("tenant"));
-    return stub.fetch(request);
+    return stub.fetch(request.clone());
   },
 };

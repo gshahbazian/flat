@@ -7,17 +7,22 @@ import { describe, expect, test } from "vitest";
 import {
   Entity,
   MutationOp,
+  MemberStatus,
+  Role,
   Status,
   type AppliedMutation,
   type Mutation,
   type MutationConflict,
+  type MemberProfile,
   type Snapshot,
   type SyncRequest,
   type SyncResponse,
   type Ticket,
   type TicketSet,
+  type TicketTombstone,
 } from "../src/schema.gen";
-import { invalidTitle } from "../src/validate";
+import { canonicalJson } from "../src/crypto";
+import { invalidEmail, invalidTitle } from "../src/validate";
 
 function fixture(name: string): unknown {
   return JSON.parse(readFileSync(new URL(`../../schema/fixtures/${name}.json`, import.meta.url), "utf8"));
@@ -58,6 +63,11 @@ function ticket(v: unknown): Ticket {
     status: oneOf(raw.status, Object.values(Status)),
     seq: num(raw.seq),
   };
+}
+
+function tombstone(v: unknown): TicketTombstone {
+  const raw = obj(v, ["id", "key", "seq"]);
+  return { id: str(raw.id), key: str(raw.key), seq: num(raw.seq) };
 }
 
 function ticketSet(v: unknown): TicketSet {
@@ -110,24 +120,40 @@ function mutationConflict(v: unknown): MutationConflict {
   };
 }
 
+function member(v: unknown): MemberProfile {
+  const raw = obj(v, ["id", "email", "role", "status", "created_at", "activated_at"]);
+  return {
+    id: str(raw.id),
+    email: str(raw.email),
+    role: oneOf(raw.role, Object.values(Role)),
+    status: oneOf(raw.status, Object.values(MemberStatus)),
+    created_at: str(raw.created_at),
+    activated_at: raw.activated_at === null ? null : str(raw.activated_at),
+  };
+}
+
 function syncResponse(v: unknown): SyncResponse {
-  const raw = obj(v, ["applied", "conflicts", "deltas", "latest_seq"]);
+  const raw = obj(v, ["applied", "conflicts", "deltas", "tombstones", "members", "latest_seq"]);
   expect(raw.applied).toBeInstanceOf(Array);
   expect(raw.conflicts).toBeInstanceOf(Array);
   expect(raw.deltas).toBeInstanceOf(Array);
+  expect(raw.tombstones).toBeInstanceOf(Array);
   return {
     applied: (raw.applied as unknown[]).map(appliedMutation),
     conflicts: (raw.conflicts as unknown[]).map(mutationConflict),
     deltas: (raw.deltas as unknown[]).map(ticket),
+    tombstones: (raw.tombstones as unknown[]).map(tombstone),
+    members: (raw.members as unknown[]).map(member),
     latest_seq: num(raw.latest_seq),
   };
 }
 
 function snapshot(v: unknown): Snapshot {
-  const raw = obj(v, ["tickets", "latest_seq"]);
+  const raw = obj(v, ["tickets", "members", "latest_seq"]);
   expect(raw.tickets).toBeInstanceOf(Array);
   return {
     tickets: (raw.tickets as unknown[]).map(ticket),
+    members: (raw.members as unknown[]).map(member),
     latest_seq: num(raw.latest_seq),
   };
 }
@@ -152,6 +178,11 @@ describe("schema fixtures round-trip through the generated types", () => {
   test("snapshot", () => {
     expect(snapshot(fixture("snapshot"))).toEqual(fixture("snapshot"));
   });
+
+  test("canonical mutation encoding", () => {
+    const value = fixture("canonical_mutation") as { mutation: Mutation; canonical_json: string };
+    expect(canonicalJson(value.mutation)).toBe(value.canonical_json);
+  });
 });
 
 // The Rust twin (flat_schema::validate_title) runs this same fixture in
@@ -169,5 +200,20 @@ describe("title rule matches the Rust rule", () => {
     for (const title of titles.invalid) {
       expect(invalidTitle(title), JSON.stringify(title)).not.toBeNull();
     }
+  });
+});
+
+describe("email rule matches the Rust rule", () => {
+  const emails = fixture("emails") as {
+    valid: Array<{ input: string; normalized: string }>;
+    invalid: string[];
+  };
+
+  test("valid emails normalize", () => {
+    for (const email of emails.valid) expect(invalidEmail(email.input)).toBe(email.normalized);
+  });
+
+  test("invalid emails reject", () => {
+    for (const email of emails.invalid) expect(invalidEmail(email)).toBeNull();
   });
 });

@@ -11,9 +11,32 @@ export interface AppliedMutation {
 	seq: number;
 }
 
+export enum Role {
+	Admin = "admin",
+	Member = "member",
+	Viewer = "viewer",
+}
+
+export enum MemberStatus {
+	Pending = "pending",
+	Active = "active",
+	Suspended = "suspended",
+}
+
+/** The non-sensitive member profile included in normal sync data. */
+export interface MemberProfile {
+	id: string;
+	email: string;
+	role: Role;
+	status: MemberStatus;
+	created_at: string;
+	activated_at: string | null;
+}
+
 export enum MutationOp {
 	Create = "create",
 	Update = "update",
+	Delete = "delete",
 }
 
 export enum Entity {
@@ -43,8 +66,9 @@ export interface TicketSet {
  */
 export interface Mutation {
 	/**
-	 * Client-generated ULID; the idempotency key. Replaying a mutation_id
-	 * returns the original result instead of double-applying.
+	 * Opaque unique idempotency key. CLI-generated values are ULIDs, while
+	 * trusted integrations may use a namespaced string. The server never
+	 * parses or orders mutations by this value.
 	 */
 	mutation_id: string;
 	op: MutationOp;
@@ -84,6 +108,7 @@ export interface Ticket {
 /** Bootstrap payload from `GET /snapshot`. */
 export interface Snapshot {
 	tickets: Ticket[];
+	members?: MemberProfile[];
 	/** The seq watermark this snapshot represents. */
 	latest_seq: number;
 }
@@ -95,11 +120,37 @@ export interface SyncRequest {
 	mutations: Mutation[];
 }
 
+/** A server deletion that removes the corresponding local mirror state. */
+export interface TicketTombstone {
+	id: string;
+	key: string;
+	/** Seq assigned to the delete mutation. */
+	seq: number;
+}
+
 export interface SyncResponse {
 	applied: AppliedMutation[];
 	conflicts: MutationConflict[];
 	/** Full rows for every ticket changed since the request's `last_seq`. */
 	deltas: Ticket[];
+	/** Tickets deleted since `last_seq`. */
+	tombstones?: TicketTombstone[];
+	/**
+	 * Current safe profiles. Administrative sequence gaps may occur without
+	 * exposing their private records.
+	 */
+	members?: MemberProfile[];
 	latest_seq: number;
+}
+
+export enum TokenAccess {
+	Read = "read",
+	Write = "write",
+	Admin = "admin",
+}
+
+export enum TokenKind {
+	Human = "human",
+	Agent = "agent",
 }
 

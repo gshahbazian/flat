@@ -9,12 +9,16 @@ mod store;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::{self, Write};
+use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use flat_schema::{
     Entity, Mutation, MutationOp, SyncRequest, SyncResponse, Ticket, TicketSet, PROTOCOL_VERSION,
 };
+use serde::Deserialize;
+use serde_json::{json, Value};
 use ulid::Ulid;
 
 use api::Client;
@@ -31,12 +35,23 @@ struct Cli {
 enum Command {
     /// Connect to a server and take a first snapshot.
     Init {
-        /// Server URL, e.g. http://localhost:8787
-        #[arg(long)]
+        /// Server URL, e.g. http://localhost:8787.
         server: String,
-        /// Bearer token for the server.
+        #[arg(long, group = "enrollment")]
+        setup: bool,
+        #[arg(long, group = "enrollment")]
+        invite: bool,
+        #[arg(long, group = "enrollment")]
+        recover: bool,
+        #[arg(long, group = "enrollment")]
+        token: bool,
+        /// Name for the human token issued to this installation.
         #[arg(long)]
-        token: String,
+        name: Option<String>,
+        #[arg(long)]
+        email: Option<String>,
+        #[arg(long)]
+        tenant_name: Option<String>,
     },
     /// Create a ticket on the server and materialize its file.
     New { title: String },
@@ -52,6 +67,159 @@ enum Command {
     Push,
     /// Print the mirror location.
     Path,
+    /// Print or rotate GitHub webhook setup.
+    Github {
+        #[arg(long)]
+        rotate: bool,
+    },
+    /// Tenant member administration.
+    Member {
+        #[command(subcommand)]
+        command: MemberCommand,
+    },
+    /// Token administration.
+    Token {
+        #[command(subcommand)]
+        command: TokenCommand,
+    },
+    /// Audit log access.
+    Audit {
+        #[command(subcommand)]
+        command: AuditCommand,
+    },
+    /// Delete a ticket (admin human token required).
+    Delete { key: String },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum RoleArg {
+    Admin,
+    Member,
+    Viewer,
+}
+
+impl RoleArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            RoleArg::Admin => "admin",
+            RoleArg::Member => "member",
+            RoleArg::Viewer => "viewer",
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum MemberCommand {
+    Ls {
+        #[arg(long, conflicts_with = "pending")]
+        all: bool,
+        #[arg(long)]
+        pending: bool,
+    },
+    Invite {
+        #[arg(required_unless_present = "file")]
+        email: Option<String>,
+        #[arg(long, value_enum, default_value = "member")]
+        role: RoleArg,
+        #[arg(long)]
+        expires: Option<String>,
+        #[arg(long, conflicts_with = "email", requires = "out")]
+        file: Option<PathBuf>,
+        #[arg(long, requires = "file")]
+        out: Option<PathBuf>,
+    },
+    Cancel {
+        email: String,
+    },
+    Recover {
+        email: String,
+    },
+    Upgrade {
+        email: String,
+        #[arg(long)]
+        replace: bool,
+    },
+    Suspend {
+        email: String,
+    },
+    Reactivate {
+        email: String,
+    },
+    Role {
+        email: String,
+        #[arg(value_enum)]
+        role: RoleArg,
+    },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum TokenKindArg {
+    Human,
+    Agent,
+}
+
+impl TokenKindArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            TokenKindArg::Human => "human",
+            TokenKindArg::Agent => "agent",
+        }
+    }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum AccessArg {
+    Read,
+    Write,
+    Admin,
+}
+
+impl AccessArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            AccessArg::Read => "read",
+            AccessArg::Write => "write",
+            AccessArg::Admin => "admin",
+        }
+    }
+}
+
+#[derive(Subcommand)]
+enum TokenCommand {
+    Create {
+        #[arg(long)]
+        name: String,
+        #[arg(long, value_enum, default_value = "agent")]
+        kind: TokenKindArg,
+        #[arg(long, value_enum)]
+        access: Option<AccessArg>,
+        #[arg(long = "for")]
+        for_email: Option<String>,
+        #[arg(long)]
+        expires: Option<String>,
+    },
+    Ls {
+        #[arg(long)]
+        all: bool,
+    },
+    Revoke {
+        token_id: String,
+    },
+    Upgrade,
+}
+
+#[derive(Subcommand)]
+enum AuditCommand {
+    Ls {
+        #[arg(long, default_value_t = 0)]
+        after: u32,
+    },
+}
+
+#[derive(Deserialize)]
+struct EnrollmentResponse {
+    token: String,
+    snapshot: flat_schema::Snapshot,
 }
 
 fn main() {
@@ -64,24 +232,70 @@ fn main() {
 fn run() -> Result<()> {
     let root = store::flat_root()?;
     match Cli::parse().command {
-        Command::Init { server, token } => {
-            // Talk to the server before touching anything on disk, so a bad
-            // URL or token can't brick an existing checkout.
-            let snapshot = Client::new(&server, &token).snapshot()?;
-            store::save_config(&root, &Config { server, token })?;
-            let mut checkout = Checkout::open(&root)?;
-            // The snapshot is authoritative: reconcile, don't layer. After
-            // reset() nothing is dirty, so no delta can be skipped.
-            checkout.reset()?;
-            checkout.apply_deltas(&snapshot.tickets, &HashSet::new(), &HashMap::new())?;
-            checkout.state.last_seq = snapshot.latest_seq;
-            checkout.save_state()?;
-            println!(
-                "initialized {} ({} tickets, seq {})",
-                checkout.mirror_dir().display(),
-                snapshot.tickets.len(),
-                snapshot.latest_seq
-            );
+        Command::Init {
+            server,
+            setup,
+            invite,
+            recover,
+            token,
+            name,
+            email,
+            tenant_name,
+        } => {
+            if !setup && !invite && !recover && !token {
+                bail!("choose one enrollment mode: --setup, --invite, --recover, or --token");
+            }
+            store::preflight_init(&root, &server)?;
+            let token_name = if setup || invite || recover {
+                new_token_name(name)?
+            } else {
+                String::new()
+            };
+            let (bearer, snapshot) = if setup {
+                let credential = credential("FLAT_SETUP_CODE", "Setup code")?;
+                let email = required_value(email, "Admin email")?;
+                let tenant_name = required_value(tenant_name, "Tenant name")?;
+                let response: EnrollmentResponse = Client::post_public(
+                    &server,
+                    "/setup",
+                    &json!({
+                        "setup_credential": credential,
+                        "email": email,
+                        "tenant_name": tenant_name,
+                        "token_name": token_name,
+                    }),
+                )?;
+                (response.token, response.snapshot)
+            } else if invite || recover {
+                let environment = if invite {
+                    "FLAT_INVITATION_CODE"
+                } else {
+                    "FLAT_RECOVERY_CODE"
+                };
+                let label = if invite {
+                    "Invitation code"
+                } else {
+                    "Recovery code"
+                };
+                let path = if invite {
+                    "/enroll/invite"
+                } else {
+                    "/enroll/recover"
+                };
+                let response: EnrollmentResponse = Client::post_public(
+                    &server,
+                    path,
+                    &json!({ "credential": credential(environment, label)?, "token_name": token_name }),
+                )?;
+                (response.token, response.snapshot)
+            } else if token {
+                let bearer = credential("FLAT_TOKEN", "API token")?;
+                let snapshot = Client::new(&server, &bearer).snapshot()?;
+                (bearer, snapshot)
+            } else {
+                unreachable!("enrollment mode validated before preflight")
+            };
+            initialize_checkout(&root, server, bearer, snapshot)?;
         }
         Command::New { title } => {
             let title = title.trim().to_string();
@@ -99,12 +313,20 @@ fn run() -> Result<()> {
                 entity: Entity::Ticket,
                 entity_id: Ulid::new().to_string(),
                 base_seq: None,
-                set: TicketSet { title: Some(title), status: None, body: None },
+                set: TicketSet {
+                    title: Some(title),
+                    status: None,
+                    body: None,
+                },
             };
             let mutation_id = mutation.mutation_id.clone();
             checkout.write_pending(&mutation)?;
             let response = send(&mut checkout, vec![])?;
-            if let Some(conflict) = response.conflicts.iter().find(|c| c.mutation_id == mutation_id) {
+            if let Some(conflict) = response
+                .conflicts
+                .iter()
+                .find(|c| c.mutation_id == mutation_id)
+            {
                 bail!("create rejected: {}", conflict.reason);
             }
             let created = response
@@ -113,13 +335,19 @@ fn run() -> Result<()> {
                 .find(|a| a.mutation_id == mutation_id)
                 .context("server returned no result")?
                 .clone();
-            let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
+            let skipped =
+                checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
+            checkout.apply_tombstones(&response.tombstones)?;
             report_kept(&checkout, &skipped);
             if skipped.is_empty() {
                 checkout.state.last_seq = response.latest_seq;
             }
             checkout.save_state()?;
-            println!("{}  {}", created.key, checkout.mirror_path(&created.key).display());
+            println!(
+                "{}  {}",
+                created.key,
+                checkout.mirror_path(&created.key).display()
+            );
         }
         Command::Sync { merge } => {
             let mut checkout = Checkout::open(&root)?;
@@ -131,7 +359,9 @@ fn run() -> Result<()> {
             for conflict in &response.conflicts {
                 eprintln!("pending mutation rejected: {}", conflict.reason);
             }
-            let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
+            let skipped =
+                checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
+            checkout.apply_tombstones(&response.tombstones)?;
             let unresolved = if merge {
                 merge_skipped(&mut checkout, &skipped)?
             } else {
@@ -139,7 +369,10 @@ fn run() -> Result<()> {
                 skipped.len()
             };
             for key in checkout.restore_missing()? {
-                println!("restored {} (was deleted locally)", checkout.mirror_path(&key).display());
+                println!(
+                    "restored {} (was deleted locally)",
+                    checkout.mirror_path(&key).display()
+                );
             }
             // Withheld deltas must come back on the next sync: last_seq only
             // advances once every delta has landed in the mirror. A merge
@@ -163,9 +396,17 @@ fn run() -> Result<()> {
                 for path in &marked {
                     eprintln!("unresolved conflict markers in {}", path.display());
                 }
-                bail!("{} file(s) have conflict markers to resolve; edit them away, then `flat push`", marked.len());
+                bail!(
+                    "{} file(s) have conflict markers to resolve; edit them away, then `flat push`",
+                    marked.len()
+                );
             }
-            println!("synced {} tickets (seq {})", response.deltas.len(), response.latest_seq);
+            println!(
+                "synced {} changes ({} deleted, seq {})",
+                response.deltas.len() + response.tombstones.len(),
+                response.tombstones.len(),
+                response.latest_seq
+            );
         }
         Command::Push => {
             push(&mut Checkout::open(&root)?)?;
@@ -173,12 +414,417 @@ fn run() -> Result<()> {
         Command::Path => {
             println!("{}", Checkout::open(&root)?.host_dir().display());
         }
+        Command::Github { rotate } => {
+            let checkout = Checkout::open(&root)?;
+            if rotate {
+                eprintln!("warning: rotating invalidates the secret configured in every existing GitHub webhook");
+            }
+            let path = if rotate {
+                "/hooks/github/setup?rotate=1"
+            } else {
+                "/hooks/github/setup"
+            };
+            let response: Value = client(&checkout).post(path, &json!({}))?;
+            let secret = response
+                .get("secret")
+                .and_then(Value::as_str)
+                .context("server returned no webhook secret")?;
+            println!(
+                "Payload URL:  {}/hooks/github",
+                checkout.config.server.trim_end_matches('/')
+            );
+            println!("Content type: application/json");
+            println!("Secret:       {secret}");
+            println!("Events:       Pull requests");
+            println!("\nGitHub -> repository or organization Settings -> Webhooks -> Add webhook");
+            if checkout.config.server.starts_with("http://localhost")
+                || checkout.config.server.starts_with("http://127.0.0.1")
+            {
+                eprintln!("warning: GitHub cannot deliver to a localhost URL; use this output for fixture tests or configure a separate tunnel");
+            }
+        }
+        Command::Member { command } => run_member(&Checkout::open(&root)?, command)?,
+        Command::Token { command } => run_token(&Checkout::open(&root)?, command)?,
+        Command::Audit { command } => run_audit(&Checkout::open(&root)?, command)?,
+        Command::Delete { key } => delete_ticket(&mut Checkout::open(&root)?, &key)?,
     }
     Ok(())
 }
 
 fn client(checkout: &Checkout) -> Client {
     Client::new(&checkout.config.server, &checkout.config.token)
+}
+
+fn initialize_checkout(
+    root: &std::path::Path,
+    server: String,
+    token: String,
+    snapshot: flat_schema::Snapshot,
+) -> Result<()> {
+    let config = Config { server, token };
+    // Persist the only copy of a newly issued bearer token before rebuilding
+    // the mirror. A failed rebuild can then be retried without re-enrollment.
+    store::save_config(root, &config)?;
+    let mut checkout = Checkout::initialize(root, config)?;
+    checkout.reset()?;
+    checkout.apply_deltas(&snapshot.tickets, &HashSet::new(), &HashMap::new())?;
+    checkout.state.last_seq = snapshot.latest_seq;
+    checkout.save_state()?;
+    println!(
+        "initialized {} ({} tickets, seq {})",
+        checkout.mirror_dir().display(),
+        snapshot.tickets.len(),
+        snapshot.latest_seq
+    );
+    Ok(())
+}
+
+fn default_token_name() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "flat-cli".to_string())
+}
+
+fn new_token_name(explicit: Option<String>) -> Result<String> {
+    if let Some(name) = explicit {
+        let name = name.trim().to_string();
+        flat_schema::validate_token_name(&name).map_err(anyhow::Error::msg)?;
+        return Ok(name);
+    }
+
+    let hostname = default_token_name();
+    let name = if flat_schema::validate_token_name(&hostname).is_ok() {
+        prompt_default("CLI name", &hostname)?
+    } else {
+        eprintln!("local hostname {hostname:?} is not a valid CLI name");
+        prompt("CLI name")?
+    };
+    flat_schema::validate_token_name(&name).map_err(anyhow::Error::msg)?;
+    Ok(name)
+}
+
+fn prompt(label: &str) -> Result<String> {
+    print!("{label}: ");
+    io::stdout().flush()?;
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        bail!("{label} is required");
+    }
+    Ok(value)
+}
+
+fn prompt_default(label: &str, default: &str) -> Result<String> {
+    print!("{label} [{default}]: ");
+    io::stdout().flush()?;
+    let mut value = String::new();
+    io::stdin().read_line(&mut value)?;
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(default.to_string());
+    }
+    Ok(value.to_string())
+}
+
+fn credential(environment: &str, label: &str) -> Result<String> {
+    match std::env::var(environment) {
+        Ok(value) if !value.is_empty() => Ok(value),
+        _ => {
+            let value = rpassword::prompt_password(format!("{label}: "))?;
+            let value = value.trim().to_string();
+            if value.is_empty() {
+                bail!("{label} is required");
+            }
+            Ok(value)
+        }
+    }
+}
+
+fn required_value(value: Option<String>, label: &str) -> Result<String> {
+    match value {
+        Some(value) if !value.trim().is_empty() => Ok(value),
+        _ => prompt(label),
+    }
+}
+
+fn duration_seconds(value: &str) -> Result<u64> {
+    let split = value
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(value.len());
+    let amount: u64 = value[..split]
+        .parse()
+        .with_context(|| format!("invalid duration {value:?}"))?;
+    let multiplier = match &value[split..] {
+        "s" => 1,
+        "m" => 60,
+        "h" => 60 * 60,
+        "d" => 24 * 60 * 60,
+        _ => bail!("invalid duration {value:?}; use s, m, h, or d"),
+    };
+    amount
+        .checked_mul(multiplier)
+        .context("duration is too large")
+}
+
+fn print_json(value: &Value) -> Result<()> {
+    if value.is_null() {
+        return Ok(());
+    }
+    println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+fn bulk_invite(
+    api: &Client,
+    input: &std::path::Path,
+    output: &std::path::Path,
+    expires: Option<u64>,
+) -> Result<()> {
+    if output == std::path::Path::new("-") {
+        bail!("--out - is not allowed; invitation secrets must be written to a private file");
+    }
+    let raw = fs::read_to_string(input).with_context(|| format!("reading {}", input.display()))?;
+    let mut lines = raw.lines();
+    if lines.next().map(str::trim) != Some("email,role") {
+        bail!("{} must start with the header email,role", input.display());
+    }
+    let mut members = Vec::new();
+    for (index, line) in lines.enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() != 2 {
+            bail!("{}:{} must contain email,role", input.display(), index + 2);
+        }
+        let role = fields[1].trim();
+        if !matches!(role, "admin" | "member" | "viewer") {
+            bail!(
+                "{}:{} has invalid role {role:?}",
+                input.display(),
+                index + 2
+            );
+        }
+        members.push(json!({ "email": fields[0].trim(), "role": role }));
+    }
+    if members.is_empty() {
+        bail!("{} contains no invitations", input.display());
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut output_file = options
+        .open(output)
+        .with_context(|| format!("creating {}", output.display()))?;
+    let mut body = json!({ "members": members });
+    if let Some(expires) = expires {
+        body["expires_in_seconds"] = json!(expires);
+    }
+    let response: Value = match api.post("/members/invite", &body) {
+        Ok(response) => response,
+        Err(error) => {
+            drop(output_file);
+            let _ = fs::remove_file(output);
+            return Err(error);
+        }
+    };
+    let invitations = response
+        .get("invitations")
+        .and_then(Value::as_array)
+        .context("server returned no invitations")?;
+    writeln!(output_file, "email,role,expires_at,invitation_code")?;
+    for invitation in invitations {
+        let field = |name: &str| {
+            invitation
+                .get(name)
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+        };
+        writeln!(
+            output_file,
+            "{},{},{},{}",
+            csv_field(field("email")),
+            csv_field(field("role")),
+            csv_field(field("expires_at")),
+            csv_field(field("invitation_code")),
+        )?;
+    }
+    output_file.flush()?;
+    println!(
+        "wrote {} invitation(s) to {}",
+        invitations.len(),
+        output.display()
+    );
+    Ok(())
+}
+
+fn csv_field(value: &str) -> String {
+    if !value.contains([',', '"', '\n', '\r']) {
+        return value.to_string();
+    }
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn run_member(checkout: &Checkout, command: MemberCommand) -> Result<()> {
+    let api = client(checkout);
+    let response: Value = match command {
+        MemberCommand::Ls { all, pending } => {
+            let query = if all {
+                "?all=1"
+            } else if pending {
+                "?pending=1"
+            } else {
+                ""
+            };
+            api.get(&format!("/members{query}"))?
+        }
+        MemberCommand::Invite {
+            email,
+            role,
+            expires,
+            file,
+            out,
+        } => {
+            let expires = expires.as_deref().map(duration_seconds).transpose()?;
+            if let Some(file) = file {
+                return bulk_invite(
+                    &api,
+                    &file,
+                    &out.context("--out is required with --file")?,
+                    expires,
+                );
+            }
+            let mut body = json!({
+                "email": email.context("EMAIL is required")?,
+                "role": role.as_str(),
+            });
+            if let Some(expires) = expires {
+                body["expires_in_seconds"] = json!(expires);
+            }
+            api.post("/members/invite", &body)?
+        }
+        MemberCommand::Cancel { email } => {
+            api.post("/members/cancel", &json!({ "email": email }))?
+        }
+        MemberCommand::Recover { email } => {
+            api.post("/members/recover", &json!({ "email": email }))?
+        }
+        MemberCommand::Upgrade { email, replace } => api.post(
+            "/members/upgrade",
+            &json!({ "email": email, "replace": replace }),
+        )?,
+        MemberCommand::Suspend { email } => {
+            api.post("/members/suspend", &json!({ "email": email }))?
+        }
+        MemberCommand::Reactivate { email } => {
+            api.post("/members/reactivate", &json!({ "email": email }))?
+        }
+        MemberCommand::Role { email, role } => api.post(
+            "/members/role",
+            &json!({ "email": email, "role": role.as_str() }),
+        )?,
+    };
+    print_json(&response)
+}
+
+fn run_token(checkout: &Checkout, command: TokenCommand) -> Result<()> {
+    let api = client(checkout);
+    let response: Value = match command {
+        TokenCommand::Create {
+            name,
+            kind,
+            access,
+            for_email,
+            expires,
+        } => {
+            let expires = expires.as_deref().map(duration_seconds).transpose()?;
+            let mut body = json!({
+                "name": name,
+                "kind": kind.as_str(),
+            });
+            if let Some(access) = access {
+                body["access"] = json!(access.as_str());
+            }
+            if let Some(for_email) = for_email {
+                body["for_email"] = json!(for_email);
+            }
+            if let Some(expires) = expires {
+                body["expires_in_seconds"] = json!(expires);
+            }
+            api.post("/tokens", &body)?
+        }
+        TokenCommand::Ls { all } => {
+            let query = if all { "?all=1" } else { "" };
+            api.get(&format!("/tokens{query}"))?
+        }
+        TokenCommand::Revoke { token_id } => {
+            api.post("/tokens/revoke", &json!({ "token_id": token_id }))?
+        }
+        TokenCommand::Upgrade => {
+            let code = credential("FLAT_UPGRADE_CODE", "Upgrade code")?;
+            api.post("/tokens/upgrade", &json!({ "credential": code }))?
+        }
+    };
+    print_json(&response)
+}
+
+fn run_audit(checkout: &Checkout, command: AuditCommand) -> Result<()> {
+    let response: Value = match command {
+        AuditCommand::Ls { after } => client(checkout).get(&format!("/audit?after={after}"))?,
+    };
+    print_json(&response)
+}
+
+fn delete_ticket(checkout: &mut Checkout, key: &str) -> Result<()> {
+    let state = checkout
+        .state
+        .tickets
+        .get(key)
+        .with_context(|| format!("unknown local ticket {key}"))?
+        .clone();
+    let mutation = Mutation {
+        mutation_id: Ulid::new().to_string(),
+        op: MutationOp::Delete,
+        entity: Entity::Ticket,
+        entity_id: state.id,
+        base_seq: Some(state.seq),
+        set: TicketSet::default(),
+    };
+    let mutation_id = mutation.mutation_id.clone();
+    let response = send(checkout, vec![mutation])?;
+    if let Some(conflict) = response
+        .conflicts
+        .iter()
+        .find(|conflict| conflict.mutation_id == mutation_id)
+    {
+        bail!("delete rejected: {}", conflict.reason);
+    }
+    response
+        .applied
+        .iter()
+        .find(|applied| applied.mutation_id == mutation_id)
+        .context("server returned no result")?;
+    apply_delete_changes(checkout, &response)?;
+    println!("deleted {key}");
+    Ok(())
+}
+
+fn apply_delete_changes(checkout: &mut Checkout, response: &SyncResponse) -> Result<Vec<Ticket>> {
+    let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
+    checkout.apply_tombstones(&response.tombstones)?;
+    report_kept(checkout, &skipped);
+    if skipped.is_empty() {
+        checkout.state.last_seq = response.latest_seq;
+    }
+    checkout.save_state()?;
+    Ok(skipped)
 }
 
 /// Sends mutations, with any journaled pending mutations replayed first
@@ -228,7 +874,10 @@ fn push(checkout: &mut Checkout) -> Result<()> {
         let ticket_state = match checkout.state.tickets.get(&stem) {
             Some(s) => s.clone(),
             None => {
-                eprintln!("warning: {} is not a synced ticket (use `flat new`); skipped", path.display());
+                eprintln!(
+                    "warning: {} is not a synced ticket (use `flat new`); skipped",
+                    path.display()
+                );
                 continue;
             }
         };
@@ -237,15 +886,25 @@ fn push(checkout: &mut Checkout) -> Result<()> {
         // Frontmatter markers already fail the parse below; this catches
         // markers in the freeform body, which would otherwise push silently.
         if merge::has_markers(&content) {
-            bail!("{} has unresolved conflict markers; edit them away and push again", path.display());
+            bail!(
+                "{} has unresolved conflict markers; edit them away and push again",
+                path.display()
+            );
         }
-        let file = markdown::parse(&content).with_context(|| format!("parsing {}", path.display()))?;
+        let file =
+            markdown::parse(&content).with_context(|| format!("parsing {}", path.display()))?;
         if file.key != stem {
-            bail!("{}: id is read-only (file says {:?}, expected {:?})", path.display(), file.key, stem);
+            bail!(
+                "{}: id is read-only (file says {:?}, expected {:?})",
+                path.display(),
+                file.key,
+                stem
+            );
         }
         let base_content = fs::read_to_string(checkout.base_path(&stem))
             .with_context(|| format!("no base copy for {stem} — run `flat sync`"))?;
-        let base = markdown::parse(&base_content).with_context(|| format!("parsing base copy of {stem}"))?;
+        let base = markdown::parse(&base_content)
+            .with_context(|| format!("parsing base copy of {stem}"))?;
 
         // One mutation carries every changed field: atomic per ticket.
         let set = TicketSet {
@@ -286,9 +945,17 @@ fn push(checkout: &mut Checkout) -> Result<()> {
     for applied in &response.applied {
         println!("pushed {} (seq {})", applied.key, applied.seq);
     }
-    let conflicted: HashSet<String> = response.conflicts.iter().map(|c| key_of(&c.entity_id)).collect();
+    let conflicted: HashSet<String> = response
+        .conflicts
+        .iter()
+        .map(|c| key_of(&c.entity_id))
+        .collect();
     for conflict in &response.conflicts {
-        eprintln!("rejected {}: {}", key_of(&conflict.entity_id), conflict.reason);
+        eprintln!(
+            "rejected {}: {}",
+            key_of(&conflict.entity_id),
+            conflict.reason
+        );
     }
 
     // Conflicted files keep their local edits. A file whose pushed content is
@@ -297,6 +964,7 @@ fn push(checkout: &mut Checkout) -> Result<()> {
     // server changed). last_seq only advances on a clean push so a later sync
     // re-delivers anything skipped here.
     let skipped = checkout.apply_deltas(&response.deltas, &conflicted, &pushed)?;
+    checkout.apply_tombstones(&response.tombstones)?;
     report_kept(checkout, &skipped);
     if conflicted.is_empty() && skipped.is_empty() {
         checkout.state.last_seq = response.latest_seq;
@@ -352,4 +1020,70 @@ fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<usize> {
         }
     }
     Ok(unresolved)
+}
+
+#[cfg(test)]
+mod tests {
+    use flat_schema::{Status, TicketTombstone};
+
+    use super::*;
+
+    fn ticket(id: &str, key: &str, title: &str, seq: u32) -> Ticket {
+        Ticket {
+            id: id.to_string(),
+            key: key.to_string(),
+            title: title.to_string(),
+            body: String::new(),
+            status: Status::Todo,
+            seq,
+        }
+    }
+
+    #[test]
+    fn delete_applies_unrelated_deltas_before_advancing_watermark() {
+        let root = std::env::temp_dir().join(format!("flat-delete-{}", Ulid::new()));
+        let config = Config {
+            server: "https://flat.example".to_string(),
+            token: "test-token".to_string(),
+        };
+        store::save_config(&root, &config).unwrap();
+        let mut checkout = Checkout::open(&root).unwrap();
+        let deleted = ticket("01JG4C2Q4V8XKZ3W5D9E7F2H6M", "DEMO-1", "Delete me", 1);
+        let unrelated = ticket("01JG4C5E2MZYXWVTSRQPNMKJHG", "DEMO-2", "Before", 2);
+        checkout
+            .apply_deltas(
+                &[deleted.clone(), unrelated.clone()],
+                &HashSet::new(),
+                &HashMap::new(),
+            )
+            .unwrap();
+        checkout.state.last_seq = 2;
+        checkout.save_state().unwrap();
+
+        let updated = ticket(&unrelated.id, &unrelated.key, "After", 3);
+        let response = SyncResponse {
+            applied: Vec::new(),
+            conflicts: Vec::new(),
+            deltas: vec![updated.clone()],
+            tombstones: vec![TicketTombstone {
+                id: deleted.id.clone(),
+                key: deleted.key.clone(),
+                seq: 4,
+            }],
+            members: Vec::new(),
+            latest_seq: 4,
+        };
+
+        assert!(apply_delete_changes(&mut checkout, &response)
+            .unwrap()
+            .is_empty());
+        assert_eq!(checkout.state.last_seq, 4);
+        assert!(!checkout.mirror_path(&deleted.key).exists());
+        assert_eq!(
+            fs::read_to_string(checkout.mirror_path(&updated.key)).unwrap(),
+            markdown::render(&updated)
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

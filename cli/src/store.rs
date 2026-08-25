@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use flat_schema::{Mutation, Ticket};
+use flat_schema::{Mutation, Ticket, TicketTombstone};
 use serde::{Deserialize, Serialize};
 
 use crate::markdown;
@@ -58,6 +58,19 @@ pub fn save_config(root: &Path, config: &Config) -> Result<()> {
     )
 }
 
+/// Validates and prepares every directory init will need before a one-time
+/// enrollment credential is redeemed remotely.
+pub fn preflight_init(root: &Path, server: &str) -> Result<()> {
+    let host_dir = root.join(host_dir_name(server)?);
+    let metadata_dir = host_dir.join(".flat");
+    ensure_private_dir(root)?;
+    ensure_private_dir(&host_dir)?;
+    ensure_private_dir(&metadata_dir)?;
+    verify_writable(root)?;
+    verify_writable(&host_dir)?;
+    verify_writable(&metadata_dir)
+}
+
 pub fn load_config(root: &Path) -> Result<Config> {
     let path = config_path(root);
     let raw = fs::read_to_string(&path)
@@ -87,6 +100,19 @@ impl Checkout {
             Err(e) => return Err(e).context(format!("reading {}", state_path.display())),
         };
         Ok(Checkout { config, state, host_dir })
+    }
+
+    /// Creates an empty checkout for snapshot initialization without parsing
+    /// stale state that the authoritative snapshot is about to replace.
+    pub fn initialize(root: &Path, config: Config) -> Result<Checkout> {
+        let host_dir = root.join(host_dir_name(&config.server)?);
+        ensure_private_dir(root)?;
+        ensure_private_dir(&host_dir)?;
+        Ok(Checkout {
+            config,
+            state: State::default(),
+            host_dir,
+        })
     }
 
     pub fn host_dir(&self) -> &Path {
@@ -219,6 +245,27 @@ impl Checkout {
         Ok(skipped)
     }
 
+    /// Applies authoritative server deletions to the mirror, base copy, and
+    /// sync state so a later restore cannot resurrect the ticket.
+    pub fn apply_tombstones(&mut self, tombstones: &[TicketTombstone]) -> Result<()> {
+        for tombstone in tombstones {
+            for path in [
+                self.mirror_path(&tombstone.key),
+                self.base_path(&tombstone.key),
+            ] {
+                match fs::remove_file(&path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(error).with_context(|| format!("removing {}", path.display()))
+                    }
+                }
+            }
+            self.state.tickets.remove(&tombstone.key);
+        }
+        Ok(())
+    }
+
     /// Writes the outcome of a three-way merge: the merged content (possibly
     /// holding conflict markers) becomes the mirror file, while the base copy
     /// and state advance to the server row — so the next `flat push` sends
@@ -333,4 +380,91 @@ fn ensure_private_dir(path: &Path) -> Result<()> {
             .with_context(|| format!("setting permissions on {}", path.display()))?;
     }
     Ok(())
+}
+
+fn verify_writable(path: &Path) -> Result<()> {
+    let probe = path.join(format!(".flat-init-{}.tmp", ulid::Ulid::new()));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(&probe)
+        .with_context(|| format!("checking write access to {}", path.display()))?;
+    fs::remove_file(&probe)
+        .with_context(|| format!("cleaning up write check in {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use flat_schema::{Status, TicketTombstone};
+
+    use super::*;
+
+    fn checkout(name: &str) -> Checkout {
+        let host_dir = std::env::temp_dir().join(format!("flat-store-{name}-{}", ulid::Ulid::new()));
+        Checkout {
+            config: Config {
+                server: "https://flat.example".to_string(),
+                token: "test-token".to_string(),
+            },
+            state: State::default(),
+            host_dir,
+        }
+    }
+
+    #[test]
+    fn tombstone_removes_a_second_checkouts_mirror_and_base() {
+        let ticket = Ticket {
+            id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M".to_string(),
+            key: "DEMO-1".to_string(),
+            title: "Delete me".to_string(),
+            body: String::new(),
+            status: Status::Todo,
+            seq: 2,
+        };
+        let mut first = checkout("first");
+        let mut second = checkout("second");
+        let rendered = markdown::render(&ticket);
+        first.write_ticket(&ticket, &rendered, &rendered).unwrap();
+        second.write_ticket(&ticket, &rendered, &rendered).unwrap();
+
+        let tombstone = TicketTombstone {
+            id: ticket.id.clone(),
+            key: ticket.key.clone(),
+            seq: 3,
+        };
+        second.apply_tombstones(&[tombstone]).unwrap();
+
+        assert!(!second.mirror_path(&ticket.key).exists());
+        assert!(!second.base_path(&ticket.key).exists());
+        assert!(!second.state.tickets.contains_key(&ticket.key));
+        assert!(second.restore_missing().unwrap().is_empty());
+
+        std::fs::remove_dir_all(first.host_dir()).unwrap();
+        std::fs::remove_dir_all(second.host_dir()).unwrap();
+    }
+
+    #[test]
+    fn initialization_replaces_corrupt_state_after_preflight() {
+        let root = std::env::temp_dir().join(format!("flat-init-{}", ulid::Ulid::new()));
+        let config = Config {
+            server: "https://flat.example".to_string(),
+            token: "issued-token".to_string(),
+        };
+        preflight_init(&root, &config.server).unwrap();
+        let state_path = root.join("flat.example/.flat/state.json");
+        fs::write(&state_path, "not json").unwrap();
+        save_config(&root, &config).unwrap();
+
+        let mut checkout = Checkout::initialize(&root, config).unwrap();
+        checkout.reset().unwrap();
+        checkout.save_state().unwrap();
+
+        assert_eq!(Checkout::open(&root).unwrap().state.last_seq, 0);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

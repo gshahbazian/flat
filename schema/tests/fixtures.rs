@@ -9,8 +9,12 @@ fn roundtrip<T: Serialize + DeserializeOwned>(name: &str) {
     let path = format!("{}/fixtures/{name}.json", env!("CARGO_MANIFEST_DIR"));
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
     let original: serde_json::Value = serde_json::from_str(&raw).expect("fixture is valid JSON");
-    let typed: T = serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("fixture {name} does not parse as {}: {e}", std::any::type_name::<T>()));
+    let typed: T = serde_json::from_str(&raw).unwrap_or_else(|e| {
+        panic!(
+            "fixture {name} does not parse as {}: {e}",
+            std::any::type_name::<T>()
+        )
+    });
     let reserialized = serde_json::to_value(&typed).expect("reserialize");
     assert_eq!(reserialized, original, "fixture {name} did not round-trip");
 }
@@ -62,5 +66,62 @@ fn titles() {
             flat_schema::validate_title(title).is_err(),
             "expected invalid: {title:?}"
         );
+    }
+}
+
+#[test]
+fn emails() {
+    #[derive(serde::Deserialize)]
+    struct ValidEmail {
+        input: String,
+        normalized: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Emails {
+        valid: Vec<ValidEmail>,
+        invalid: Vec<String>,
+    }
+    let path = format!("{}/fixtures/emails.json", env!("CARGO_MANIFEST_DIR"));
+    let emails: Emails = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    for email in &emails.valid {
+        assert_eq!(
+            flat_schema::normalize_email(&email.input).unwrap(),
+            email.normalized
+        );
+    }
+    for email in &emails.invalid {
+        assert!(
+            flat_schema::normalize_email(email).is_err(),
+            "expected invalid: {email:?}"
+        );
+    }
+}
+
+#[test]
+fn mutation_canonical_json() {
+    #[derive(serde::Deserialize)]
+    struct CanonicalMutation {
+        mutation: Mutation,
+        canonical_json: String,
+    }
+    let path = format!(
+        "{}/fixtures/canonical_mutation.json",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let fixture: CanonicalMutation =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(
+        flat_schema::canonical_mutation_json(&fixture.mutation).unwrap(),
+        fixture.canonical_json,
+    );
+}
+
+#[test]
+fn token_names() {
+    for name in ["gabe-macbook", "ci_1", "flat.cli"] {
+        assert!(flat_schema::validate_token_name(name).is_ok(), "{name:?}");
+    }
+    for name in ["", "bad name", "-leading", &"a".repeat(65)] {
+        assert!(flat_schema::validate_token_name(name).is_err(), "{name:?}");
     }
 }
