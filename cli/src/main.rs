@@ -10,12 +10,14 @@ mod store;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use flat_schema::{
-    Entity, Mutation, MutationOp, SyncRequest, SyncResponse, Ticket, TicketSet, PROTOCOL_VERSION,
+    Entity, Mutation, MutationOp, Priority, SyncRequest, SyncResponse, Ticket, TicketSet,
+    PROTOCOL_VERSION,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -54,7 +56,13 @@ enum Command {
         tenant_name: Option<String>,
     },
     /// Create a ticket on the server and materialize its file.
-    New { title: String },
+    New {
+        title: String,
+        #[arg(long)]
+        priority: Option<Priority>,
+        #[arg(long)]
+        assignee: Option<String>,
+    },
     /// Pull server changes into the mirror.
     Sync {
         /// Three-way merge server changes into files with local edits,
@@ -297,13 +305,21 @@ fn run() -> Result<()> {
             };
             initialize_checkout(&root, server, bearer, snapshot)?;
         }
-        Command::New { title } => {
+        Command::New {
+            title,
+            priority,
+            assignee,
+        } => {
             let title = title.trim().to_string();
             flat_schema::validate_title(&title).map_err(anyhow::Error::msg)?;
             let mut checkout = Checkout::open(&root)?;
             if !checkout.pending_mutations()?.is_empty() {
                 bail!("a previous mutation may not have reached the server; run `flat sync` to replay it first");
             }
+            let assignee = assignee
+                .as_deref()
+                .map(|email| checkout.resolve_assignee(email).map(Some))
+                .transpose()?;
             // Journal the create before sending: if the response is lost, the
             // next `flat sync` replays the same mutation_id instead of a rerun
             // minting fresh IDs and creating a duplicate ticket.
@@ -316,6 +332,8 @@ fn run() -> Result<()> {
                 set: TicketSet {
                     title: Some(title),
                     status: None,
+                    priority,
+                    assignee,
                     body: None,
                 },
             };
@@ -467,6 +485,7 @@ fn initialize_checkout(
     store::save_config(root, &config)?;
     let mut checkout = Checkout::initialize(root, config)?;
     checkout.reset()?;
+    checkout.update_members(&snapshot.members);
     checkout.apply_deltas(&snapshot.tickets, &HashSet::new(), &HashMap::new())?;
     checkout.state.last_seq = snapshot.latest_seq;
     checkout.save_state()?;
@@ -845,7 +864,40 @@ fn send(checkout: &mut Checkout, mutations: Vec<Mutation>) -> Result<SyncRespons
     {
         checkout.clear_pending(mutation_id)?;
     }
+    checkout.update_members(&response.members);
     Ok(response)
+}
+
+fn changed_ticket_set(
+    checkout: &Checkout,
+    file: &markdown::TicketFile,
+    base: &markdown::TicketFile,
+    path: &Path,
+) -> Result<TicketSet> {
+    if file.created != base.created {
+        bail!("{}: created is read-only", path.display());
+    }
+    if file.updated != base.updated {
+        bail!("{}: updated is read-only", path.display());
+    }
+
+    let assignee = if file.assignee != base.assignee {
+        Some(
+            file.assignee
+                .as_deref()
+                .map(|email| checkout.resolve_assignee(email))
+                .transpose()?,
+        )
+    } else {
+        None
+    };
+    Ok(TicketSet {
+        title: (file.title != base.title).then(|| file.title.clone()),
+        status: (file.status != base.status).then_some(file.status),
+        priority: (file.priority != base.priority).then_some(file.priority),
+        assignee,
+        body: (file.body != base.body).then(|| file.body.clone()),
+    })
 }
 
 /// Diffs every mirror file against its base copy and pushes one update
@@ -907,11 +959,7 @@ fn push(checkout: &mut Checkout) -> Result<()> {
             .with_context(|| format!("parsing base copy of {stem}"))?;
 
         // One mutation carries every changed field: atomic per ticket.
-        let set = TicketSet {
-            title: (file.title != base.title).then(|| file.title.clone()),
-            status: (file.status != base.status).then_some(file.status),
-            body: (file.body != base.body).then(|| file.body.clone()),
-        };
+        let set = changed_ticket_set(checkout, &file, &base, &path)?;
         if set == TicketSet::default() {
             continue;
         }
@@ -1013,7 +1061,7 @@ fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<usize> {
             .with_context(|| format!("no base copy for {} — run `flat init`", ticket.key))?;
         let base = markdown::parse(&base_raw)
             .with_context(|| format!("parsing base copy of {}", ticket.key))?;
-        let merged = merge::merge(&base, &local, ticket);
+        let merged = merge::merge(&base, &local, ticket, &checkout.state.members)?;
         checkout.write_merged(ticket, &merged.content)?;
         if !merged.conflicted {
             println!("merged {} (kept local edits)", ticket.key);
@@ -1024,9 +1072,43 @@ fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<usize> {
 
 #[cfg(test)]
 mod tests {
-    use flat_schema::{Status, TicketTombstone};
+    use flat_schema::{Priority, Status, TicketTombstone};
 
     use super::*;
+
+    #[test]
+    fn new_accepts_priority_and_assignee_flags() {
+        let cli = Cli::try_parse_from([
+            "flat",
+            "new",
+            "Title",
+            "--priority",
+            "urgent",
+            "--assignee",
+            "Gabe@Example.com",
+        ])
+        .unwrap();
+        match cli.command {
+            Command::New {
+                title,
+                priority,
+                assignee,
+            } => {
+                assert_eq!(title, "Title");
+                assert_eq!(priority, Some(Priority::Urgent));
+                assert_eq!(assignee.as_deref(), Some("Gabe@Example.com"));
+            }
+            _ => panic!("expected new command"),
+        }
+    }
+
+    #[test]
+    fn new_rejects_invalid_priority() {
+        let error = Cli::try_parse_from(["flat", "new", "Title", "--priority", "critical"])
+            .err()
+            .expect("invalid priority should fail parsing");
+        assert!(error.to_string().contains("unknown priority"));
+    }
 
     fn ticket(id: &str, key: &str, title: &str, seq: u32) -> Ticket {
         Ticket {
@@ -1035,6 +1117,10 @@ mod tests {
             title: title.to_string(),
             body: String::new(),
             status: Status::Todo,
+            priority: Priority::None,
+            assignee: None,
+            created_at: "2026-08-25T12:34:56.000Z".to_string(),
+            updated_at: "2026-08-25T12:34:56.000Z".to_string(),
             seq,
         }
     }
@@ -1081,9 +1167,69 @@ mod tests {
         assert!(!checkout.mirror_path(&deleted.key).exists());
         assert_eq!(
             fs::read_to_string(checkout.mirror_path(&updated.key)).unwrap(),
-            markdown::render(&updated)
+            markdown::render(&updated, &checkout.state.members).unwrap()
         );
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn clearing_assignment_emits_explicit_null() {
+        let root = std::env::temp_dir().join(format!("flat-clear-{}", Ulid::new()));
+        let config = Config {
+            server: "https://flat.example".to_string(),
+            token: "test-token".to_string(),
+        };
+        store::save_config(&root, &config).unwrap();
+        let checkout = Checkout::open(&root).unwrap();
+        let base = markdown::TicketFile {
+            key: "DEMO-1".into(),
+            title: "Title".into(),
+            status: Status::Todo,
+            priority: Priority::None,
+            assignee: Some("gabe@example.com".into()),
+            created: Some("created".into()),
+            updated: Some("updated".into()),
+            body: String::new(),
+        };
+        let mut file = base.clone();
+        file.assignee = None;
+        let set = changed_ticket_set(&checkout, &file, &base, Path::new("DEMO-1.md")).unwrap();
+        assert_eq!(set.assignee, Some(None));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn timestamp_edits_are_rejected_but_legacy_files_are_compatible() {
+        let root = std::env::temp_dir().join(format!("flat-readonly-{}", Ulid::new()));
+        let config = Config {
+            server: "https://flat.example".to_string(),
+            token: "test-token".to_string(),
+        };
+        store::save_config(&root, &config).unwrap();
+        let checkout = Checkout::open(&root).unwrap();
+        let legacy = markdown::parse("---\nid: DEMO-1\ntitle: Title\nstatus: todo\n---\n").unwrap();
+        let mut edited_legacy = legacy.clone();
+        edited_legacy.title = "Legacy edit".into();
+        assert_eq!(
+            changed_ticket_set(&checkout, &edited_legacy, &legacy, Path::new("DEMO-1.md")).unwrap(),
+            TicketSet {
+                title: Some("Legacy edit".into()),
+                ..TicketSet::default()
+            }
+        );
+
+        let mut edited = legacy.clone();
+        edited.created = Some("changed".into());
+        let error =
+            changed_ticket_set(&checkout, &edited, &legacy, Path::new("DEMO-1.md")).unwrap_err();
+        assert!(error.to_string().contains("created is read-only"));
+
+        let mut edited = legacy.clone();
+        edited.updated = Some("changed".into());
+        let error =
+            changed_ticket_set(&checkout, &edited, &legacy, Path::new("DEMO-1.md")).unwrap_err();
+        assert!(error.to_string().contains("updated is read-only"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

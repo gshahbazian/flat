@@ -14,7 +14,7 @@ import {
   socketAttachmentSchema,
   tokenCreateBodySchema,
 } from '../src/request-schema'
-import { Entity, MutationOp, Role, TokenKind } from '../src/schema.gen'
+import { Entity, MutationOp, Priority, Role, TokenKind } from '../src/schema.gen'
 import {
   mutationInputSchema,
   mutationSchema,
@@ -53,6 +53,31 @@ describe('wire schemas', () => {
     expect(result.mutations).toHaveLength(2)
     expect(sequenceSchema.safeParse(-1).success).toBe(false)
     expect(sequenceSchema.safeParse(0x1_0000_0000).success).toBe(false)
+  })
+
+  test('preserves explicit assignment clears and validates priority', () => {
+    const mutation = mutationInputSchema.parse({
+      mutation_id: 'mutation-1',
+      op: MutationOp.Update,
+      entity: Entity.Ticket,
+      entity_id: 'ticket-1',
+      base_seq: 1,
+      set: { priority: Priority.Urgent, assignee: null },
+    })
+    expect(mutation.set).toEqual({ priority: Priority.Urgent, assignee: null })
+  })
+
+  test('rejects client-supplied timestamps', () => {
+    expect(
+      mutationInputSchema.safeParse({
+        mutation_id: 'mutation-1',
+        op: MutationOp.Update,
+        entity: Entity.Ticket,
+        entity_id: 'ticket-1',
+        base_seq: 1,
+        set: { updated_at: '2026-08-25T12:34:56.000Z' },
+      }).success
+    ).toBe(false)
   })
 })
 

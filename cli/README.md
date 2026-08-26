@@ -7,7 +7,7 @@ flat init URL --setup                  # claim a new tenant
 flat init URL --invite                 # redeem an invitation
 flat init URL --recover                # redeem a recovery enrollment
 flat init URL --token                  # configure an existing FLAT_TOKEN
-flat new TITLE                         # create a ticket, materialize DEMO-N.md
+flat new TITLE [--priority PRIORITY] [--assignee EMAIL]
 flat sync [--merge]                    # pull server changes into the mirror
 flat push                              # send locally edited files back
 flat path                              # print the mirror location
@@ -21,6 +21,14 @@ The mirror lives at `~/.flat/<host>/DEMO/DEMO-N.md` (`FLAT_DIR` overrides the
 root). Base copies and sync state sit next to it under `~/.flat/<host>/.flat/`;
 `flat push` diffs each file against its base copy and sends one atomic update
 mutation per dirty ticket.
+
+Ticket frontmatter includes `id`, `title`, `status`, `priority`, `assignee`,
+`created`, and `updated`. Edit `title`, `status`, `priority`, `assignee`, and
+the description body. `id`, `created`, and `updated` are read-only. Priority
+is one of `none`, `low`, `medium`, `high`, or `urgent`; unassigned tickets use
+`assignee: null`. Assignment emails use the shared normalization rules and are
+resolved through synced member profiles. If an email is missing from the
+local cache, run `flat sync` and retry.
 
 Notes:
 

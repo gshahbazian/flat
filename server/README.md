@@ -9,7 +9,8 @@ Cloudflare Worker and Durable Object that host the ticket backend.
 - `src/crypto.ts` — credential formats, HMAC verification, canonical hashing,
   and secret generation.
 - `src/migrations.ts` — ordered SQLite migrations. GitHub receipts are version
-  1, permissions tables are version 2, and ticket tombstones are version 3.
+  1, permissions tables are version 2, ticket tombstones are version 3, and
+  priority, assignment, and ticket timestamps are version 4.
 - `src/github.ts` — PR closing-phrase parser and Web Crypto signature checks.
 - `src/conflict.ts` — field-level conflict detection: an update against a
   stale base_seq applies unless it sets a field the server changed since

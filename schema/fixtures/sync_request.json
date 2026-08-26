@@ -10,6 +10,8 @@
       "set": {
         "title": "hello",
         "status": "todo",
+        "priority": "none",
+        "assignee": null,
         "body": ""
       }
     },
@@ -21,6 +23,8 @@
       "base_seq": 42,
       "set": {
         "status": "done",
+        "priority": "high",
+        "assignee": "01JG4BZ4M6PQRSTVWXYZ012345",
         "body": "Fixed by serializing refresh behind the tenant DO."
       }
     }

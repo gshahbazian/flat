@@ -47,6 +47,7 @@ import {
   Entity,
   MemberStatus,
   MutationOp,
+  Priority,
   Role,
   Status,
   TokenAccess,
@@ -185,6 +186,12 @@ function isoNow(): string {
   return new Date().toISOString()
 }
 
+function timestampAfter(previous: string): string {
+  const now = isoNow()
+  if (now > previous) return now
+  return new Date(Date.parse(previous) + 1).toISOString()
+}
+
 function addSeconds(timestamp: string, seconds: number): string {
   return new Date(Date.parse(timestamp) + seconds * 1000).toISOString()
 }
@@ -213,6 +220,10 @@ function parseJson(value: string): { success: true; data: unknown } | { success:
 function mutationReason(raw: Record<string, unknown>, operation: MutationOp): string {
   const result = mutationInputSchema.safeParse(raw)
   if (result.success) return 'malformed mutation'
+  const rawSet = jsonObjectSchema.safeParse(raw.set)
+  if (rawSet.success && ('created_at' in rawSet.data || 'updated_at' in rawSet.data)) {
+    return 'created_at and updated_at are read-only'
+  }
   const issue = result.error.issues[0]
   const field = issue.path[0]
   const setField = issue.path[1]
@@ -225,6 +236,14 @@ function mutationReason(raw: Record<string, unknown>, operation: MutationOp): st
     const set = jsonObjectSchema.safeParse(raw.set)
     const status = set.success ? set.data.status : undefined
     return `unknown status ${JSON.stringify(status)}`
+  }
+  if (field === 'set' && setField === 'priority') {
+    const set = jsonObjectSchema.safeParse(raw.set)
+    const priority = set.success ? set.data.priority : undefined
+    return `unknown priority ${JSON.stringify(priority)}`
+  }
+  if (field === 'set' && setField === 'assignee') {
+    return 'set.assignee must be a member id or null'
   }
   if (field === 'base_seq' && operation === MutationOp.Create) {
     return 'create must not include base_seq'
@@ -718,6 +737,8 @@ export class TenantDO extends DurableObject<Env> {
       reason,
     })
     const parsedSet = mutation.set
+    const setsAssignee = Object.hasOwn(parsedSet, 'assignee')
+    const assigneeId = setsAssignee ? (parsedSet.assignee ?? null) : null
     const title = parsedSet.title != null ? parsedSet.title.trim() : null
     if (title !== null) {
       const reason = invalidTitle(title)
@@ -741,16 +762,30 @@ export class TenantDO extends DurableObject<Env> {
         return reject(`ticket ${mutation.entity_id} already exists`)
       }
       if (title == null) return reject('create requires set.title')
+      if (assigneeId !== null) {
+        const assignee = this.memberById(assigneeId)
+        if (!assignee) return reject(`unknown assignee ${assigneeId}`)
+        if (assignee.status !== MemberStatus.Active) {
+          return reject(`assignee ${assigneeId} is not active`)
+        }
+      }
       const num = Number(this.meta('next_ticket_num'))
       const key = `${this.meta('project_key')}-${num}`
       const seq = this.nextSeq()
+      const now = isoNow()
       this.sql.exec(
-        'INSERT INTO tickets (id, key, title, body, status, seq) VALUES (?, ?, ?, ?, ?, ?)',
+        `INSERT INTO tickets
+         (id, key, title, body, status, priority, assignee, created_at, updated_at, seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         mutation.entity_id,
         key,
         title,
         parsedSet.body ?? '',
         parsedSet.status ?? Status.Todo,
+        parsedSet.priority ?? Priority.None,
+        assigneeId,
+        now,
+        now,
         seq
       )
       this.setMeta('next_ticket_num', String(num + 1))
@@ -764,13 +799,13 @@ export class TenantDO extends DurableObject<Env> {
     }
 
     const rows = this.sql
-      .exec<{ key: string; seq: number }>(
-        'SELECT key, seq FROM tickets WHERE id = ?',
+      .exec<{ key: string; seq: number; updated_at: string }>(
+        'SELECT key, seq, updated_at FROM tickets WHERE id = ?',
         mutation.entity_id
       )
       .toArray()
     if (rows.length === 0) return reject(`unknown ticket ${mutation.entity_id}`)
-    const { key, seq: currentSeq } = rows[0]
+    const { key, seq: currentSeq, updated_at: currentUpdatedAt } = rows[0]
     if (mutation.base_seq === undefined) return reject(`${mutation.op} requires a valid base_seq`)
     if (mutation.base_seq > currentSeq) {
       return reject(`base_seq ${mutation.base_seq} is ahead of the ticket (seq ${currentSeq})`)
@@ -796,6 +831,14 @@ export class TenantDO extends DurableObject<Env> {
       return reject(`unknown op ${JSON.stringify(mutation.op)}`)
     }
 
+    if (assigneeId !== null) {
+      const assignee = this.memberById(assigneeId)
+      if (!assignee) return reject(`unknown assignee ${assigneeId}`)
+      if (assignee.status !== MemberStatus.Active) {
+        return reject(`assignee ${assigneeId} is not active`)
+      }
+    }
+
     if (mutation.base_seq < currentSeq) {
       const serverSets = this.sql
         .exec<{ payload: string }>(
@@ -819,12 +862,19 @@ export class TenantDO extends DurableObject<Env> {
       }
     }
     const seq = this.nextSeq()
+    const updatedAt = timestampAfter(currentUpdatedAt)
     this.sql.exec(
       `UPDATE tickets SET title = COALESCE(?, title), status = COALESCE(?, status),
-       body = COALESCE(?, body), seq = ? WHERE id = ?`,
+       priority = COALESCE(?, priority),
+       assignee = CASE WHEN ? THEN ? ELSE assignee END,
+       body = COALESCE(?, body), updated_at = ?, seq = ? WHERE id = ?`,
       title,
       parsedSet.status ?? null,
+      parsedSet.priority ?? null,
+      setsAssignee ? 1 : 0,
+      assigneeId,
       parsedSet.body ?? null,
+      updatedAt,
       seq,
       mutation.entity_id
     )
@@ -2267,7 +2317,8 @@ export class TenantDO extends DurableObject<Env> {
   private ticketsSince(seq: number): Ticket[] {
     return this.sql
       .exec<SqlRow<Ticket>>(
-        'SELECT id, key, title, body, status, seq FROM tickets WHERE seq > ? ORDER BY seq',
+        `SELECT id, key, title, body, status, priority, assignee, created_at, updated_at, seq
+         FROM tickets WHERE seq > ? ORDER BY seq`,
         seq
       )
       .toArray()

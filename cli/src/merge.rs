@@ -6,9 +6,12 @@
 //! and anything both sides changed becomes git-style conflict markers for the
 //! user (or their agent) to edit away before pushing again.
 
-use flat_schema::Ticket;
+use std::collections::BTreeMap;
 
-use crate::markdown::TicketFile;
+use anyhow::Result;
+use flat_schema::{MemberProfile, Ticket};
+
+use crate::markdown::{self, TicketFile};
 
 pub struct Merged {
     pub content: String,
@@ -67,16 +70,30 @@ fn pick<T: PartialEq + Clone>(base: &T, local: &T, server: &T) -> Field<T> {
 /// Merges a dirty mirror file (`local`, edited from `base`) with the server's
 /// current row. When nothing conflicts and the local side had no edits, the
 /// output is byte-identical to `markdown::render(server)`.
-pub fn merge(base: &TicketFile, local: &TicketFile, server: &Ticket) -> Merged {
+pub fn merge(
+    base: &TicketFile,
+    local: &TicketFile,
+    server: &Ticket,
+    members: &BTreeMap<String, MemberProfile>,
+) -> Result<Merged> {
     let server_body = server.body.trim_end().to_string();
+    let server_assignee = markdown::assignee_email(server, members)?;
     let title = pick(&base.title, &local.title, &server.title);
     let status = pick(&base.status, &local.status, &server.status);
+    let priority = pick(&base.priority, &local.priority, &server.priority);
+    let assignee = pick(&base.assignee, &local.assignee, &server_assignee);
     let body = merge_body(&base.body, &local.body, &server_body);
 
     let mut out = String::from("---\n");
     out.push_str(&format!("id: {}\n", server.key));
     push_field(&mut out, "title", &title, |t: &String| t.clone());
     push_field(&mut out, "status", &status, |s| s.as_str().to_string());
+    push_field(&mut out, "priority", &priority, |p| p.as_str().to_string());
+    push_field(&mut out, "assignee", &assignee, |email| {
+        email.clone().unwrap_or_else(|| "null".to_string())
+    });
+    out.push_str(&format!("created: {}\n", server.created_at));
+    out.push_str(&format!("updated: {}\n", server.updated_at));
     out.push_str("---\n");
     let (body_text, body_conflicted) = match &body {
         Body::Clean(text) => (text.as_str(), false),
@@ -87,10 +104,14 @@ pub fn merge(base: &TicketFile, local: &TicketFile, server: &Ticket) -> Merged {
         out.push_str(body_text);
         out.push('\n');
     }
-    Merged {
+    Ok(Merged {
         content: out,
-        conflicted: title.conflicted() || status.conflicted() || body_conflicted,
-    }
+        conflicted: title.conflicted()
+            || status.conflicted()
+            || priority.conflicted()
+            || assignee.conflicted()
+            || body_conflicted,
+    })
 }
 
 fn push_field<T>(out: &mut String, name: &str, field: &Field<T>, fmt: impl Fn(&T) -> String) {
@@ -154,13 +175,37 @@ fn relabel(marked: &str) -> String {
 mod tests {
     use super::*;
     use crate::markdown;
-    use flat_schema::Status;
+    use flat_schema::{Priority, Status};
+
+    fn members() -> BTreeMap<String, MemberProfile> {
+        [
+            ("member-local", "local@example.com"),
+            ("member-server", "server@example.com"),
+        ]
+        .into_iter()
+        .map(|(id, email)| {
+            let member = MemberProfile {
+                id: id.into(),
+                email: email.into(),
+                role: flat_schema::Role::Member,
+                status: flat_schema::MemberStatus::Suspended,
+                created_at: "2026-08-01T10:00:00.000Z".into(),
+                activated_at: Some("2026-08-01T10:01:00.000Z".into()),
+            };
+            (member.id.clone(), member)
+        })
+        .collect()
+    }
 
     fn file(title: &str, status: Status, body: &str) -> TicketFile {
         TicketFile {
             key: "DEMO-1".into(),
             title: title.into(),
             status,
+            priority: Priority::None,
+            assignee: None,
+            created: Some("2026-08-25T12:34:56.000Z".into()),
+            updated: Some("2026-08-25T13:45:00.000Z".into()),
             body: body.into(),
         }
     }
@@ -172,6 +217,10 @@ mod tests {
             title: title.into(),
             body: body.into(),
             status,
+            priority: Priority::None,
+            assignee: None,
+            created_at: "2026-08-25T12:34:56.000Z".into(),
+            updated_at: "2026-08-25T14:00:00.000Z".into(),
             seq: 9,
         }
     }
@@ -184,12 +233,16 @@ mod tests {
             &base,
             &file("mine", Status::Todo, "line"),
             &server("theirs", Status::Todo, "line"),
-        );
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let body = merge(
             &base,
             &file("t", Status::Todo, "mine"),
             &server("t", Status::Todo, "theirs"),
-        );
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert!(has_markers(&frontmatter.content));
         assert!(has_markers(&body.content));
         // ...while ordinary body text that resembles markers is not.
@@ -204,9 +257,12 @@ mod tests {
     fn no_local_edits_yields_exact_server_render() {
         let base = file("t", Status::Todo, "body");
         let server = server("new title", Status::Done, "new body");
-        let merged = merge(&base, &base.clone(), &server);
+        let merged = merge(&base, &base.clone(), &server, &BTreeMap::new()).unwrap();
         assert!(!merged.conflicted);
-        assert_eq!(merged.content, markdown::render(&server));
+        assert_eq!(
+            merged.content,
+            markdown::render(&server, &BTreeMap::new()).unwrap()
+        );
     }
 
     #[test]
@@ -214,7 +270,7 @@ mod tests {
         let base = file("t", Status::Todo, "body");
         let local = file("my title", Status::Todo, "body");
         let server = server("t", Status::InProgress, "body");
-        let merged = merge(&base, &local, &server);
+        let merged = merge(&base, &local, &server, &BTreeMap::new()).unwrap();
         assert!(!merged.conflicted);
         let parsed = markdown::parse(&merged.content).unwrap();
         assert_eq!(parsed.title, "my title");
@@ -238,7 +294,7 @@ mod tests {
             Status::Todo,
             "one\ntwo\nthree\nfour\nfive\nsix\nseven\nEIGHT",
         );
-        let merged = merge(&base, &local, &server);
+        let merged = merge(&base, &local, &server, &BTreeMap::new()).unwrap();
         assert!(!merged.conflicted);
         let parsed = markdown::parse(&merged.content).unwrap();
         assert_eq!(
@@ -252,7 +308,7 @@ mod tests {
         let base = file("t", Status::Todo, "body");
         let local = file("t", Status::Done, "body");
         let server = server("t", Status::Done, "body");
-        let merged = merge(&base, &local, &server);
+        let merged = merge(&base, &local, &server, &BTreeMap::new()).unwrap();
         assert!(!merged.conflicted);
         assert_eq!(
             markdown::parse(&merged.content).unwrap().status,
@@ -265,7 +321,7 @@ mod tests {
         let base = file("t", Status::Todo, "body");
         let local = file("mine", Status::Todo, "body");
         let server = server("theirs", Status::Todo, "body");
-        let merged = merge(&base, &local, &server);
+        let merged = merge(&base, &local, &server, &BTreeMap::new()).unwrap();
         assert!(merged.conflicted);
         let expected = "<<<<<<< local\ntitle: mine\n=======\ntitle: theirs\n>>>>>>> server\n";
         assert!(
@@ -283,7 +339,7 @@ mod tests {
         let base = file("t", Status::Todo, "line");
         let local = file("t", Status::Todo, "mine");
         let server = server("t", Status::Todo, "theirs");
-        let merged = merge(&base, &local, &server);
+        let merged = merge(&base, &local, &server, &BTreeMap::new()).unwrap();
         assert!(merged.conflicted);
         assert!(
             merged
@@ -292,5 +348,53 @@ mod tests {
             "got:\n{}",
             merged.content
         );
+    }
+
+    #[test]
+    fn disjoint_priority_and_assignment_edits_merge_cleanly() {
+        let base = file("t", Status::Todo, "body");
+        let mut local = base.clone();
+        local.priority = Priority::High;
+        let mut server = server("t", Status::Todo, "body");
+        server.assignee = Some("member-server".into());
+
+        let merged = merge(&base, &local, &server, &members()).unwrap();
+        assert!(!merged.conflicted);
+        let parsed = markdown::parse(&merged.content).unwrap();
+        assert_eq!(parsed.priority, Priority::High);
+        assert_eq!(parsed.assignee.as_deref(), Some("server@example.com"));
+        assert_eq!(parsed.created.as_deref(), Some(server.created_at.as_str()));
+        assert_eq!(parsed.updated.as_deref(), Some(server.updated_at.as_str()));
+    }
+
+    #[test]
+    fn conflicting_priority_gets_frontmatter_markers() {
+        let base = file("t", Status::Todo, "body");
+        let mut local = base.clone();
+        local.priority = Priority::High;
+        let mut server = server("t", Status::Todo, "body");
+        server.priority = Priority::Urgent;
+
+        let merged = merge(&base, &local, &server, &members()).unwrap();
+        assert!(merged.conflicted);
+        assert!(merged
+            .content
+            .contains("<<<<<<< local\npriority: high\n=======\npriority: urgent\n>>>>>>> server"));
+    }
+
+    #[test]
+    fn assign_versus_clear_gets_frontmatter_markers() {
+        let mut base = file("t", Status::Todo, "body");
+        base.assignee = Some("local@example.com".into());
+        let mut local = base.clone();
+        local.assignee = None;
+        let mut server = server("t", Status::Todo, "body");
+        server.assignee = Some("member-server".into());
+
+        let merged = merge(&base, &local, &server, &members()).unwrap();
+        assert!(merged.conflicted);
+        assert!(merged.content.contains(
+            "<<<<<<< local\nassignee: null\n=======\nassignee: server@example.com\n>>>>>>> server"
+        ));
     }
 }

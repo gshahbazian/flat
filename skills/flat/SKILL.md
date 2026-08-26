@@ -28,6 +28,10 @@ Each ticket is a Markdown file:
 id: DEMO-1
 title: Fix OAuth token refresh race
 status: todo
+priority: high
+assignee: gabe@acme.com
+created: 2026-08-25T12:34:56.000Z
+updated: 2026-08-25T13:45:00.000Z
 ---
 
 Description body.
@@ -35,15 +39,18 @@ Description body.
 
 ## Write tickets
 
-`flat new TITLE` creates a ticket on the server and writes its Markdown file to
-the mirror. Do not create ticket files by hand; `flat push` skips files that
-were not materialized by Flat.
+`flat new TITLE [--priority PRIORITY] [--assignee EMAIL]` creates a ticket on
+the server and writes its Markdown file to the mirror. Do not create ticket
+files by hand; `flat push` skips files that were not materialized by Flat.
 
-Edit an existing file's `title`, `status`, or description body directly. The
-`id` and filename are read-only. Valid statuses are `backlog`, `todo`,
-`in_progress`, `in_review`, `done`, and `canceled`. Decide which status fits the
-work and the user's request. Run `flat push` to publish local edits to the
-server.
+Edit an existing file's `title`, `status`, `priority`, `assignee`, or
+description body directly. The `id`, `created`, `updated`, and filename are
+read-only. Valid statuses are `backlog`, `todo`, `in_progress`, `in_review`,
+`done`, and `canceled`. Valid priorities are `none`, `low`, `medium`, `high`,
+and `urgent`. Assignees are member email addresses; use `assignee: null` to
+clear an assignment. Flat normalizes assignment emails and resolves them from
+the synced member profiles. If an assignee cannot be found locally, run
+`flat sync` and retry. Run `flat push` to publish local edits to the server.
 
 ## Delete tickets
 

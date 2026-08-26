@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const LATEST_SCHEMA_VERSION = 3
+export const LATEST_SCHEMA_VERSION = 4
 
 const storedSchemaVersionSchema = z.union([z.string(), z.number()])
 const schemaVersionSchema = storedSchemaVersionSchema
@@ -112,13 +112,44 @@ const MIGRATIONS = [
     key TEXT NOT NULL UNIQUE,
     seq INTEGER NOT NULL UNIQUE CHECK (seq >= 0)
   )`,
+  `CREATE TABLE tickets_v4 (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('backlog', 'todo', 'in_progress', 'in_review', 'done', 'canceled')),
+    priority TEXT NOT NULL CHECK (priority IN ('none', 'low', 'medium', 'high', 'urgent')),
+    assignee TEXT REFERENCES members(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    seq INTEGER NOT NULL CHECK (seq >= 0)
+  );
+  INSERT INTO tickets_v4
+    (id, key, title, body, status, priority, assignee, created_at, updated_at, seq)
+  SELECT id, key, title, body, status, 'none', NULL,
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), seq
+  FROM tickets;
+  DROP TABLE tickets;
+  ALTER TABLE tickets_v4 RENAME TO tickets`,
 ] as const
 
+type MigrationValue = ArrayBuffer | string | number | null
+
+export interface MigrationSql {
+  exec<T extends Record<string, MigrationValue>>(
+    query: string,
+    ...bindings: Array<string | number | null>
+  ): { one(): T; toArray(): T[] }
+}
+
 export function runMigrations(
-  sql: SqlStorage,
+  sql: MigrationSql,
   transactionSync: (closure: () => void) => void
 ): void {
-  const rawVersion = sql.exec("SELECT value FROM meta WHERE key = 'schema_version'").one().value
+  const rawVersion = sql
+    .exec<{ value: string | number }>("SELECT value FROM meta WHERE key = 'schema_version'")
+    .one().value
   const storedVersion = storedSchemaVersionSchema.safeParse(rawVersion)
   if (!storedVersion.success) {
     throw new Error('invalid schema_version')
