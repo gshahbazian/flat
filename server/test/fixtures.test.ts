@@ -8,7 +8,13 @@ import { describe, expect, test } from 'vitest'
 import { z } from 'zod'
 
 import { canonicalJson } from '../src/crypto'
-import { invalidCommentBody, invalidEmail, invalidTitle, MAX_COMMENT_BYTES } from '../src/validate'
+import {
+  invalidCommentBody,
+  invalidEmail,
+  invalidTicketBody,
+  invalidTitle,
+  MAX_COMMENT_BYTES,
+} from '../src/validate'
 import {
   commentSchema,
   mutationSchema,
@@ -115,5 +121,13 @@ describe('comment body rule matches the Rust rule', () => {
     expect(invalidCommentBody('a'.repeat(MAX_COMMENT_BYTES + 1))).not.toBeNull()
     expect(invalidCommentBody('é'.repeat(MAX_COMMENT_BYTES / 2))).toBeNull()
     expect(invalidCommentBody('é'.repeat(MAX_COMMENT_BYTES / 2 + 1))).not.toBeNull()
+  })
+})
+
+describe('ticket body rule matches the Rust rule', () => {
+  test('reserves only an exact comment sentinel line', () => {
+    expect(invalidTicketBody('ordinary <!-- flat:comments --> text')).toBeNull()
+    expect(invalidTicketBody('before\n<!-- flat:comments -->\nafter')).not.toBeNull()
+    expect(invalidTicketBody('before\r\n<!-- flat:comments -->\r\nafter')).not.toBeNull()
   })
 })

@@ -74,8 +74,13 @@ delete it and run `flat sync` so Flat restores the base copy.
 
 `flat comment KEY TEXT` adds a single-line or shell-quoted comment.
 `flat comment KEY --stdin` reads multiline Markdown. One form is required and
-they cannot be combined. The CLI journals the create mutation before sending,
-so a lost response is recovered idempotently instead of creating a duplicate.
+they cannot be combined. The CLI journals the create mutation before sending.
+While any mutation remains pending, another comment is refused and `flat sync`
+replays the original mutation ID before a new comment can be added.
+
+The exact `<!-- flat:comments -->` line is reserved and rejected in ticket
+descriptions. Conflict-marker detection stops at that sentinel so matching
+lines inside an immutable comment cannot block later syncs or pushes.
 
 Admins and members with `write` token access may comment. Viewers cannot.
 Human and agent tokens are both supported; attribution always comes from the

@@ -27,10 +27,15 @@ pub struct Merged {
 /// the ticket — an unpushable file that fails every sync. The one predicate
 /// shared by everything that must not treat a half-merged file as clean
 /// (`flat push` refuses it, `flat sync` exits non-zero while any remain).
+/// Rendered comments are immutable server state, so scanning stops at their
+/// sentinel and cannot mistake comment content for a merge conflict.
 pub fn has_markers(content: &str) -> bool {
     const BLOCK: [&str; 3] = ["<<<<<<< local", "=======", ">>>>>>> server"];
     let mut expect = 0;
     for line in content.lines() {
+        if line == markdown::COMMENT_SENTINEL {
+            break;
+        }
         if line == BLOCK[expect] {
             expect += 1;
             if expect == BLOCK.len() {
@@ -262,6 +267,10 @@ mod tests {
         ));
         assert!(!has_markers("a setext heading\n=======\n"));
         assert!(!has_markers("resolved: kept the local side\n"));
+        assert!(!has_markers(&format!(
+            "body\n\n{}\n## Comments\n\n<<<<<<< local\ntheirs\n=======\nours\n>>>>>>> server\n",
+            markdown::COMMENT_SENTINEL
+        )));
     }
 
     #[test]

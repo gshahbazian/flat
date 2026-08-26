@@ -52,10 +52,12 @@ local cache, run `flat sync` and retry.
 Each file ends with a `<!-- flat:comments -->` section rendered from the
 server's append-only comments. Everything from that sentinel onward is
 read-only; `flat push` rejects changed, deleted, or mangled comment sections.
+The exact sentinel line is reserved and cannot appear in a ticket description.
 Use `flat comment KEY TEXT` or `flat comment KEY --stdin` instead. Comment
 bodies preserve Markdown, must contain non-whitespace content, and are limited
-to 1 MiB of UTF-8. Comment creates are journaled before sending, so retrying a
-lost response cannot duplicate them.
+to 1 MiB of UTF-8. Comment creates are journaled before sending. If a mutation
+is already pending, `flat comment` requires `flat sync` to replay it before a
+new comment can be added.
 
 Notes:
 

@@ -209,6 +209,15 @@ fn comment_bodies() {
 }
 
 #[test]
+fn ticket_bodies_reserve_the_comment_sentinel() {
+    assert!(flat_schema::validate_ticket_body("ordinary <!-- flat:comments --> text").is_ok());
+    assert!(flat_schema::validate_ticket_body("before\n<!-- flat:comments -->\nafter").is_err());
+    assert!(
+        flat_schema::validate_ticket_body("before\r\n<!-- flat:comments -->\r\nafter").is_err()
+    );
+}
+
+#[test]
 fn project_keys_and_names() {
     for key in ["DE", "AUTH", "A1", "PROJECT8"] {
         assert!(flat_schema::validate_project_key(key).is_ok(), "{key:?}");

@@ -67,6 +67,7 @@ import {
 import {
   emailSchema,
   invalidCommentBody,
+  invalidTicketBody,
   invalidTitle,
   projectKeySchema,
   projectNameSchema,
@@ -901,8 +902,13 @@ export class TenantDO extends DurableObject<Env> {
     const setsAssignee = Object.hasOwn(parsedSet, 'assignee')
     const assigneeId = setsAssignee ? (parsedSet.assignee ?? null) : null
     const title = parsedSet.title != null ? parsedSet.title.trim() : null
+    const body = parsedSet.body
     if (title !== null) {
       const reason = invalidTitle(title)
+      if (reason) return reject(reason)
+    }
+    if (body !== undefined) {
+      const reason = invalidTicketBody(body)
       if (reason) return reject(reason)
     }
 
@@ -952,7 +958,7 @@ export class TenantDO extends DurableObject<Env> {
         key,
         projectId,
         title,
-        parsedSet.body ?? '',
+        body ?? '',
         parsedSet.status ?? Status.Todo,
         parsedSet.priority ?? Priority.None,
         assigneeId,
@@ -1045,7 +1051,7 @@ export class TenantDO extends DurableObject<Env> {
       parsedSet.priority ?? null,
       setsAssignee ? 1 : 0,
       assigneeId,
-      parsedSet.body ?? null,
+      body ?? null,
       updatedAt,
       seq,
       mutation.entity_id

@@ -182,6 +182,8 @@ Fix in PR #482.
   `<!-- flat:comments -->` sentinel. Edits below the sentinel (or a mangled
   sentinel) reject that ticket's push: "comments are read-only — use
   `flat comment AUTH-142`".
+- **Reserved**: the exact `<!-- flat:comments -->` line cannot appear in the
+  editable description body.
 - `(for <email>)` in a comment heading renders server-derived agent
   attribution. Clients cannot submit the acting member.
 - Comment bodies must contain non-whitespace content and are limited to 1 MiB

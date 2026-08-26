@@ -100,7 +100,9 @@ Editable: `title`, `status` (`backlog|todo|in_progress|in_review|done|canceled`)
 everything from the `<!-- flat:comments -->` sentinel onward. Add comments
 with `flat comment KEY TEXT` or pipe multiline Markdown to `flat comment KEY
 --stdin`. Comments must contain non-whitespace content and may be at most 1 MiB
-of UTF-8.
+of UTF-8. The exact sentinel line is reserved and cannot appear in a ticket
+description. If a mutation is pending, run `flat sync` before adding another
+comment.
 `flat push`
 diffs each file against its base copy and sends one atomic update mutation per
 ticket; replaying a mutation is idempotent. Assignment emails are normalized

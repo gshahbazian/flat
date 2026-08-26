@@ -248,6 +248,14 @@ describe.sequential('comments', () => {
       commentMutation('comment-empty', ' \n\t'),
       commentMutation('comment-unknown', 'body', 'unknown-ticket'),
       commentMutation('comment-large', 'a'.repeat(1024 * 1024 + 1)),
+      {
+        mutation_id: 'ticket-reserved-sentinel',
+        op: 'update',
+        entity: 'ticket',
+        entity_id: TICKET_ID,
+        base_seq: ticket.seq,
+        set: { body: 'before\n<!-- flat:comments -->\nafter' },
+      },
     ])
     expect(invalid.body.applied).toEqual([])
     expect(invalid.body.conflicts.map((conflict) => conflict.reason)).toEqual([
@@ -256,6 +264,7 @@ describe.sequential('comments', () => {
       'comment must not be empty',
       'unknown ticket unknown-ticket',
       'comment exceeds the 1048576-byte limit',
+      'ticket body contains reserved comment sentinel',
     ])
 
     const snapshot = await json<{

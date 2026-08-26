@@ -11,6 +11,7 @@ use typeshare::typeshare;
 
 pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_COMMENT_BYTES: usize = 1024 * 1024;
+pub const COMMENT_SENTINEL: &str = "<!-- flat:comments -->";
 
 /// Validates the immutable, human-facing project key used in ticket aliases
 /// and mirror directory names.
@@ -66,6 +67,15 @@ pub fn validate_comment_body(body: &str) -> Result<(), String> {
         return Err(format!(
             "comment exceeds the {MAX_COMMENT_BYTES}-byte limit"
         ));
+    }
+    Ok(())
+}
+
+/// Ticket bodies cannot contain the line reserved for the rendered comment
+/// section because the local mirror uses it as a structural delimiter.
+pub fn validate_ticket_body(body: &str) -> Result<(), String> {
+    if body.lines().any(|line| line == COMMENT_SENTINEL) {
+        return Err("ticket body contains reserved comment sentinel".into());
     }
     Ok(())
 }

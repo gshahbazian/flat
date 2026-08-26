@@ -55,6 +55,7 @@ files that were not materialized by Flat.
 Edit an existing file's `title`, `status`, `priority`, `assignee`, or
 description body directly. The `id`, `project`, `created`, `updated`, filename,
 and everything from the `<!-- flat:comments -->` sentinel onward are read-only.
+The exact sentinel line is reserved and cannot appear in the description body.
 Valid statuses are `backlog`, `todo`, `in_progress`,
 `in_review`, `done`, and `canceled`. Valid priorities are `none`, `low`,
 `medium`, `high`, and `urgent`. Assignees are member email addresses; use
@@ -70,6 +71,9 @@ Markdown, pipe the content to `flat comment KEY --stdin`. A comment must
 contain non-whitespace content and may be at most 1 MiB of UTF-8. Do not edit
 the rendered comment section in a ticket file; `flat push` rejects changed,
 deleted, or mangled comment sections.
+
+If Flat reports a pending mutation, run `flat sync` before adding another
+comment. This replays the original mutation ID instead of creating a duplicate.
 
 Comments record the accepted token on the server. Human comments render the
 member email. Agent comments render the agent name and member email, including

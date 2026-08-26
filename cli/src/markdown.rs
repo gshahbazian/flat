@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 use anyhow::{bail, Context, Result};
 use flat_schema::{Comment, MemberProfile, Priority, Status, Ticket, TokenKind};
 
-pub const COMMENT_SENTINEL: &str = "<!-- flat:comments -->";
+pub use flat_schema::COMMENT_SENTINEL;
 
 /// The editable fields of one ticket file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +70,7 @@ pub fn render(
     members: &BTreeMap<String, MemberProfile>,
     comments: &[Comment],
 ) -> Result<String> {
+    flat_schema::validate_ticket_body(&ticket.body).map_err(anyhow::Error::msg)?;
     let assignee = assignee_email(ticket, members)?;
     let assignee = assignee.as_deref().unwrap_or("null");
     let project = ticket

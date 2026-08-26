@@ -369,9 +369,7 @@ fn run() -> Result<()> {
             flat_schema::validate_title(&title).map_err(anyhow::Error::msg)?;
             flat_schema::validate_project_key(&project).map_err(anyhow::Error::msg)?;
             let mut checkout = Checkout::open(&root)?;
-            if !checkout.pending_mutations()?.is_empty() {
-                bail!("a previous mutation may not have reached the server; run `flat sync` to replay it first");
-            }
+            require_empty_journal(&checkout)?;
             let project_id = checkout.project(&project)?.id.clone();
             let assignee = assignee
                 .as_deref()
@@ -899,9 +897,7 @@ fn run_project(checkout: &mut Checkout, command: ProjectCommand) -> Result<()> {
             flat_schema::validate_project_key(&key).map_err(anyhow::Error::msg)?;
             let name = name.trim().to_string();
             flat_schema::validate_project_name(&name).map_err(anyhow::Error::msg)?;
-            if !checkout.pending_mutations()?.is_empty() {
-                bail!("a previous mutation may not have reached the server; run `flat sync` to replay it first");
-            }
+            require_empty_journal(checkout)?;
             let mutation = Mutation {
                 mutation_id: Ulid::new().to_string(),
                 op: MutationOp::Create,
@@ -1115,6 +1111,7 @@ fn comment(checkout: &mut Checkout, key: &str, text: Option<String>, stdin: bool
         text.context("comment text is required unless --stdin is used")?
     };
     flat_schema::validate_comment_body(&body).map_err(anyhow::Error::msg)?;
+    require_empty_journal(checkout)?;
     let ticket = checkout
         .state
         .tickets
@@ -1172,6 +1169,15 @@ fn apply_sync_changes(checkout: &mut Checkout, response: &SyncResponse) -> Resul
     Ok(skipped)
 }
 
+fn require_empty_journal(checkout: &Checkout) -> Result<()> {
+    if checkout.pending_mutations()?.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "a previous mutation may not have reached the server; run `flat sync` to replay it first"
+    );
+}
+
 /// Sends mutations, with any journaled pending mutations replayed first
 /// (idempotent server-side). Acknowledged pending entries are cleared.
 fn send(checkout: &mut Checkout, mutations: Vec<Mutation>) -> Result<SyncResponse> {
@@ -1201,6 +1207,7 @@ fn changed_ticket_set(
     base: &markdown::TicketFile,
     path: &Path,
 ) -> Result<TicketSet> {
+    flat_schema::validate_ticket_body(&file.body).map_err(anyhow::Error::msg)?;
     if file.project != base.project {
         bail!("{}: project is read-only", path.display());
     }
@@ -1496,6 +1503,37 @@ mod tests {
         assert!(Cli::try_parse_from(["flat", "comment", "DEMO-1", "body", "--stdin"]).is_err());
     }
 
+    #[test]
+    fn comment_requires_pending_mutations_to_sync_first() {
+        let root = std::env::temp_dir().join(format!("flat-comment-pending-{}", Ulid::new()));
+        let config = Config {
+            server: "https://flat.example".into(),
+            token: "test-token".into(),
+        };
+        let mut checkout = Checkout::initialize(&root, config).unwrap();
+        checkout
+            .write_pending(&Mutation {
+                mutation_id: Ulid::new().to_string(),
+                op: MutationOp::Create,
+                entity: Entity::Comment,
+                entity_id: Ulid::new().to_string(),
+                base_seq: None,
+                set: MutationSet {
+                    ticket: Some("ticket-1".into()),
+                    body: Some("original".into()),
+                    ..MutationSet::default()
+                },
+                owners_add: Vec::new(),
+                owners_remove: Vec::new(),
+            })
+            .unwrap();
+
+        let error = comment(&mut checkout, "DEMO-1", Some("retry".into()), false).unwrap_err();
+        assert!(error.to_string().contains("run `flat sync`"));
+        assert_eq!(checkout.pending_mutations().unwrap().len(), 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn ticket(id: &str, key: &str, title: &str, seq: u32) -> Ticket {
         Ticket {
             id: id.to_string(),
@@ -1631,6 +1669,14 @@ mod tests {
         let error =
             changed_ticket_set(&checkout, &edited, &base, Path::new("DEMO-1.md")).unwrap_err();
         assert!(error.to_string().contains("project is read-only"));
+
+        let mut edited = base.clone();
+        edited.body = format!("before\n{}\nafter", markdown::COMMENT_SENTINEL);
+        let error =
+            changed_ticket_set(&checkout, &edited, &base, Path::new("DEMO-1.md")).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("ticket body contains reserved comment sentinel"));
 
         let mut edited = base.clone();
         edited.comments.push_str("mangled\n");

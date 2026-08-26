@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 export const MAX_COMMENT_BYTES = 1024 * 1024
+export const COMMENT_SENTINEL = '<!-- flat:comments -->'
 
 // Mirrors `flat_schema::validate_title` (schema/src/lib.rs): non-empty,
 // single line, no control characters. A newline would corrupt the markdown
@@ -42,6 +43,13 @@ export function invalidCommentBody(body: string): string | null {
   if (Array.from(body).every(isRustWhitespace)) return 'comment must not be empty'
   if (new TextEncoder().encode(body).byteLength > MAX_COMMENT_BYTES) {
     return `comment exceeds the ${MAX_COMMENT_BYTES}-byte limit`
+  }
+  return null
+}
+
+export function invalidTicketBody(body: string): string | null {
+  if (body.split(/\r?\n/).includes(COMMENT_SENTINEL)) {
+    return 'ticket body contains reserved comment sentinel'
   }
   return null
 }
