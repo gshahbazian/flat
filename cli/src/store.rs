@@ -1,4 +1,4 @@
-//! The out-of-repo mirror: `~/.flat/<host>/DEMO/DEMO-N.md` plus base copies
+//! The out-of-repo mirror: `~/.flat/<host>/<PROJECT>/<PROJECT-N>.md` plus base copies
 //! and sync state under `~/.flat/<host>/.flat/`. `FLAT_DIR` overrides the
 //! root, which also makes a second checkout trivial.
 
@@ -7,13 +7,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use flat_schema::{MemberProfile, Mutation, Ticket, TicketTombstone};
+use flat_schema::{MemberProfile, Mutation, Project, ProjectTombstone, Ticket, TicketTombstone};
 use serde::{Deserialize, Serialize};
 
 use crate::markdown;
 use crate::merge;
-
-pub const PROJECT_KEY: &str = "DEMO";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
@@ -25,6 +23,9 @@ pub struct Config {
 pub struct TicketState {
     /// The ticket's ULID; files and humans only ever see the key.
     pub id: String,
+    /// Immutable project ULID.
+    #[serde(default)]
+    pub project: String,
     /// Seq of the server state our base copy reflects; travels as base_seq.
     pub seq: u32,
 }
@@ -34,6 +35,9 @@ pub struct State {
     pub last_seq: u32,
     /// Ticket key -> local sync state.
     pub tickets: BTreeMap<String, TicketState>,
+    /// Project key -> current synced project row.
+    #[serde(default)]
+    pub projects: BTreeMap<String, Project>,
     /// Member ULID -> safe profile used to render and resolve assignees.
     #[serde(default)]
     pub members: BTreeMap<String, MemberProfile>,
@@ -127,12 +131,13 @@ impl Checkout {
         &self.host_dir
     }
 
-    pub fn mirror_dir(&self) -> PathBuf {
-        self.host_dir.join(PROJECT_KEY)
+    pub fn project_dir(&self, project_key: &str) -> PathBuf {
+        self.host_dir.join(project_key)
     }
 
     pub fn mirror_path(&self, key: &str) -> PathBuf {
-        self.mirror_dir().join(format!("{key}.md"))
+        let project_key = key.rsplit_once('-').map_or(key, |(project, _)| project);
+        self.project_dir(project_key).join(format!("{key}.md"))
     }
 
     pub fn base_path(&self, key: &str) -> PathBuf {
@@ -192,11 +197,20 @@ impl Checkout {
     /// rerunning `flat init` reconciles (tickets absent from the new snapshot
     /// disappear) instead of layering deltas over a stale mirror.
     pub fn reset(&mut self) -> Result<()> {
-        for dir in [
-            self.mirror_dir(),
-            self.host_dir.join(".flat").join("base"),
-            self.pending_dir(),
-        ] {
+        let mut directories = vec![self.host_dir.join(".flat").join("base"), self.pending_dir()];
+        for entry in fs::read_dir(&self.host_dir)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir()
+                && entry.file_name() != ".flat"
+                && entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| flat_schema::validate_project_key(name).is_ok())
+            {
+                directories.push(entry.path());
+            }
+        }
+        for dir in directories {
             match fs::remove_dir_all(&dir) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -224,6 +238,33 @@ impl Checkout {
             .cloned()
             .map(|member| (member.id.clone(), member))
             .collect();
+    }
+
+    pub fn apply_projects(&mut self, projects: &[Project]) {
+        for project in projects {
+            self.state
+                .projects
+                .insert(project.key.clone(), project.clone());
+        }
+    }
+
+    pub fn project(&self, key: &str) -> Result<&Project> {
+        self.state
+            .projects
+            .get(key)
+            .with_context(|| format!("unknown project {key:?}; run `flat sync`"))
+    }
+
+    pub fn resolve_member(&self, email: &str) -> Result<String> {
+        let normalized = flat_schema::normalize_email(email).map_err(anyhow::Error::msg)?;
+        self.state
+            .members
+            .values()
+            .find(|member| member.email == normalized)
+            .map(|member| member.id.clone())
+            .with_context(|| {
+                format!("unknown member {normalized:?} in the local cache; run `flat sync`")
+            })
     }
 
     pub fn resolve_assignee(&self, email: &str) -> Result<String> {
@@ -305,6 +346,22 @@ impl Checkout {
         Ok(())
     }
 
+    pub fn apply_project_tombstones(&mut self, tombstones: &[ProjectTombstone]) -> Result<()> {
+        for tombstone in tombstones {
+            self.state.projects.remove(&tombstone.key);
+            match fs::remove_dir(self.project_dir(&tombstone.key)) {
+                Ok(()) => {}
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::DirectoryNotEmpty
+                    ) => {}
+                Err(error) => return Err(error).context("removing deleted project directory"),
+            }
+        }
+        Ok(())
+    }
+
     /// Writes the outcome of a three-way merge: the merged content (possibly
     /// holding conflict markers) becomes the mirror file, while the base copy
     /// and state advance to the server row — so the next `flat push` sends
@@ -325,6 +382,7 @@ impl Checkout {
             ticket.key.clone(),
             TicketState {
                 id: ticket.id.clone(),
+                project: ticket.project.clone(),
                 seq: ticket.seq,
             },
         );
@@ -448,7 +506,7 @@ fn verify_writable(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use flat_schema::{Priority, Status, TicketTombstone};
+    use flat_schema::{Priority, Project, ProjectTombstone, Status, TicketTombstone};
 
     use super::*;
 
@@ -465,11 +523,25 @@ mod tests {
         }
     }
 
+    fn project(id: &str, key: &str, seq: u32) -> Project {
+        Project {
+            id: id.into(),
+            key: key.into(),
+            display_name: key.into(),
+            description: String::new(),
+            owner_ids: Vec::new(),
+            created_at: "2026-08-25T12:34:56.000Z".into(),
+            updated_at: "2026-08-25T12:34:56.000Z".into(),
+            seq,
+        }
+    }
+
     #[test]
     fn tombstone_removes_a_second_checkouts_mirror_and_base() {
         let ticket = Ticket {
             id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M".to_string(),
             key: "DEMO-1".to_string(),
+            project: "00000000000000000000000000".to_string(),
             title: "Delete me".to_string(),
             body: String::new(),
             status: Status::Todo,
@@ -499,6 +571,68 @@ mod tests {
 
         std::fs::remove_dir_all(first.host_dir()).unwrap();
         std::fs::remove_dir_all(second.host_dir()).unwrap();
+    }
+
+    #[test]
+    fn tickets_materialize_in_their_project_directories() {
+        let mut checkout = checkout("projects");
+        checkout.apply_projects(&[
+            project("project-auth", "AUTH", 1),
+            project("project-bill", "BILL", 2),
+        ]);
+        let tickets = [
+            Ticket {
+                id: "ticket-auth".into(),
+                key: "AUTH-1".into(),
+                project: "project-auth".into(),
+                title: "Auth".into(),
+                body: String::new(),
+                status: Status::Todo,
+                priority: Priority::None,
+                assignee: None,
+                created_at: "2026-08-25T12:34:56.000Z".into(),
+                updated_at: "2026-08-25T12:34:56.000Z".into(),
+                seq: 3,
+            },
+            Ticket {
+                id: "ticket-bill".into(),
+                key: "BILL-1".into(),
+                project: "project-bill".into(),
+                title: "Billing".into(),
+                body: String::new(),
+                status: Status::Todo,
+                priority: Priority::None,
+                assignee: None,
+                created_at: "2026-08-25T12:34:56.000Z".into(),
+                updated_at: "2026-08-25T12:34:56.000Z".into(),
+                seq: 4,
+            },
+        ];
+        checkout
+            .apply_deltas(&tickets, &HashSet::new(), &HashMap::new())
+            .unwrap();
+
+        assert!(checkout.host_dir().join("AUTH/AUTH-1.md").exists());
+        assert!(checkout.host_dir().join("BILL/BILL-1.md").exists());
+
+        checkout
+            .apply_tombstones(&[TicketTombstone {
+                id: "ticket-auth".into(),
+                key: "AUTH-1".into(),
+                seq: 5,
+            }])
+            .unwrap();
+        checkout
+            .apply_project_tombstones(&[ProjectTombstone {
+                id: "project-auth".into(),
+                key: "AUTH".into(),
+                seq: 6,
+            }])
+            .unwrap();
+        assert!(!checkout.project_dir("AUTH").exists());
+        assert!(checkout.project_dir("BILL").exists());
+
+        std::fs::remove_dir_all(checkout.host_dir()).unwrap();
     }
 
     #[test]
@@ -538,5 +672,12 @@ mod tests {
             .resolve_assignee("missing@example.com")
             .unwrap_err();
         assert!(error.to_string().contains("run `flat sync`"));
+    }
+
+    #[test]
+    fn invalid_assignee_preserves_the_validation_error() {
+        let checkout = checkout("invalid-assignee");
+        let error = checkout.resolve_assignee("not-an-email").unwrap_err();
+        assert_eq!(error.to_string(), "invalid_email");
     }
 }

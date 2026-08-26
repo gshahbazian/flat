@@ -1,0 +1,13 @@
+{
+  "mutation_id": "01JG4C7M5FPQRSTVWXYZ012345",
+  "op": "update",
+  "entity": "project",
+  "entity_id": "01JG4BX8QXK6P2M7XKQJH4V8T1",
+  "base_seq": 41,
+  "set": {
+    "display_name": "Demo project",
+    "description": "Migrated tickets"
+  },
+  "owners_add": ["01JG4BZ4M6PQRSTVWXYZ012345"],
+  "owners_remove": ["01JG4BY0G7PQRSTVWXYZ012345"]
+}

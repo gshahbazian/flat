@@ -86,6 +86,7 @@ pub fn merge(
 
     let mut out = String::from("---\n");
     out.push_str(&format!("id: {}\n", server.key));
+    out.push_str(&format!("project: {}\n", base.project));
     push_field(&mut out, "title", &title, |t: &String| t.clone());
     push_field(&mut out, "status", &status, |s| s.as_str().to_string());
     push_field(&mut out, "priority", &priority, |p| p.as_str().to_string());
@@ -200,6 +201,7 @@ mod tests {
     fn file(title: &str, status: Status, body: &str) -> TicketFile {
         TicketFile {
             key: "DEMO-1".into(),
+            project: "DEMO".into(),
             title: title.into(),
             status,
             priority: Priority::None,
@@ -214,6 +216,7 @@ mod tests {
         Ticket {
             id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M".into(),
             key: "DEMO-1".into(),
+            project: "00000000000000000000000000".into(),
             title: title.into(),
             body: body.into(),
             status,

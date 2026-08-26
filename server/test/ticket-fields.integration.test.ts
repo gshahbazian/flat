@@ -168,7 +168,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [
           {
@@ -176,28 +176,41 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
             op: 'create',
             entity: 'ticket',
             entity_id: 'ticket-default',
-            set: { title: 'Default fields' },
+            set: { project: '00000000000000000000000000', title: 'Default fields' },
           },
           {
             mutation_id: 'assigned-ticket',
             op: 'create',
             entity: 'ticket',
             entity_id: 'ticket-assigned',
-            set: { title: 'Assigned ticket', priority: 'high', assignee: assignedId },
+            set: {
+              project: '00000000000000000000000000',
+              title: 'Assigned ticket',
+              priority: 'high',
+              assignee: assignedId,
+            },
           },
           {
             mutation_id: 'missing-assignee',
             op: 'create',
             entity: 'ticket',
             entity_id: 'ticket-missing',
-            set: { title: 'Missing assignee', assignee: 'member-missing' },
+            set: {
+              project: '00000000000000000000000000',
+              title: 'Missing assignee',
+              assignee: 'member-missing',
+            },
           },
           {
             mutation_id: 'pending-assignee',
             op: 'create',
             entity: 'ticket',
             entity_id: 'ticket-pending',
-            set: { title: 'Pending assignee', assignee: pendingId },
+            set: {
+              project: '00000000000000000000000000',
+              title: 'Pending assignee',
+              assignee: pendingId,
+            },
           },
         ],
       })
@@ -230,7 +243,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [priorityUpdate],
       })
@@ -243,7 +256,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [
           {
@@ -265,7 +278,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [
           {
@@ -303,7 +316,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [
           {
@@ -323,7 +336,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [
           {
@@ -344,7 +357,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [
           {
@@ -380,7 +393,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [
           {
@@ -403,7 +416,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [
           {
@@ -444,7 +457,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [replayMutation],
       })
@@ -456,7 +469,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [replayMutation],
       })
@@ -470,7 +483,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [
           {
@@ -478,7 +491,7 @@ describe.sequential('ticket priority, assignment, and timestamps', () => {
             op: 'create',
             entity: 'ticket',
             entity_id: 'ticket-github',
-            set: { title: 'Closed by GitHub' },
+            set: { project: '00000000000000000000000000', title: 'Closed by GitHub' },
           },
         ],
       })

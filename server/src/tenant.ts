@@ -56,12 +56,20 @@ import {
   type MemberProfile,
   type Mutation,
   type MutationConflict,
+  type Project,
+  type ProjectTombstone,
   type Snapshot,
   type SyncResponse,
   type Ticket,
   type TicketTombstone,
 } from './schema.gen'
-import { emailSchema, invalidTitle, tokenNameSchema } from './validate'
+import {
+  emailSchema,
+  invalidTitle,
+  projectKeySchema,
+  projectNameSchema,
+  tokenNameSchema,
+} from './validate'
 import {
   appliedMutationSchema,
   mutationAuthorizationSchema,
@@ -71,7 +79,9 @@ import {
   syncEnvelopeSchema,
 } from './wire-schema'
 
-export const PROTOCOL_VERSION = 1
+export const PROTOCOL_VERSION = 2
+
+const DEFAULT_PROJECT_ID = '00000000000000000000000000'
 
 const BOOTSTRAP_SCHEMA = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -217,39 +227,76 @@ function parseJson(value: string): { success: true; data: unknown } | { success:
   }
 }
 
-function mutationReason(raw: Record<string, unknown>, operation: MutationOp): string {
+function mutationReason(
+  raw: Record<string, unknown>,
+  operation: MutationOp,
+  entity: Entity
+): string {
   const result = mutationInputSchema.safeParse(raw)
   if (result.success) return 'malformed mutation'
+  if (typeof raw.entity_id !== 'string' || raw.entity_id.length === 0) {
+    return 'entity_id is required'
+  }
   const rawSet = jsonObjectSchema.safeParse(raw.set)
+  if (!rawSet.success) return 'set must be an object'
   if (rawSet.success && ('created_at' in rawSet.data || 'updated_at' in rawSet.data)) {
     return 'created_at and updated_at are read-only'
   }
-  const issue = result.error.issues[0]
-  const field = issue.path[0]
-  const setField = issue.path[1]
-  if (field === 'entity_id') return 'entity_id is required'
-  if (field === 'set' && setField === undefined) return 'set must be an object'
-  if (field === 'set' && (setField === 'title' || setField === 'body')) {
-    return `set.${setField} must be a string`
+  const set = rawSet.data
+  if (entity === Entity.Ticket) {
+    for (const field of ['title', 'body'] as const) {
+      if (set[field] != null && typeof set[field] !== 'string') {
+        return `set.${field} must be a string`
+      }
+    }
+    if (set.status != null && !Object.values(Status).some((status) => status === set.status)) {
+      return `unknown status ${JSON.stringify(set.status)}`
+    }
+    if (
+      set.priority != null &&
+      !Object.values(Priority).some((priority) => priority === set.priority)
+    ) {
+      return `unknown priority ${JSON.stringify(set.priority)}`
+    }
+    if (set.assignee !== undefined && set.assignee !== null && typeof set.assignee !== 'string') {
+      return 'set.assignee must be a member id or null'
+    }
+    if (set.project != null && typeof set.project !== 'string') {
+      return 'set.project must be a project id'
+    }
+  } else {
+    if (set.key !== undefined && !projectKeySchema.safeParse(set.key).success) {
+      return 'invalid_project_key'
+    }
+    if (set.display_name !== undefined && !projectNameSchema.safeParse(set.display_name).success) {
+      return 'invalid_project_name'
+    }
+    if (set.description !== undefined && typeof set.description !== 'string') {
+      return 'set.description must be a string'
+    }
   }
-  if (field === 'set' && setField === 'status') {
-    const set = jsonObjectSchema.safeParse(raw.set)
-    const status = set.success ? set.data.status : undefined
-    return `unknown status ${JSON.stringify(status)}`
+  for (const field of ['owners_add', 'owners_remove'] as const) {
+    const value = raw[field]
+    if (
+      value !== undefined &&
+      (!Array.isArray(value) || value.some((item) => typeof item !== 'string'))
+    ) {
+      return `${field} must be a list of member ids`
+    }
   }
-  if (field === 'set' && setField === 'priority') {
-    const set = jsonObjectSchema.safeParse(raw.set)
-    const priority = set.success ? set.data.priority : undefined
-    return `unknown priority ${JSON.stringify(priority)}`
-  }
-  if (field === 'set' && setField === 'assignee') {
-    return 'set.assignee must be a member id or null'
-  }
-  if (field === 'base_seq' && operation === MutationOp.Create) {
+  if (operation === MutationOp.Create && raw.base_seq !== undefined) {
     return 'create must not include base_seq'
   }
-  if (field === 'base_seq') return `${operation} requires a valid base_seq`
-  return 'malformed mutation'
+  if (
+    operation !== MutationOp.Create &&
+    (typeof raw.base_seq !== 'number' ||
+      !Number.isInteger(raw.base_seq) ||
+      raw.base_seq < 0 ||
+      raw.base_seq > 0xffff_ffff)
+  ) {
+    return `${operation} requires a valid base_seq`
+  }
+  return `malformed ${entity} mutation`
 }
 
 async function boundedBody(request: Request, maximumBytes: number): Promise<ArrayBuffer | null> {
@@ -548,6 +595,14 @@ export class TenantDO extends DurableObject<Env> {
           now,
           now
         )
+        this.sql.exec(
+          `INSERT OR IGNORE INTO project_owners
+           (project_id, member_id, created_at, created_by) VALUES (?, ?, ?, ?)`,
+          DEFAULT_PROJECT_ID,
+          memberId,
+          now,
+          memberId
+        )
         this.insertToken(
           token,
           memberId,
@@ -625,12 +680,6 @@ export class TenantDO extends DurableObject<Env> {
           reject('forbidden')
           continue
         }
-        const action = this.mutationAction(authorized.data)
-        if (!may(currentPrincipal, action)) {
-          reject('forbidden')
-          continue
-        }
-
         const hash = hashes[index]
         const prior = this.sql
           .exec<{
@@ -662,13 +711,23 @@ export class TenantDO extends DurableObject<Env> {
           continue
         }
 
+        const action = this.mutationAction(authorized.data)
+        let ownerIds: string[] | undefined
+        if (authorized.data.entity === Entity.Project) {
+          ownerIds = this.projectOwnerIds(authorized.data.entity_id)
+        }
+        if (!may(currentPrincipal, action, { ownerIds })) {
+          reject('forbidden')
+          continue
+        }
+
         const parsed = mutationInputSchema.safeParse(record.data)
         if (!parsed.success) {
-          reject(mutationReason(record.data, authorized.data.op))
+          reject(mutationReason(record.data, authorized.data.op, authorized.data.entity))
           continue
         }
         const mutation = parsed.data
-        const outcome = this.apply(mutation)
+        const outcome = this.apply(mutation, currentPrincipal)
         if ('reason' in outcome) {
           conflicts.push(outcome)
           continue
@@ -690,7 +749,7 @@ export class TenantDO extends DurableObject<Env> {
           action,
           currentPrincipal,
           currentPrincipal.tokenKind,
-          'ticket',
+          mutation.entity,
           outcome.entity_id,
           {
             mutation_id: outcome.mutation_id,
@@ -704,7 +763,9 @@ export class TenantDO extends DurableObject<Env> {
       applied,
       conflicts,
       deltas: this.ticketsSince(lastSeq),
+      project_deltas: this.projectsSince(lastSeq),
       tombstones: this.tombstonesSince(lastSeq),
+      project_tombstones: this.projectTombstonesSince(lastSeq),
       members: this.memberProfiles(),
       latest_seq: this.latestSeq(),
     }
@@ -718,19 +779,42 @@ export class TenantDO extends DurableObject<Env> {
 
   private snapshot(): Snapshot {
     return {
+      projects: this.projects(),
       tickets: this.ticketsSince(0),
       members: this.memberProfiles(),
       latest_seq: this.latestSeq(),
     }
   }
 
-  private mutationAction(mutation: Pick<Mutation, 'entity' | 'op'>): Action {
-    if (mutation.op === MutationOp.Create) return 'ticket.create'
-    if (mutation.op === MutationOp.Update) return 'ticket.update'
-    return 'ticket.delete'
+  private mutationAction(
+    mutation: Pick<Mutation, 'entity' | 'op'> & {
+      owners_add?: unknown
+      owners_remove?: unknown
+    }
+  ): Action {
+    if (mutation.entity === Entity.Ticket) {
+      if (mutation.op === MutationOp.Create) return 'ticket.create'
+      if (mutation.op === MutationOp.Update) return 'ticket.update'
+      return 'ticket.delete'
+    }
+    if (mutation.op === MutationOp.Create) return 'project.create'
+    if (mutation.op === MutationOp.Update) {
+      const ownerDeltas = [mutation.owners_add, mutation.owners_remove]
+      const changesOwners = ownerDeltas.some(
+        (value) => value !== undefined && (!Array.isArray(value) || value.length > 0)
+      )
+      if (changesOwners) return 'project_owner.update'
+      return 'project.update'
+    }
+    return 'project.delete'
   }
 
-  private apply(mutation: Mutation): AppliedMutation | MutationConflict {
+  private apply(mutation: Mutation, principal: Principal): AppliedMutation | MutationConflict {
+    if (mutation.entity === Entity.Project) return this.applyProject(mutation, principal)
+    return this.applyTicket(mutation)
+  }
+
+  private applyTicket(mutation: Mutation): AppliedMutation | MutationConflict {
     const reject = (reason: string): MutationConflict => ({
       mutation_id: mutation.mutation_id,
       entity_id: mutation.entity_id,
@@ -762,6 +846,15 @@ export class TenantDO extends DurableObject<Env> {
         return reject(`ticket ${mutation.entity_id} already exists`)
       }
       if (title == null) return reject('create requires set.title')
+      const projectId = parsedSet.project
+      if (projectId == null) return reject('create requires set.project')
+      const projects = this.sql
+        .exec<{ key: string; next_ticket_num: number }>(
+          'SELECT key, next_ticket_num FROM projects WHERE id = ?',
+          projectId
+        )
+        .toArray()
+      if (projects.length === 0) return reject(`unknown project ${projectId}`)
       if (assigneeId !== null) {
         const assignee = this.memberById(assigneeId)
         if (!assignee) return reject(`unknown assignee ${assigneeId}`)
@@ -769,16 +862,18 @@ export class TenantDO extends DurableObject<Env> {
           return reject(`assignee ${assigneeId} is not active`)
         }
       }
-      const num = Number(this.meta('next_ticket_num'))
-      const key = `${this.meta('project_key')}-${num}`
+      const project = projects[0]
+      const num = project.next_ticket_num
+      const key = `${project.key}-${num}`
       const seq = this.nextSeq()
       const now = isoNow()
       this.sql.exec(
         `INSERT INTO tickets
-         (id, key, title, body, status, priority, assignee, created_at, updated_at, seq)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (id, key, project, title, body, status, priority, assignee, created_at, updated_at, seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         mutation.entity_id,
         key,
+        projectId,
         title,
         parsedSet.body ?? '',
         parsedSet.status ?? Status.Todo,
@@ -788,7 +883,7 @@ export class TenantDO extends DurableObject<Env> {
         now,
         seq
       )
-      this.setMeta('next_ticket_num', String(num + 1))
+      this.sql.exec('UPDATE projects SET next_ticket_num = ? WHERE id = ?', num + 1, projectId)
       this.log(mutation, seq)
       return {
         mutation_id: mutation.mutation_id,
@@ -885,6 +980,205 @@ export class TenantDO extends DurableObject<Env> {
       key,
       seq,
     }
+  }
+
+  private applyProject(
+    mutation: Mutation,
+    principal: Principal
+  ): AppliedMutation | MutationConflict {
+    const reject = (reason: string): MutationConflict => ({
+      mutation_id: mutation.mutation_id,
+      entity_id: mutation.entity_id,
+      reason,
+    })
+    const parsedSet = mutation.set
+
+    if (mutation.op === MutationOp.Create) {
+      if (mutation.base_seq !== undefined) return reject('create must not include base_seq')
+      const duplicateId = this.sql
+        .exec(
+          `SELECT 1 FROM projects WHERE id = ?
+           UNION ALL SELECT 1 FROM project_tombstones WHERE id = ? LIMIT 1`,
+          mutation.entity_id,
+          mutation.entity_id
+        )
+        .toArray()
+      if (duplicateId.length > 0) return reject(`project ${mutation.entity_id} already exists`)
+
+      const keyResult = projectKeySchema.safeParse(parsedSet.key)
+      if (!keyResult.success) return reject('create requires a valid set.key')
+      const nameResult = projectNameSchema.safeParse(parsedSet.display_name)
+      if (!nameResult.success) return reject('create requires a valid set.display_name')
+      const key = keyResult.data
+      const duplicateKey = this.sql
+        .exec(
+          `SELECT 1 FROM projects WHERE key = ?
+           UNION ALL SELECT 1 FROM project_tombstones WHERE key = ? LIMIT 1`,
+          key,
+          key
+        )
+        .toArray()
+      if (duplicateKey.length > 0) return reject(`project key ${key} is already used`)
+
+      const seq = this.nextSeq()
+      const now = isoNow()
+      this.sql.exec(
+        `INSERT INTO projects
+         (id, key, display_name, description, next_ticket_num, created_at, updated_at, seq)
+         VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
+        mutation.entity_id,
+        key,
+        nameResult.data,
+        parsedSet.description ?? '',
+        now,
+        now,
+        seq
+      )
+      this.sql.exec(
+        `INSERT INTO project_owners
+         (project_id, member_id, created_at, created_by) VALUES (?, ?, ?, ?)`,
+        mutation.entity_id,
+        principal.memberId,
+        now,
+        principal.memberId
+      )
+      this.log(mutation, seq)
+      return {
+        mutation_id: mutation.mutation_id,
+        entity_id: mutation.entity_id,
+        key,
+        seq,
+      }
+    }
+
+    const rows = this.sql
+      .exec<{ key: string; seq: number; updated_at: string }>(
+        'SELECT key, seq, updated_at FROM projects WHERE id = ?',
+        mutation.entity_id
+      )
+      .toArray()
+    if (rows.length === 0) return reject(`unknown project ${mutation.entity_id}`)
+    const { key, seq: currentSeq, updated_at: currentUpdatedAt } = rows[0]
+    if (mutation.base_seq === undefined) return reject(`${mutation.op} requires a valid base_seq`)
+    if (mutation.base_seq > currentSeq) {
+      return reject(`base_seq ${mutation.base_seq} is ahead of the project (seq ${currentSeq})`)
+    }
+
+    if (mutation.op === MutationOp.Delete) {
+      const ticketCount = this.sql
+        .exec<{ count: number }>(
+          'SELECT COUNT(*) AS count FROM tickets WHERE project = ?',
+          mutation.entity_id
+        )
+        .one().count
+      if (ticketCount > 0) return reject(`project ${key} contains tickets`)
+      const seq = this.nextSeq()
+      this.sql.exec(
+        'INSERT INTO project_tombstones (id, key, seq) VALUES (?, ?, ?)',
+        mutation.entity_id,
+        key,
+        seq
+      )
+      this.sql.exec('DELETE FROM projects WHERE id = ?', mutation.entity_id)
+      this.log(mutation, seq)
+      return {
+        mutation_id: mutation.mutation_id,
+        entity_id: mutation.entity_id,
+        key,
+        seq,
+      }
+    }
+    if (mutation.op !== MutationOp.Update) {
+      return reject(`unknown op ${JSON.stringify(mutation.op)}`)
+    }
+
+    const ownersAdd = mutation.owners_add ?? []
+    const ownersRemove = mutation.owners_remove ?? []
+    const duplicateOwners = new Set(ownersAdd)
+    if (ownersRemove.some((memberId) => duplicateOwners.has(memberId))) {
+      return reject('an owner cannot be added and removed in the same mutation')
+    }
+    for (const memberId of ownersAdd) {
+      const member = this.memberById(memberId)
+      if (!member) return reject(`unknown owner ${memberId}`)
+      if (member.status !== MemberStatus.Active || member.role === Role.Viewer) {
+        return reject(`owner ${memberId} must be an active member or admin`)
+      }
+    }
+
+    if (mutation.base_seq < currentSeq) {
+      const conflicting = this.projectConflictingFields(mutation, currentSeq)
+      if (conflicting.length > 0) {
+        return reject(
+          `conflicting edits to ${conflicting.join(', ')} (project is at seq ${currentSeq}): run \`flat sync\``
+        )
+      }
+    }
+
+    const name = parsedSet.display_name
+    if (name !== undefined && !projectNameSchema.safeParse(name).success) {
+      return reject('invalid_project_name')
+    }
+    const seq = this.nextSeq()
+    const updatedAt = timestampAfter(currentUpdatedAt)
+    this.sql.exec(
+      `UPDATE projects SET display_name = COALESCE(?, display_name),
+       description = COALESCE(?, description), updated_at = ?, seq = ? WHERE id = ?`,
+      name ?? null,
+      parsedSet.description ?? null,
+      updatedAt,
+      seq,
+      mutation.entity_id
+    )
+    for (const memberId of ownersAdd) {
+      this.sql.exec(
+        `INSERT OR IGNORE INTO project_owners
+         (project_id, member_id, created_at, created_by) VALUES (?, ?, ?, ?)`,
+        mutation.entity_id,
+        memberId,
+        updatedAt,
+        principal.memberId
+      )
+    }
+    for (const memberId of ownersRemove) {
+      this.sql.exec(
+        'DELETE FROM project_owners WHERE project_id = ? AND member_id = ?',
+        mutation.entity_id,
+        memberId
+      )
+    }
+    this.log(mutation, seq)
+    return {
+      mutation_id: mutation.mutation_id,
+      entity_id: mutation.entity_id,
+      key,
+      seq,
+    }
+  }
+
+  private projectConflictingFields(mutation: Mutation, currentSeq: number): string[] {
+    const incoming: string[] = []
+    if (mutation.set.display_name !== undefined) incoming.push('display_name')
+    if (mutation.set.description !== undefined) incoming.push('description')
+    if (incoming.length === 0) return []
+    const changed = new Set<string>()
+    const rows = this.sql
+      .exec<{ payload: string }>(
+        'SELECT payload FROM mutation_log WHERE entity_id = ? AND seq > ? AND seq <= ?',
+        mutation.entity_id,
+        mutation.base_seq ?? 0,
+        currentSeq
+      )
+      .toArray()
+    for (const row of rows) {
+      const parsed = parseJson(row.payload)
+      if (!parsed.success) continue
+      const prior = mutationInputSchema.safeParse(parsed.data)
+      if (!prior.success || prior.data.entity !== Entity.Project) continue
+      if (prior.data.set.display_name !== undefined) changed.add('display_name')
+      if (prior.data.set.description !== undefined) changed.add('description')
+    }
+    return incoming.filter((field) => changed.has(field))
   }
 
   private async handleGithubSetup(
@@ -1047,7 +1341,7 @@ export class TenantDO extends DurableObject<Env> {
           base_seq: currentSeq,
           set: { status: Status.Done },
         }
-        const outcome = this.apply(mutation)
+        const outcome = this.applyTicket(mutation)
         if ('reason' in outcome) {
           throw new Error(`GitHub mutation rejected: ${outcome.reason}`)
         }
@@ -1662,6 +1956,7 @@ export class TenantDO extends DurableObject<Env> {
     }
     const now = isoNow()
     let revokedTokenIds: string[] = []
+    let removedProjectIds: string[] = []
     try {
       this.ctx.storage.transactionSync(() => {
         const currentPrincipal = this.requireCurrentPrincipal(principal, action)
@@ -1674,6 +1969,7 @@ export class TenantDO extends DurableObject<Env> {
           throw new Error('last_active_admin')
         }
         if (status === MemberStatus.Suspended) {
+          removedProjectIds = this.ownedProjectIds(member.id)
           revokedTokenIds = this.sql
             .exec<{ id: string }>(
               'SELECT id FROM tokens WHERE member_id = ? AND revoked_at IS NULL',
@@ -1705,8 +2001,10 @@ export class TenantDO extends DurableObject<Env> {
           )
         }
         const seq = this.nextSeq()
+        this.touchProjects(removedProjectIds, seq)
         this.audit(seq, action, currentPrincipal, currentPrincipal.tokenKind, 'member', member.id, {
           revoked_token_ids: revokedTokenIds,
+          removed_project_owner_ids: removedProjectIds,
         })
       })
     } catch (error) {
@@ -1757,6 +2055,7 @@ export class TenantDO extends DurableObject<Env> {
     const enrollment = possibleUpgrade ? await this.prepareCredential('flat_upg') : null
     const now = isoNow()
     const revokedTokenIds: string[] = []
+    let removedProjectIds: string[] = []
     try {
       this.ctx.storage.transactionSync(() => {
         const currentPrincipal = this.requireCurrentPrincipal(principal, 'member.change_role')
@@ -1802,6 +2101,7 @@ export class TenantDO extends DurableObject<Env> {
             nextCeiling
           )
           if (nextRole === Role.Viewer) {
+            removedProjectIds = this.ownedProjectIds(member.id)
             this.sql.exec('DELETE FROM project_owners WHERE member_id = ?', member.id)
           }
         }
@@ -1823,6 +2123,7 @@ export class TenantDO extends DurableObject<Env> {
           )
         }
         const seq = this.nextSeq()
+        this.touchProjects(removedProjectIds, seq)
         this.audit(
           seq,
           'member.change_role',
@@ -1834,6 +2135,7 @@ export class TenantDO extends DurableObject<Env> {
             from: previousRole,
             to: nextRole,
             revoked_token_ids: revokedTokenIds,
+            removed_project_owner_ids: removedProjectIds,
             upgrade_enrollment_id: enrollment?.id ?? null,
           }
         )
@@ -2317,17 +2619,84 @@ export class TenantDO extends DurableObject<Env> {
   private ticketsSince(seq: number): Ticket[] {
     return this.sql
       .exec<SqlRow<Ticket>>(
-        `SELECT id, key, title, body, status, priority, assignee, created_at, updated_at, seq
+        `SELECT id, key, project, title, body, status, priority, assignee, created_at, updated_at, seq
          FROM tickets WHERE seq > ? ORDER BY seq`,
         seq
       )
       .toArray()
   }
 
+  private projects(): Project[] {
+    return this.projectsSince(-1)
+  }
+
+  private projectsSince(seq: number): Project[] {
+    const projects = this.sql
+      .exec<SqlRow<Omit<Project, 'owner_ids'>>>(
+        `SELECT id, key, display_name, description, created_at, updated_at, seq
+         FROM projects WHERE seq > ? ORDER BY seq, key`,
+        seq
+      )
+      .toArray()
+    return projects.map((project) => ({
+      id: project.id,
+      key: project.key,
+      display_name: project.display_name,
+      description: project.description,
+      owner_ids: this.projectOwnerIds(project.id),
+      created_at: project.created_at,
+      updated_at: project.updated_at,
+      seq: project.seq,
+    }))
+  }
+
+  private projectOwnerIds(projectId: string): string[] {
+    return this.sql
+      .exec<{ member_id: string }>(
+        'SELECT member_id FROM project_owners WHERE project_id = ? ORDER BY member_id',
+        projectId
+      )
+      .toArray()
+      .map((row) => row.member_id)
+  }
+
+  private ownedProjectIds(memberId: string): string[] {
+    return this.sql
+      .exec<{ project_id: string }>(
+        'SELECT project_id FROM project_owners WHERE member_id = ? ORDER BY project_id',
+        memberId
+      )
+      .toArray()
+      .map((row) => row.project_id)
+  }
+
+  private touchProjects(projectIds: string[], seq: number): void {
+    for (const projectId of projectIds) {
+      const project = this.sql
+        .exec<{ updated_at: string }>('SELECT updated_at FROM projects WHERE id = ?', projectId)
+        .one()
+      this.sql.exec(
+        'UPDATE projects SET updated_at = ?, seq = ? WHERE id = ?',
+        timestampAfter(project.updated_at),
+        seq,
+        projectId
+      )
+    }
+  }
+
   private tombstonesSince(seq: number): TicketTombstone[] {
     return this.sql
       .exec<SqlRow<TicketTombstone>>(
         'SELECT id, key, seq FROM ticket_tombstones WHERE seq > ? ORDER BY seq',
+        seq
+      )
+      .toArray()
+  }
+
+  private projectTombstonesSince(seq: number): ProjectTombstone[] {
+    return this.sql
+      .exec<SqlRow<ProjectTombstone>>(
+        'SELECT id, key, seq FROM project_tombstones WHERE seq > ? ORDER BY seq',
         seq
       )
       .toArray()

@@ -4,8 +4,8 @@ Status: accepted design. This document extends `001_initial_system.md` and
 supersedes its bootstrap and member-enrollment details.
 
 Implementation note: the current milestone covers tenant setup, enrollment,
-token/member administration, audit, and authorization for the HTTP ticket-sync
-surface. WebSocket/watch, search, remote MCP, comments, labels, projects,
+token/member administration, audit, projects, and authorization for the HTTP
+ticket-sync surface. WebSocket/watch, search, remote MCP, comments, labels,
 force push, native keychain storage, and the operator-recovery deployment
 procedure remain deferred slices of this accepted design.
 
@@ -122,10 +122,14 @@ may change the project's display name, description, and owner list. Project
 keys remain immutable. Project owners cannot delete projects unless they are
 also tenant admins.
 
+Setup creates the default `DEMO` project and makes the claiming admin its
+first owner.
+
 Comments are append-only in v1. No role can edit or delete a comment. An owner
 may remove any owner, including themselves or the project's final owner. A
 project with no owners remains visible and writable through normal ticket
-operations, but only an admin can change its metadata or add an owner.
+operations. An admin with `write` access may change its metadata, but adding
+an owner requires a human `admin` token.
 Only active members with role `member` or `admin` may be project owners.
 
 `flat push --force` requires normal write permission. It changes conflict
@@ -1020,6 +1024,12 @@ flat token revoke TOKEN_ID
 flat token upgrade
 
 flat delete KEY                        # delete a ticket
+flat project ls
+flat project show KEY
+flat project create KEY --name NAME [--description TEXT]
+flat project update KEY [--name NAME] [--description TEXT]
+flat project owner add KEY EMAIL
+flat project owner remove KEY EMAIL
 flat project delete KEY
 flat label delete NAME
 

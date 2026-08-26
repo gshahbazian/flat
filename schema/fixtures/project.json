@@ -1,0 +1,10 @@
+{
+  "id": "01JG4BX8QXK6P2M7XKQJH4V8T1",
+  "key": "DEMO",
+  "display_name": "Demo",
+  "description": "The migrated default project.",
+  "owner_ids": ["01JG4BZ4M6PQRSTVWXYZ012345"],
+  "created_at": "2026-08-01T10:00:00.000Z",
+  "updated_at": "2026-08-25T13:45:00.000Z",
+  "seq": 41
+}

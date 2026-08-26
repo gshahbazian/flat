@@ -1,6 +1,6 @@
 ---
 name: flat
-description: Use an existing Flat CLI installation to read, create, update, or delete tickets when the user names Flat, provides a Flat ticket key, or refers to a ticket known to be in Flat. Do not use for generic task management or when `flat` is not installed and configured.
+description: Use an existing Flat CLI installation to manage Flat tickets or projects when the user names Flat, provides a Flat ticket or project key, or refers to work known to be in Flat. Do not use for generic task management or when `flat` is not installed and configured.
 ---
 
 # Flat
@@ -17,15 +17,16 @@ to gain access.
 ## Read tickets
 
 Run `flat sync` before relying on the local ticket state. `flat path` prints the
-checkout root; mirrored ticket files are below it, currently in `DEMO/`. Search
-and read the Markdown files there with ordinary filesystem tools such as `rg`
-and `cat`.
+checkout root; mirrored ticket files are grouped into project directories
+below it. Search and read the Markdown files there with ordinary filesystem
+tools such as `rg` and `cat`.
 
 Each ticket is a Markdown file:
 
 ```markdown
 ---
 id: DEMO-1
+project: DEMO
 title: Fix OAuth token refresh race
 status: todo
 priority: high
@@ -39,18 +40,41 @@ Description body.
 
 ## Write tickets
 
-`flat new TITLE [--priority PRIORITY] [--assignee EMAIL]` creates a ticket on
-the server and writes its Markdown file to the mirror. Do not create ticket
-files by hand; `flat push` skips files that were not materialized by Flat.
+`flat new TITLE --project KEY [--priority PRIORITY] [--assignee EMAIL]` creates
+a ticket on the server and writes its Markdown file to that project's mirror
+directory. `--project` is required. Run `flat project ls` after syncing to
+find valid project keys. Do not create ticket files by hand; `flat push` skips
+files that were not materialized by Flat.
 
 Edit an existing file's `title`, `status`, `priority`, `assignee`, or
-description body directly. The `id`, `created`, `updated`, and filename are
-read-only. Valid statuses are `backlog`, `todo`, `in_progress`, `in_review`,
-`done`, and `canceled`. Valid priorities are `none`, `low`, `medium`, `high`,
-and `urgent`. Assignees are member email addresses; use `assignee: null` to
+description body directly. The `id`, `project`, `created`, `updated`, and
+filename are read-only. Valid statuses are `backlog`, `todo`, `in_progress`,
+`in_review`, `done`, and `canceled`. Valid priorities are `none`, `low`,
+`medium`, `high`, and `urgent`. Assignees are member email addresses; use
+`assignee: null` to
 clear an assignment. Flat normalizes assignment emails and resolves them from
 the synced member profiles. If an assignee cannot be found locally, run
 `flat sync` and retry. Run `flat push` to publish local edits to the server.
+
+## Manage projects
+
+Run `flat sync` before relying on project state. `flat project ls` lists all
+projects and `flat project show KEY` shows one. Create a project with
+`flat project create KEY --name NAME [--description TEXT]`. Project keys use
+2-8 uppercase letters or digits, must start with a letter, and cannot be
+changed or reused. The creator becomes the first owner.
+
+Every tenant starts with a `DEMO` project owned by the claiming admin.
+
+Project owners with `write` access can change metadata with
+`flat project update KEY --name NAME`,
+`flat project update KEY --description TEXT`, or both flags together. Manage
+owners with `flat project owner add KEY EMAIL` or
+`flat project owner remove KEY EMAIL`. An admin with `write` access may change
+any project's metadata, but changing owners on a project they do not own,
+including recovering an ownerless project, requires a human `admin` token.
+`flat project delete KEY` also requires a human `admin` token and fails while
+the project contains tickets.
 
 ## Delete tickets
 

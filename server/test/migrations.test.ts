@@ -54,6 +54,9 @@ function baseDatabase(version: number): TestSql {
     PRAGMA foreign_keys = ON;
     CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     INSERT INTO meta (key, value) VALUES ('schema_version', '${version}');
+    INSERT INTO meta (key, value) VALUES ('project_key', 'DEMO');
+    INSERT INTO meta (key, value) VALUES ('next_ticket_num', '1');
+    INSERT INTO meta (key, value) VALUES ('latest_seq', '0');
     CREATE TABLE tickets (
       id TEXT PRIMARY KEY,
       key TEXT NOT NULL UNIQUE,
@@ -74,7 +77,7 @@ function migrate(sql: TestSql): void {
   runMigrations(sql, (closure) => sql.transactionSync(closure))
 }
 
-describe('ticket priority and assignment migration', () => {
+describe('ordered database migrations', () => {
   test('fresh database reaches the latest schema', () => {
     const sql = baseDatabase(0)
     migrate(sql)
@@ -90,6 +93,7 @@ describe('ticket priority and assignment migration', () => {
     expect(columns.map((column) => column.name)).toEqual([
       'id',
       'key',
+      'project',
       'title',
       'body',
       'status',
@@ -115,8 +119,27 @@ describe('ticket priority and assignment migration', () => {
         activated_at TEXT,
         suspended_at TEXT
       );
+      CREATE TABLE tenant_metadata (
+        singleton INTEGER PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        initialized_at TEXT NOT NULL
+      );
+      CREATE TABLE project_owners (
+        project_id TEXT NOT NULL,
+        member_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        created_by TEXT NOT NULL,
+        PRIMARY KEY (project_id, member_id)
+      );
+      INSERT INTO tenant_metadata (singleton, display_name, initialized_at)
+      VALUES (1, 'Migrated tenant', '2026-08-01T10:00:00.000Z');
+      INSERT INTO members
+        (id, email, role, status, invited_by, created_at, activated_at, suspended_at)
+      VALUES ('admin-1', 'admin@example.com', 'admin', 'active', NULL,
+        '2026-08-01T10:00:00.000Z', '2026-08-01T10:00:00.000Z', NULL);
       INSERT INTO tickets (id, key, title, body, status, seq)
       VALUES ('ticket-1', 'DEMO-1', 'Existing ticket', 'Body', 'in_progress', 7);
+      UPDATE meta SET value = '2' WHERE key = 'next_ticket_num';
     `)
 
     migrate(sql)
@@ -125,6 +148,7 @@ describe('ticket priority and assignment migration', () => {
     expect(ticket).toMatchObject({
       id: 'ticket-1',
       key: 'DEMO-1',
+      project: '00000000000000000000000000',
       title: 'Existing ticket',
       body: 'Body',
       status: 'in_progress',
@@ -134,5 +158,13 @@ describe('ticket priority and assignment migration', () => {
     })
     expect(new Date(String(ticket.created_at)).toISOString()).toBe(ticket.created_at)
     expect(ticket.updated_at).toBe(ticket.created_at)
+    expect(sql.database.prepare('SELECT key, next_ticket_num FROM projects').get()).toEqual({
+      key: 'DEMO',
+      next_ticket_num: 2,
+    })
+    expect(sql.database.prepare('SELECT project_id, member_id FROM project_owners').get()).toEqual({
+      project_id: '00000000000000000000000000',
+      member_id: 'admin-1',
+    })
   })
 })

@@ -11,6 +11,7 @@ import { canonicalJson } from '../src/crypto'
 import { invalidEmail, invalidTitle } from '../src/validate'
 import {
   mutationSchema,
+  projectSchema,
   snapshotSchema,
   syncRequestSchema,
   syncResponseSchema,
@@ -28,8 +29,16 @@ describe('schema fixtures round-trip through the generated types', () => {
     expect(ticketSchema.parse(fixture('ticket'))).toEqual(fixture('ticket'))
   })
 
+  test('project', () => {
+    expect(projectSchema.parse(fixture('project'))).toEqual(fixture('project'))
+  })
+
   test('mutation', () => {
     expect(mutationSchema.parse(fixture('mutation'))).toEqual(fixture('mutation'))
+  })
+
+  test('project mutation', () => {
+    expect(mutationSchema.parse(fixture('project_mutation'))).toEqual(fixture('project_mutation'))
   })
 
   test('sync_request', () => {

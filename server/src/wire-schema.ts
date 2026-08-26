@@ -11,13 +11,15 @@ import {
   type MemberProfile,
   type Mutation,
   type MutationConflict,
+  type Project,
+  type ProjectTombstone,
   type Snapshot,
   type SyncRequest,
   type SyncResponse,
   type Ticket,
-  type TicketSet,
   type TicketTombstone,
 } from './schema.gen'
+import { projectKeySchema, projectNameSchema } from './validate'
 
 export const MAX_SEQUENCE = 0xffff_ffff
 
@@ -41,76 +43,129 @@ const optionalPrioritySchema = z.preprocess(
   prioritySchema.optional()
 )
 
-export const ticketSetSchema = z
+const ticketCreateSetSchema = z
   .object({
+    project: z.string().optional(),
     title: z.string().optional(),
     status: statusSchema.optional(),
     priority: prioritySchema.optional(),
     assignee: z.string().nullable().optional(),
     body: z.string().optional(),
   })
-  .strict() satisfies z.ZodType<TicketSet>
+  .strict()
 
-export const ticketSetInputSchema = z
+const ticketCreateSetInputSchema = z
   .object({
+    project: optionalStringSchema,
     title: optionalStringSchema,
     status: optionalStatusSchema,
     priority: optionalPrioritySchema,
     assignee: z.string().nullable().optional(),
     body: optionalStringSchema,
   })
-  .strict() satisfies z.ZodType<TicketSet>
+  .strict()
+
+export const ticketSetSchema = ticketCreateSetSchema.omit({ project: true })
+export const ticketSetInputSchema = ticketCreateSetInputSchema.omit({ project: true })
+
+const projectCreateSetSchema = z
+  .object({
+    key: projectKeySchema.optional(),
+    display_name: projectNameSchema.optional(),
+    description: z.string().optional(),
+  })
+  .strict()
+
+const projectUpdateSetSchema = projectCreateSetSchema.omit({ key: true })
+
+const ownerDeltas = {
+  owners_add: z.array(z.string()).optional().default([]),
+  owners_remove: z.array(z.string()).optional().default([]),
+}
 
 const mutationBaseShape = {
   mutation_id: z.string().min(1),
-  entity: z.literal(Entity.Ticket),
   entity_id: z.string().min(1),
 }
 
-const createMutationSchema = z.object({
+const ticketCreateMutationSchema = z.object({
   ...mutationBaseShape,
+  entity: z.literal(Entity.Ticket),
   op: z.literal(MutationOp.Create),
   base_seq: z.undefined().optional(),
-  set: ticketSetSchema,
+  set: ticketCreateSetSchema,
+  owners_add: z.undefined().optional(),
+  owners_remove: z.undefined().optional(),
 })
 
-const updateMutationSchema = z.object({
+const ticketUpdateMutationSchema = z.object({
   ...mutationBaseShape,
+  entity: z.literal(Entity.Ticket),
   op: z.literal(MutationOp.Update),
   base_seq: sequenceSchema,
   set: ticketSetSchema,
+  owners_add: z.undefined().optional(),
+  owners_remove: z.undefined().optional(),
 })
 
-const deleteMutationSchema = z.object({
+const ticketDeleteMutationSchema = z.object({
   ...mutationBaseShape,
+  entity: z.literal(Entity.Ticket),
   op: z.literal(MutationOp.Delete),
   base_seq: sequenceSchema,
-  set: ticketSetSchema,
+  set: z.object({}).strict(),
+  owners_add: z.undefined().optional(),
+  owners_remove: z.undefined().optional(),
 })
 
-export const mutationSchema = z.discriminatedUnion('op', [
-  createMutationSchema,
-  updateMutationSchema,
-  deleteMutationSchema,
+const projectCreateMutationSchema = z.object({
+  ...mutationBaseShape,
+  entity: z.literal(Entity.Project),
+  op: z.literal(MutationOp.Create),
+  base_seq: z.undefined().optional(),
+  set: projectCreateSetSchema,
+  owners_add: z.undefined().optional(),
+  owners_remove: z.undefined().optional(),
+})
+
+const projectUpdateMutationSchema = z.object({
+  ...mutationBaseShape,
+  ...ownerDeltas,
+  entity: z.literal(Entity.Project),
+  op: z.literal(MutationOp.Update),
+  base_seq: sequenceSchema,
+  set: projectUpdateSetSchema,
+})
+
+const projectDeleteMutationSchema = z.object({
+  ...mutationBaseShape,
+  entity: z.literal(Entity.Project),
+  op: z.literal(MutationOp.Delete),
+  base_seq: sequenceSchema,
+  set: z.object({}).strict(),
+  owners_add: z.undefined().optional(),
+  owners_remove: z.undefined().optional(),
+})
+
+export const mutationSchema = z.union([
+  ticketCreateMutationSchema,
+  ticketUpdateMutationSchema,
+  ticketDeleteMutationSchema,
+  projectCreateMutationSchema,
+  projectUpdateMutationSchema,
+  projectDeleteMutationSchema,
 ]) satisfies z.ZodType<Mutation>
 
-const createMutationInputSchema = createMutationSchema.extend({
-  set: ticketSetInputSchema.optional().default({}),
-})
+const mutationInputSchemas = [
+  ticketCreateMutationSchema.extend({ set: ticketCreateSetInputSchema.optional().default({}) }),
+  ticketUpdateMutationSchema.extend({ set: ticketSetInputSchema.optional().default({}) }),
+  ticketDeleteMutationSchema.extend({ set: z.object({}).strict().optional().default({}) }),
+  projectCreateMutationSchema.extend({ set: projectCreateSetSchema.optional().default({}) }),
+  projectUpdateMutationSchema.extend({ set: projectUpdateSetSchema.optional().default({}) }),
+  projectDeleteMutationSchema.extend({ set: z.object({}).strict().optional().default({}) }),
+] as const
 
-const updateMutationInputSchema = updateMutationSchema.extend({
-  set: ticketSetInputSchema.optional().default({}),
-})
-
-const deleteMutationInputSchema = deleteMutationSchema.extend({
-  set: ticketSetInputSchema.optional().default({}),
-})
-
-export const mutationInputSchema = z.discriminatedUnion('op', [
-  createMutationInputSchema,
-  updateMutationInputSchema,
-  deleteMutationInputSchema,
-]) satisfies z.ZodType<Mutation>
+export const mutationInputSchema = z.union(mutationInputSchemas) satisfies z.ZodType<Mutation>
 
 export const mutationRecordSchema = z.looseObject({})
 
@@ -122,18 +177,20 @@ export const mutationIdentitySchema = z.object({
 export const mutationAuthorizationSchema = z.object({
   mutation_id: z.string().min(1),
   entity_id: z.string().catch(''),
-  entity: z.literal(Entity.Ticket),
+  entity: z.enum(Entity),
   op: mutationOpSchema,
+  owners_add: z.unknown().optional(),
+  owners_remove: z.unknown().optional(),
 })
 
 export const syncEnvelopeSchema = z.object({
-  protocol_version: z.literal(1),
+  protocol_version: z.literal(2),
   last_seq: sequenceSchema,
   mutations: z.array(z.unknown()),
 })
 
 export const syncRequestSchema = z.object({
-  protocol_version: z.literal(1),
+  protocol_version: z.literal(2),
   last_seq: sequenceSchema,
   mutations: z.array(mutationSchema),
 }) satisfies z.ZodType<SyncRequest>
@@ -154,6 +211,7 @@ export const mutationConflictSchema = z.object({
 export const ticketSchema = z.object({
   id: z.string(),
   key: z.string(),
+  project: z.string(),
   title: z.string(),
   body: z.string(),
   status: statusSchema,
@@ -164,11 +222,28 @@ export const ticketSchema = z.object({
   seq: sequenceSchema,
 }) satisfies z.ZodType<Ticket>
 
+export const projectSchema = z.object({
+  id: z.string(),
+  key: z.string(),
+  display_name: z.string(),
+  description: z.string(),
+  owner_ids: z.array(z.string()),
+  created_at: z.string(),
+  updated_at: z.string(),
+  seq: sequenceSchema,
+}) satisfies z.ZodType<Project>
+
 export const ticketTombstoneSchema = z.object({
   id: z.string(),
   key: z.string(),
   seq: sequenceSchema,
 }) satisfies z.ZodType<TicketTombstone>
+
+export const projectTombstoneSchema = z.object({
+  id: z.string(),
+  key: z.string(),
+  seq: sequenceSchema,
+}) satisfies z.ZodType<ProjectTombstone>
 
 export const memberProfileSchema = z.object({
   id: z.string(),
@@ -183,12 +258,15 @@ export const syncResponseSchema = z.object({
   applied: z.array(appliedMutationSchema),
   conflicts: z.array(mutationConflictSchema),
   deltas: z.array(ticketSchema),
+  project_deltas: z.array(projectSchema).optional(),
   tombstones: z.array(ticketTombstoneSchema).optional(),
+  project_tombstones: z.array(projectTombstoneSchema).optional(),
   members: z.array(memberProfileSchema).optional(),
   latest_seq: sequenceSchema,
 }) satisfies z.ZodType<SyncResponse>
 
 export const snapshotSchema = z.object({
+  projects: z.array(projectSchema),
   tickets: z.array(ticketSchema),
   members: z.array(memberProfileSchema).optional(),
   latest_seq: sequenceSchema,

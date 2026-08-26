@@ -2,7 +2,7 @@
 //! and require the result to be byte-for-byte the same JSON value. Catches
 //! renamed fields, wrong enum casing, and dropped fields on either side.
 
-use flat_schema::{Mutation, Snapshot, SyncRequest, SyncResponse, Ticket, TicketSet};
+use flat_schema::{Mutation, Project, Snapshot, SyncRequest, SyncResponse, Ticket, TicketSet};
 use serde::{de::DeserializeOwned, Serialize};
 
 fn roundtrip<T: Serialize + DeserializeOwned>(name: &str) {
@@ -25,8 +25,18 @@ fn ticket() {
 }
 
 #[test]
+fn project() {
+    roundtrip::<Project>("project");
+}
+
+#[test]
 fn mutation() {
     roundtrip::<Mutation>("mutation");
+}
+
+#[test]
+fn project_mutation() {
+    roundtrip::<Mutation>("project_mutation");
 }
 
 #[test]
@@ -162,4 +172,19 @@ fn token_names() {
     for name in ["", "bad name", "-leading", &"a".repeat(65)] {
         assert!(flat_schema::validate_token_name(name).is_err(), "{name:?}");
     }
+}
+
+#[test]
+fn project_keys_and_names() {
+    for key in ["DE", "AUTH", "A1", "PROJECT8"] {
+        assert!(flat_schema::validate_project_key(key).is_ok(), "{key:?}");
+    }
+    for key in ["", "A", "demo", "DE-MO", "PROJECT99"] {
+        assert!(flat_schema::validate_project_key(key).is_err(), "{key:?}");
+    }
+
+    assert!(flat_schema::validate_project_name(" Authentication ").is_ok());
+    assert!(flat_schema::validate_project_name("").is_err());
+    assert!(flat_schema::validate_project_name("bad\nname").is_err());
+    assert!(flat_schema::validate_project_name(&"a".repeat(81)).is_err());
 }

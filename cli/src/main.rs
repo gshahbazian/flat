@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use flat_schema::{
-    Entity, Mutation, MutationOp, Priority, SyncRequest, SyncResponse, Ticket, TicketSet,
-    PROTOCOL_VERSION,
+    Entity, Mutation, MutationOp, MutationSet, Priority, Project, SyncRequest, SyncResponse,
+    Ticket, TicketSet, PROTOCOL_VERSION,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -58,6 +58,9 @@ enum Command {
     /// Create a ticket on the server and materialize its file.
     New {
         title: String,
+        /// Project key, e.g. AUTH.
+        #[arg(long)]
+        project: String,
         #[arg(long)]
         priority: Option<Priority>,
         #[arg(long)]
@@ -95,8 +98,48 @@ enum Command {
         #[command(subcommand)]
         command: AuditCommand,
     },
+    /// Project administration.
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommand,
+    },
     /// Delete a ticket (admin human token required).
     Delete { key: String },
+}
+
+#[derive(Subcommand)]
+enum ProjectCommand {
+    Ls,
+    Show {
+        key: String,
+    },
+    Create {
+        key: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value = "")]
+        description: String,
+    },
+    Update {
+        key: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+    },
+    Owner {
+        #[command(subcommand)]
+        command: ProjectOwnerCommand,
+    },
+    Delete {
+        key: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ProjectOwnerCommand {
+    Add { key: String, email: String },
+    Remove { key: String, email: String },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -307,15 +350,18 @@ fn run() -> Result<()> {
         }
         Command::New {
             title,
+            project,
             priority,
             assignee,
         } => {
             let title = title.trim().to_string();
             flat_schema::validate_title(&title).map_err(anyhow::Error::msg)?;
+            flat_schema::validate_project_key(&project).map_err(anyhow::Error::msg)?;
             let mut checkout = Checkout::open(&root)?;
             if !checkout.pending_mutations()?.is_empty() {
                 bail!("a previous mutation may not have reached the server; run `flat sync` to replay it first");
             }
+            let project_id = checkout.project(&project)?.id.clone();
             let assignee = assignee
                 .as_deref()
                 .map(|email| checkout.resolve_assignee(email).map(Some))
@@ -330,12 +376,16 @@ fn run() -> Result<()> {
                 entity_id: Ulid::new().to_string(),
                 base_seq: None,
                 set: TicketSet {
+                    project: Some(project_id),
                     title: Some(title),
                     status: None,
                     priority,
                     assignee,
                     body: None,
+                    ..TicketSet::default()
                 },
+                owners_add: Vec::new(),
+                owners_remove: Vec::new(),
             };
             let mutation_id = mutation.mutation_id.clone();
             checkout.write_pending(&mutation)?;
@@ -353,9 +403,11 @@ fn run() -> Result<()> {
                 .find(|a| a.mutation_id == mutation_id)
                 .context("server returned no result")?
                 .clone();
+            checkout.apply_projects(&response.project_deltas);
             let skipped =
                 checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
             checkout.apply_tombstones(&response.tombstones)?;
+            checkout.apply_project_tombstones(&response.project_tombstones)?;
             report_kept(&checkout, &skipped);
             if skipped.is_empty() {
                 checkout.state.last_seq = response.latest_seq;
@@ -377,9 +429,11 @@ fn run() -> Result<()> {
             for conflict in &response.conflicts {
                 eprintln!("pending mutation rejected: {}", conflict.reason);
             }
+            checkout.apply_projects(&response.project_deltas);
             let skipped =
                 checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
             checkout.apply_tombstones(&response.tombstones)?;
+            checkout.apply_project_tombstones(&response.project_tombstones)?;
             let unresolved = if merge {
                 merge_skipped(&mut checkout, &skipped)?
             } else {
@@ -419,10 +473,14 @@ fn run() -> Result<()> {
                     marked.len()
                 );
             }
+            let changed = response.deltas.len()
+                + response.project_deltas.len()
+                + response.tombstones.len()
+                + response.project_tombstones.len();
             println!(
-                "synced {} changes ({} deleted, seq {})",
-                response.deltas.len() + response.tombstones.len(),
+                "synced {changed} changes ({} tickets deleted, {} projects deleted, seq {})",
                 response.tombstones.len(),
+                response.project_tombstones.len(),
                 response.latest_seq
             );
         }
@@ -464,6 +522,7 @@ fn run() -> Result<()> {
         Command::Member { command } => run_member(&Checkout::open(&root)?, command)?,
         Command::Token { command } => run_token(&Checkout::open(&root)?, command)?,
         Command::Audit { command } => run_audit(&Checkout::open(&root)?, command)?,
+        Command::Project { command } => run_project(&mut Checkout::open(&root)?, command)?,
         Command::Delete { key } => delete_ticket(&mut Checkout::open(&root)?, &key)?,
     }
     Ok(())
@@ -486,12 +545,14 @@ fn initialize_checkout(
     let mut checkout = Checkout::initialize(root, config)?;
     checkout.reset()?;
     checkout.update_members(&snapshot.members);
+    checkout.apply_projects(&snapshot.projects);
     checkout.apply_deltas(&snapshot.tickets, &HashSet::new(), &HashMap::new())?;
     checkout.state.last_seq = snapshot.latest_seq;
     checkout.save_state()?;
     println!(
-        "initialized {} ({} tickets, seq {})",
-        checkout.mirror_dir().display(),
+        "initialized {} ({} projects, {} tickets, seq {})",
+        checkout.host_dir().display(),
+        snapshot.projects.len(),
         snapshot.tickets.len(),
         snapshot.latest_seq
     );
@@ -801,6 +862,199 @@ fn run_audit(checkout: &Checkout, command: AuditCommand) -> Result<()> {
     print_json(&response)
 }
 
+fn run_project(checkout: &mut Checkout, command: ProjectCommand) -> Result<()> {
+    match command {
+        ProjectCommand::Ls => {
+            let projects: Vec<Value> = checkout
+                .state
+                .projects
+                .values()
+                .map(|project| project_json(checkout, project))
+                .collect();
+            print_json(&json!({ "projects": projects }))
+        }
+        ProjectCommand::Show { key } => {
+            print_json(&project_json(checkout, checkout.project(&key)?))
+        }
+        ProjectCommand::Create {
+            key,
+            name,
+            description,
+        } => {
+            flat_schema::validate_project_key(&key).map_err(anyhow::Error::msg)?;
+            let name = name.trim().to_string();
+            flat_schema::validate_project_name(&name).map_err(anyhow::Error::msg)?;
+            if !checkout.pending_mutations()?.is_empty() {
+                bail!("a previous mutation may not have reached the server; run `flat sync` to replay it first");
+            }
+            let mutation = Mutation {
+                mutation_id: Ulid::new().to_string(),
+                op: MutationOp::Create,
+                entity: Entity::Project,
+                entity_id: Ulid::new().to_string(),
+                base_seq: None,
+                set: MutationSet {
+                    key: Some(key),
+                    display_name: Some(name),
+                    description: Some(description),
+                    ..MutationSet::default()
+                },
+                owners_add: Vec::new(),
+                owners_remove: Vec::new(),
+            };
+            checkout.write_pending(&mutation)?;
+            execute_project_mutation(
+                checkout,
+                mutation.mutation_id.clone(),
+                Vec::new(),
+                "created",
+            )
+        }
+        ProjectCommand::Update {
+            key,
+            name,
+            description,
+        } => {
+            if name.is_none() && description.is_none() {
+                bail!("provide --name or --description");
+            }
+            let project = checkout.project(&key)?.clone();
+            let name = name
+                .map(|name| {
+                    let name = name.trim().to_string();
+                    flat_schema::validate_project_name(&name)
+                        .map(|()| name)
+                        .map_err(anyhow::Error::msg)
+                })
+                .transpose()?;
+            let mutation = project_update_mutation(
+                &project,
+                MutationSet {
+                    display_name: name,
+                    description,
+                    ..MutationSet::default()
+                },
+                Vec::new(),
+                Vec::new(),
+            );
+            execute_project_mutation(
+                checkout,
+                mutation.mutation_id.clone(),
+                vec![mutation],
+                "updated",
+            )
+        }
+        ProjectCommand::Owner { command } => {
+            let (key, email, add) = match command {
+                ProjectOwnerCommand::Add { key, email } => (key, email, true),
+                ProjectOwnerCommand::Remove { key, email } => (key, email, false),
+            };
+            let project = checkout.project(&key)?.clone();
+            let member_id = checkout.resolve_member(&email)?;
+            let (owners_add, owners_remove) = if add {
+                (vec![member_id], Vec::new())
+            } else {
+                (Vec::new(), vec![member_id])
+            };
+            let mutation = project_update_mutation(
+                &project,
+                MutationSet::default(),
+                owners_add,
+                owners_remove,
+            );
+            execute_project_mutation(
+                checkout,
+                mutation.mutation_id.clone(),
+                vec![mutation],
+                "updated",
+            )
+        }
+        ProjectCommand::Delete { key } => {
+            let project = checkout.project(&key)?.clone();
+            let mutation = Mutation {
+                mutation_id: Ulid::new().to_string(),
+                op: MutationOp::Delete,
+                entity: Entity::Project,
+                entity_id: project.id,
+                base_seq: Some(project.seq),
+                set: MutationSet::default(),
+                owners_add: Vec::new(),
+                owners_remove: Vec::new(),
+            };
+            execute_project_mutation(
+                checkout,
+                mutation.mutation_id.clone(),
+                vec![mutation],
+                "deleted",
+            )
+        }
+    }
+}
+
+fn project_update_mutation(
+    project: &Project,
+    set: MutationSet,
+    owners_add: Vec<String>,
+    owners_remove: Vec<String>,
+) -> Mutation {
+    Mutation {
+        mutation_id: Ulid::new().to_string(),
+        op: MutationOp::Update,
+        entity: Entity::Project,
+        entity_id: project.id.clone(),
+        base_seq: Some(project.seq),
+        set,
+        owners_add,
+        owners_remove,
+    }
+}
+
+fn execute_project_mutation(
+    checkout: &mut Checkout,
+    mutation_id: String,
+    mutations: Vec<Mutation>,
+    verb: &str,
+) -> Result<()> {
+    let response = send(checkout, mutations)?;
+    apply_sync_changes(checkout, &response)?;
+    if let Some(conflict) = response
+        .conflicts
+        .iter()
+        .find(|conflict| conflict.mutation_id == mutation_id)
+    {
+        bail!("project mutation rejected: {}", conflict.reason);
+    }
+    let applied = response
+        .applied
+        .iter()
+        .find(|applied| applied.mutation_id == mutation_id)
+        .context("server returned no project mutation result")?;
+    println!("{verb} {}", applied.key);
+    Ok(())
+}
+
+fn project_json(checkout: &Checkout, project: &Project) -> Value {
+    let owners: Vec<&str> = project
+        .owner_ids
+        .iter()
+        .map(|member_id| {
+            checkout
+                .state
+                .members
+                .get(member_id)
+                .map_or(member_id.as_str(), |member| member.email.as_str())
+        })
+        .collect();
+    json!({
+        "key": project.key,
+        "display_name": project.display_name,
+        "description": project.description,
+        "owners": owners,
+        "created_at": project.created_at,
+        "updated_at": project.updated_at,
+    })
+}
+
 fn delete_ticket(checkout: &mut Checkout, key: &str) -> Result<()> {
     let state = checkout
         .state
@@ -815,6 +1069,8 @@ fn delete_ticket(checkout: &mut Checkout, key: &str) -> Result<()> {
         entity_id: state.id,
         base_seq: Some(state.seq),
         set: TicketSet::default(),
+        owners_add: Vec::new(),
+        owners_remove: Vec::new(),
     };
     let mutation_id = mutation.mutation_id.clone();
     let response = send(checkout, vec![mutation])?;
@@ -836,8 +1092,14 @@ fn delete_ticket(checkout: &mut Checkout, key: &str) -> Result<()> {
 }
 
 fn apply_delete_changes(checkout: &mut Checkout, response: &SyncResponse) -> Result<Vec<Ticket>> {
+    apply_sync_changes(checkout, response)
+}
+
+fn apply_sync_changes(checkout: &mut Checkout, response: &SyncResponse) -> Result<Vec<Ticket>> {
+    checkout.apply_projects(&response.project_deltas);
     let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
     checkout.apply_tombstones(&response.tombstones)?;
+    checkout.apply_project_tombstones(&response.project_tombstones)?;
     report_kept(checkout, &skipped);
     if skipped.is_empty() {
         checkout.state.last_seq = response.latest_seq;
@@ -874,6 +1136,9 @@ fn changed_ticket_set(
     base: &markdown::TicketFile,
     path: &Path,
 ) -> Result<TicketSet> {
+    if file.project != base.project {
+        bail!("{}: project is read-only", path.display());
+    }
     if file.created != base.created {
         bail!("{}: created is read-only", path.display());
     }
@@ -897,28 +1162,35 @@ fn changed_ticket_set(
         priority: (file.priority != base.priority).then_some(file.priority),
         assignee,
         body: (file.body != base.body).then(|| file.body.clone()),
+        ..TicketSet::default()
     })
 }
 
 /// Diffs every mirror file against its base copy and pushes one update
 /// mutation per dirty ticket.
 fn push(checkout: &mut Checkout) -> Result<()> {
-    let mirror_dir = checkout.mirror_dir();
     let mut mutations = Vec::new();
     // The exact bytes each mutation was built from: after the push, a mirror
     // file may only be clobbered if it still matches (an edit saved while the
     // request was in flight is not on the server and must survive).
     let mut pushed = HashMap::new();
 
-    let mut entries: Vec<_> = match fs::read_dir(&mirror_dir) {
-        Ok(entries) => entries.collect::<std::io::Result<_>>()?,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(e) => return Err(e).context(format!("reading {}", mirror_dir.display())),
-    };
-    entries.sort_by_key(|e| e.file_name());
+    let mut paths = Vec::new();
+    for project_entry in fs::read_dir(checkout.host_dir())? {
+        let project_entry = project_entry?;
+        if !project_entry.file_type()?.is_dir() || project_entry.file_name() == ".flat" {
+            continue;
+        }
+        for entry in fs::read_dir(project_entry.path())? {
+            let path = entry?.path();
+            if path.extension().and_then(|extension| extension.to_str()) == Some("md") {
+                paths.push(path);
+            }
+        }
+    }
+    paths.sort();
 
-    for entry in entries {
-        let path = entry.path();
+    for path in paths {
         if path.extension().and_then(|e| e.to_str()) != Some("md") {
             continue;
         }
@@ -971,6 +1243,8 @@ fn push(checkout: &mut Checkout) -> Result<()> {
             entity_id: ticket_state.id.clone(),
             base_seq: Some(ticket_state.seq),
             set,
+            owners_add: Vec::new(),
+            owners_remove: Vec::new(),
         });
     }
 
@@ -1011,8 +1285,10 @@ fn push(checkout: &mut Checkout) -> Result<()> {
     // state (the row folds them together with whatever disjoint fields the
     // server changed). last_seq only advances on a clean push so a later sync
     // re-delivers anything skipped here.
+    checkout.apply_projects(&response.project_deltas);
     let skipped = checkout.apply_deltas(&response.deltas, &conflicted, &pushed)?;
     checkout.apply_tombstones(&response.tombstones)?;
+    checkout.apply_project_tombstones(&response.project_tombstones)?;
     report_kept(checkout, &skipped);
     if conflicted.is_empty() && skipped.is_empty() {
         checkout.state.last_seq = response.latest_seq;
@@ -1082,6 +1358,8 @@ mod tests {
             "flat",
             "new",
             "Title",
+            "--project",
+            "DEMO",
             "--priority",
             "urgent",
             "--assignee",
@@ -1091,10 +1369,12 @@ mod tests {
         match cli.command {
             Command::New {
                 title,
+                project,
                 priority,
                 assignee,
             } => {
                 assert_eq!(title, "Title");
+                assert_eq!(project, "DEMO");
                 assert_eq!(priority, Some(Priority::Urgent));
                 assert_eq!(assignee.as_deref(), Some("Gabe@Example.com"));
             }
@@ -1104,9 +1384,17 @@ mod tests {
 
     #[test]
     fn new_rejects_invalid_priority() {
-        let error = Cli::try_parse_from(["flat", "new", "Title", "--priority", "critical"])
-            .err()
-            .expect("invalid priority should fail parsing");
+        let error = Cli::try_parse_from([
+            "flat",
+            "new",
+            "Title",
+            "--project",
+            "DEMO",
+            "--priority",
+            "critical",
+        ])
+        .err()
+        .expect("invalid priority should fail parsing");
         assert!(error.to_string().contains("unknown priority"));
     }
 
@@ -1114,6 +1402,7 @@ mod tests {
         Ticket {
             id: id.to_string(),
             key: key.to_string(),
+            project: "00000000000000000000000000".to_string(),
             title: title.to_string(),
             body: String::new(),
             status: Status::Todo,
@@ -1151,11 +1440,13 @@ mod tests {
             applied: Vec::new(),
             conflicts: Vec::new(),
             deltas: vec![updated.clone()],
+            project_deltas: Vec::new(),
             tombstones: vec![TicketTombstone {
                 id: deleted.id.clone(),
                 key: deleted.key.clone(),
                 seq: 4,
             }],
+            project_tombstones: Vec::new(),
             members: Vec::new(),
             latest_seq: 4,
         };
@@ -1184,6 +1475,7 @@ mod tests {
         let checkout = Checkout::open(&root).unwrap();
         let base = markdown::TicketFile {
             key: "DEMO-1".into(),
+            project: "DEMO".into(),
             title: "Title".into(),
             status: Status::Todo,
             priority: Priority::None,
@@ -1200,7 +1492,7 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_edits_are_rejected_but_legacy_files_are_compatible() {
+    fn readonly_edits_are_rejected() {
         let root = std::env::temp_dir().join(format!("flat-readonly-{}", Ulid::new()));
         let config = Config {
             server: "https://flat.example".to_string(),
@@ -1208,28 +1500,36 @@ mod tests {
         };
         store::save_config(&root, &config).unwrap();
         let checkout = Checkout::open(&root).unwrap();
-        let legacy = markdown::parse("---\nid: DEMO-1\ntitle: Title\nstatus: todo\n---\n").unwrap();
-        let mut edited_legacy = legacy.clone();
-        edited_legacy.title = "Legacy edit".into();
+        let base =
+            markdown::parse("---\nid: DEMO-1\nproject: DEMO\ntitle: Title\nstatus: todo\n---\n")
+                .unwrap();
+        let mut edited_title = base.clone();
+        edited_title.title = "Edited".into();
         assert_eq!(
-            changed_ticket_set(&checkout, &edited_legacy, &legacy, Path::new("DEMO-1.md")).unwrap(),
+            changed_ticket_set(&checkout, &edited_title, &base, Path::new("DEMO-1.md")).unwrap(),
             TicketSet {
-                title: Some("Legacy edit".into()),
+                title: Some("Edited".into()),
                 ..TicketSet::default()
             }
         );
 
-        let mut edited = legacy.clone();
+        let mut edited = base.clone();
         edited.created = Some("changed".into());
         let error =
-            changed_ticket_set(&checkout, &edited, &legacy, Path::new("DEMO-1.md")).unwrap_err();
+            changed_ticket_set(&checkout, &edited, &base, Path::new("DEMO-1.md")).unwrap_err();
         assert!(error.to_string().contains("created is read-only"));
 
-        let mut edited = legacy.clone();
+        let mut edited = base.clone();
         edited.updated = Some("changed".into());
         let error =
-            changed_ticket_set(&checkout, &edited, &legacy, Path::new("DEMO-1.md")).unwrap_err();
+            changed_ticket_set(&checkout, &edited, &base, Path::new("DEMO-1.md")).unwrap_err();
         assert!(error.to_string().contains("updated is read-only"));
+
+        let mut edited = base.clone();
+        edited.project = "AUTH".into();
+        let error =
+            changed_ticket_set(&checkout, &edited, &base, Path::new("DEMO-1.md")).unwrap_err();
+        assert!(error.to_string().contains("project is read-only"));
         std::fs::remove_dir_all(root).unwrap();
     }
 }

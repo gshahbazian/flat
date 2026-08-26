@@ -4,15 +4,15 @@ A ticket system with no UI, designed for AI agents: tickets sync down to plain
 markdown files that agents grep, edit, and push back. See
 [docs/001_initial_system.md](docs/001_initial_system.md) for the full design.
 
-Current implemented slice: ticket priority, assignment, timestamps, per-member
-permissions for the HTTP ticket-sync and administration surfaces, and GitHub
-PR webhooks. A deployment is claimed once, admins invite members, each
-installation or agent has a distinct credential, and the Durable Object
-enforces role, access, and token-kind permissions. Signed GitHub pull-request
-webhooks can silently close tickets.
+Current implemented slice: projects and ownership, multi-project mirrors,
+ticket priority, assignment, timestamps, per-member permissions for the HTTP
+ticket-sync and administration surfaces, and GitHub PR webhooks. A deployment
+is claimed once, admins invite members, and each installation or agent has a
+distinct credential. The Durable Object enforces role, access, and token-kind
+permissions. Signed GitHub pull-request webhooks can silently close tickets.
 
 The broader accepted design is not complete yet. WebSocket/watch sessions,
-search and remote MCP, comments, labels, projects, force pushes, native
+search and remote MCP, comments, labels, force pushes, native
 OS-keychain storage, and the operator-recovery deployment runbook remain
 explicit follow-up work.
 
@@ -45,20 +45,24 @@ cargo build
 alias flat=target/debug/flat
 flat init http://localhost:8787 --setup
 # local setup code: flat_setup_CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk
-flat new "Fix OAuth token refresh race" --priority high --assignee gabe@acme.com
-$EDITOR "$(flat path)/DEMO/DEMO-1.md"     # edit fields or description body
+# setup creates a default DEMO project
+flat project create AUTH --name "Authentication"
+flat new "Fix OAuth token refresh race" --project AUTH --priority high --assignee gabe@acme.com
+$EDITOR "$(flat path)/AUTH/AUTH-1.md"     # edit fields or description body
 flat push
 flat sync
 ```
 
-The mirror lives out-of-repo at `~/.flat/<host>/DEMO/DEMO-N.md` (`FLAT_DIR`
-overrides the root, which is also the easy way to make a second checkout).
+The mirror lives out-of-repo at `~/.flat/<host>/<PROJECT>/<PROJECT-N>.md`
+(`FLAT_DIR` overrides the root, which is also the easy way to make a second
+checkout).
 
 ## The file format
 
 ```markdown
 ---
 id: DEMO-1
+project: DEMO
 title: Fix OAuth token refresh race
 status: todo
 priority: high
@@ -72,7 +76,8 @@ Description body.
 
 Editable: `title`, `status` (`backlog|todo|in_progress|in_review|done|canceled`),
 `priority` (`none|low|medium|high|urgent`), `assignee` (a member email or
-`null`), and the body. Read-only: `id`, `created`, and `updated`. `flat push`
+`null`), and the body. Read-only: `id`, `project`, `created`, and `updated`.
+`flat push`
 diffs each file against its base copy and sends one atomic update mutation per
 ticket; replaying a mutation is idempotent. Assignment emails are normalized
 and resolved through the synced member cache; run `flat sync` when a member is

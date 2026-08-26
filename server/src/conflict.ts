@@ -6,12 +6,12 @@
 // rejected (whole — mutations are atomic per ticket) only when it sets a
 // field the server also changed. The CLI resolves rejections client-side,
 // where the base copy lives: `flat sync --merge`.
-import type { TicketSet } from './schema.gen'
+import type { MutationSet } from './schema.gen'
 
 export const TICKET_FIELDS = ['title', 'status', 'priority', 'assignee', 'body'] as const
 export type TicketField = (typeof TICKET_FIELDS)[number]
 
-export function fieldsSet(set: TicketSet | null | undefined): TicketField[] {
+export function fieldsSet(set: MutationSet | null | undefined): TicketField[] {
   if (!set) return []
   return TICKET_FIELDS.filter((field) => {
     if (field === 'assignee') return Object.hasOwn(set, field)
@@ -21,8 +21,8 @@ export function fieldsSet(set: TicketSet | null | undefined): TicketField[] {
 
 /** Fields the incoming `set` touches that any of `serverSets` also touched. */
 export function conflictingFields(
-  incoming: TicketSet,
-  serverSets: (TicketSet | null | undefined)[]
+  incoming: MutationSet,
+  serverSets: (MutationSet | null | undefined)[]
 ): TicketField[] {
   const changed = new Set(serverSets.flatMap(fieldsSet))
   return fieldsSet(incoming).filter((field) => changed.has(field))

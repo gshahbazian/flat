@@ -45,7 +45,7 @@ describe('wire schemas', () => {
 
   test('validates the sync envelope without rejecting individual mutations', () => {
     const result = syncEnvelopeSchema.parse({
-      protocol_version: 1,
+      protocol_version: 2,
       last_seq: 0,
       mutations: [null, { mutation_id: 'bad' }],
     })

@@ -1,5 +1,5 @@
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "last_seq": 40,
   "mutations": [
     {
@@ -8,6 +8,7 @@
       "entity": "ticket",
       "entity_id": "01JG4C5E2MZYXWVTSRQPNMKJHG",
       "set": {
+        "project": "01JG4BX8QXK6P2M7XKQJH4V8T1",
         "title": "hello",
         "status": "todo",
         "priority": "none",

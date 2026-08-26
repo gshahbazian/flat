@@ -100,11 +100,22 @@ export function may(
     )
   }
 
-  if (action === 'project.update' || action === 'project_owner.update') {
+  if (action === 'project.update') {
     if (!accessAtLeast(principal.access, TokenAccess.Write)) return false
     if (principal.role === Role.Admin) return true
     return (
       principal.role === Role.Member && resource.ownerIds?.includes(principal.memberId) === true
+    )
+  }
+
+  if (action === 'project_owner.update') {
+    if (!accessAtLeast(principal.access, TokenAccess.Write)) return false
+    const ownsProject = resource.ownerIds?.includes(principal.memberId) === true
+    if (ownsProject && principal.role !== Role.Viewer) return true
+    return (
+      principal.role === Role.Admin &&
+      principal.tokenKind === TokenKind.Human &&
+      principal.access === TokenAccess.Admin
     )
   }
 
