@@ -237,6 +237,81 @@ describe.sequential('TenantDO integration', () => {
       expect(response.body.error).toBe('malformed_sync_request')
     }
 
+    const malformedMutations = await json<{
+      applied: unknown[]
+      conflicts: Array<{ mutation_id: string; entity_id: string; reason: string }>
+    }>(
+      worker,
+      '/sync',
+      authenticated(adminToken, {
+        protocol_version: 1,
+        last_seq: 0,
+        mutations: [
+          null,
+          { entity_id: 'ticket-1' },
+          {
+            mutation_id: 'bad-entity-id',
+            op: 'create',
+            entity: 'ticket',
+            entity_id: 42,
+            set: {},
+          },
+          {
+            mutation_id: 'bad-set',
+            op: 'create',
+            entity: 'ticket',
+            entity_id: 'ticket-2',
+            set: [],
+          },
+          {
+            mutation_id: 'bad-title',
+            op: 'create',
+            entity: 'ticket',
+            entity_id: 'ticket-3',
+            set: { title: 42 },
+          },
+          {
+            mutation_id: 'bad-status',
+            op: 'create',
+            entity: 'ticket',
+            entity_id: 'ticket-4',
+            set: { title: 'Title', status: 'unknown' },
+          },
+          {
+            mutation_id: 'bad-base-seq',
+            op: 'update',
+            entity: 'ticket',
+            entity_id: 'ticket-5',
+            base_seq: -1,
+            set: {},
+          },
+        ],
+      })
+    )
+    expect(malformedMutations.response.status).toBe(200)
+    expect(malformedMutations.body.applied).toEqual([])
+    expect(malformedMutations.body.conflicts).toEqual([
+      { mutation_id: '', entity_id: '', reason: 'malformed mutation' },
+      { mutation_id: '', entity_id: 'ticket-1', reason: 'mutation_id is required' },
+      { mutation_id: 'bad-entity-id', entity_id: '', reason: 'entity_id is required' },
+      { mutation_id: 'bad-set', entity_id: 'ticket-2', reason: 'set must be an object' },
+      {
+        mutation_id: 'bad-title',
+        entity_id: 'ticket-3',
+        reason: 'set.title must be a string',
+      },
+      {
+        mutation_id: 'bad-status',
+        entity_id: 'ticket-4',
+        reason: 'unknown status "unknown"',
+      },
+      {
+        mutation_id: 'bad-base-seq',
+        entity_id: 'ticket-5',
+        reason: 'update requires a valid base_seq',
+      },
+    ])
+
     const agent = await json<{ token: string; metadata: { id: string } }>(
       worker,
       '/tokens',

@@ -1,3 +1,5 @@
+import { z } from 'zod'
+
 const KEY = '[A-Z][A-Z0-9]{1,7}-\\d+'
 const KEY_CASE_INSENSITIVE = '[A-Za-z][A-Za-z0-9]{1,7}-\\d+'
 const VALID_KEY = new RegExp(`^${KEY}$`)
@@ -5,6 +7,56 @@ const KEY_AT_START = new RegExp(`^(${KEY})(?=$|[\\s,.;:!?)\\] }])`)
 const PHRASE = new RegExp(
   `\\b(?:close|closes|closed|closing|fix|fixes|fixed|fixing|resolve|resolves|resolved|resolving|complete|completes|completed|completing)(?::)?[ \\t]+(${KEY_CASE_INSENSITIVE})(?=$|[\\s,.;:!?)\\] }])`,
   'gi'
+)
+
+export const githubPayloadSchema = z.looseObject({
+  action: z.unknown().optional(),
+})
+
+export const githubMergeTargetSchema = z.looseObject({
+  pull_request: z.looseObject({
+    merged: z.boolean(),
+    base: z.looseObject({ ref: z.string() }),
+  }),
+  repository: z.looseObject({ default_branch: z.string() }),
+})
+
+const githubPullRequestSchema = z
+  .looseObject({
+    number: z.unknown().optional(),
+    pull_request: z.looseObject({
+      number: z.unknown().optional(),
+      title: z.string().max(1024),
+      body: z.string().nullable().optional(),
+      merged: z.literal(true),
+      html_url: z.string().max(2048),
+      base: z.looseObject({ ref: z.string().max(255) }),
+    }),
+    repository: z.looseObject({
+      full_name: z.string().max(256),
+      default_branch: z.string().max(255),
+    }),
+  })
+  .transform((payload) => ({
+    pullNumber: payload.pull_request.number ?? payload.number,
+    title: payload.pull_request.title,
+    body: payload.pull_request.body ?? null,
+    url: payload.pull_request.html_url,
+    baseRef: payload.pull_request.base.ref,
+    repository: payload.repository.full_name,
+    defaultBranch: payload.repository.default_branch,
+  }))
+
+export const relevantGithubPullRequestSchema = githubPullRequestSchema.pipe(
+  z.object({
+    pullNumber: z.number().int().positive(),
+    title: z.string(),
+    body: z.string().nullable(),
+    url: z.string(),
+    baseRef: z.string(),
+    repository: z.string(),
+    defaultBranch: z.string(),
+  })
 )
 
 function stripMarkdown(value: string): string {
@@ -85,21 +137,4 @@ export async function verifyGithubSignature(
     ['verify']
   )
   return crypto.subtle.verify('HMAC', key, expected, body)
-}
-
-export interface GithubPullRequestPayload {
-  action?: string
-  number?: number
-  pull_request?: {
-    number?: number
-    title?: string
-    body?: string | null
-    merged?: boolean
-    html_url?: string
-    base?: { ref?: string }
-  }
-  repository?: {
-    full_name?: string
-    default_branch?: string
-  }
 }

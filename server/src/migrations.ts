@@ -1,4 +1,11 @@
+import { z } from 'zod'
+
 export const LATEST_SCHEMA_VERSION = 3
+
+const storedSchemaVersionSchema = z.union([z.string(), z.number()])
+const schemaVersionSchema = storedSchemaVersionSchema
+  .transform((value) => Number(value))
+  .pipe(z.number().int().nonnegative())
 
 const MIGRATIONS = [
   `CREATE TABLE github_deliveries (
@@ -112,13 +119,15 @@ export function runMigrations(
   transactionSync: (closure: () => void) => void
 ): void {
   const rawVersion = sql.exec("SELECT value FROM meta WHERE key = 'schema_version'").one().value
-  if (typeof rawVersion !== 'string' && typeof rawVersion !== 'number') {
+  const storedVersion = storedSchemaVersionSchema.safeParse(rawVersion)
+  if (!storedVersion.success) {
     throw new Error('invalid schema_version')
   }
-  const version = Number(rawVersion)
-  if (!Number.isInteger(version) || version < 0) {
-    throw new Error(`invalid schema_version ${rawVersion}`)
+  const parsedVersion = schemaVersionSchema.safeParse(storedVersion.data)
+  if (!parsedVersion.success) {
+    throw new Error(`invalid schema_version ${storedVersion.data}`)
   }
+  const version = parsedVersion.data
   if (version > LATEST_SCHEMA_VERSION) {
     throw new Error(
       `database schema ${version} is newer than server schema ${LATEST_SCHEMA_VERSION}`

@@ -13,10 +13,36 @@ import {
   verifyHmac,
   type HmacKey,
 } from './crypto'
-import { closingTicketKeys, verifyGithubSignature } from './github'
+import {
+  closingTicketKeys,
+  githubMergeTargetSchema,
+  githubPayloadSchema,
+  relevantGithubPullRequestSchema,
+  verifyGithubSignature,
+} from './github'
 import type { Env } from './index'
 import { runMigrations } from './migrations'
 import { may, roleCeiling, validTokenAccess, type Action, type Principal } from './policy'
+import {
+  bulkInvitationSchema,
+  bulkInvitationMarkerSchema,
+  durationSchema,
+  emailBodySchema,
+  enrollmentBodySchema,
+  invitationSchema,
+  jsonObjectSchema,
+  memberRoleBodySchema,
+  operatorRecoveryBodySchema,
+  setupBodySchema,
+  setupIdentitySchema,
+  socketAttachmentSchema,
+  stringValueSchema,
+  tokenCreateBodySchema,
+  tokenAccessSchema,
+  tokenRevokeBodySchema,
+  tokenUpgradeBodySchema,
+  upgradeCreationBodySchema,
+} from './request-schema'
 import {
   Entity,
   MemberStatus,
@@ -32,10 +58,17 @@ import {
   type Snapshot,
   type SyncResponse,
   type Ticket,
-  type TicketSet,
   type TicketTombstone,
 } from './schema.gen'
-import { invalidEmail, invalidTenantName, invalidTitle, invalidTokenName } from './validate'
+import { emailSchema, invalidTitle, tokenNameSchema } from './validate'
+import {
+  appliedMutationSchema,
+  mutationAuthorizationSchema,
+  mutationIdentitySchema,
+  mutationInputSchema,
+  mutationRecordSchema,
+  syncEnvelopeSchema,
+} from './wire-schema'
 
 export const PROTOCOL_VERSION = 1
 
@@ -69,21 +102,13 @@ INSERT OR IGNORE INTO meta (key, value) VALUES ('latest_seq', '0');
 INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '0');
 `
 
-const STATUSES = new Set<string>(Object.values(Status))
-const ROLES = new Set(Object.values(Role))
-const TOKEN_KINDS = new Set(Object.values(TokenKind))
-const TOKEN_ACCESS = new Set(Object.values(TokenAccess))
 const DEFAULT_ENROLLMENT_SECONDS = 24 * 60 * 60
 const MAX_ENROLLMENT_SECONDS = 7 * 24 * 60 * 60
 const DEFAULT_AGENT_SECONDS = 30 * 24 * 60 * 60
 const MAX_AGENT_SECONDS = 90 * 24 * 60 * 60
 const LAST_USED_WRITE_INTERVAL_MS = 5 * 60 * 1000
-const MAX_SEQUENCE = 0xffff_ffff
 const MAX_GITHUB_BODY_BYTES = 1024 * 1024
 const MAX_GITHUB_DELIVERY_LENGTH = 128
-const MAX_GITHUB_REPOSITORY_LENGTH = 256
-const MAX_GITHUB_URL_LENGTH = 2048
-const MAX_GITHUB_TITLE_LENGTH = 1024
 
 class PrincipalChangedError extends Error {
   constructor(
@@ -164,50 +189,48 @@ function addSeconds(timestamp: string, seconds: number): string {
   return new Date(Date.parse(timestamp) + seconds * 1000).toISOString()
 }
 
-function enumValue<T extends string>(value: unknown, allowed: ReadonlySet<T>): T | null {
-  if (typeof value !== 'string') return null
-  for (const item of allowed) {
-    if (item === value) return item
-  }
-  return null
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-}
-
 type SqlRow<T> = T & Record<string, SqlStorageValue>
-
-function duration(value: unknown, fallback: number, maximum: number): number | null {
-  if (value === undefined) return fallback
-  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > maximum) {
-    return null
-  }
-  return value
-}
-
-function parseApplied(value: unknown): AppliedMutation | null {
-  if (!isRecord(value)) return null
-  if (typeof value.mutation_id !== 'string') return null
-  if (typeof value.entity_id !== 'string') return null
-  if (typeof value.key !== 'string') return null
-  if (typeof value.seq !== 'number') return null
-  return {
-    mutation_id: value.mutation_id,
-    entity_id: value.entity_id,
-    key: value.key,
-    seq: value.seq,
-  }
-}
 
 async function requestObject(request: Request): Promise<Record<string, unknown> | null> {
   try {
     const value = await request.json<unknown>()
-    if (!isRecord(value)) return null
-    return value
+    const result = jsonObjectSchema.safeParse(value)
+    if (!result.success) return null
+    return result.data
   } catch {
     return null
   }
+}
+
+function parseJson(value: string): { success: true; data: unknown } | { success: false } {
+  try {
+    return { success: true, data: JSON.parse(value) }
+  } catch {
+    return { success: false }
+  }
+}
+
+function mutationReason(raw: Record<string, unknown>, operation: MutationOp): string {
+  const result = mutationInputSchema.safeParse(raw)
+  if (result.success) return 'malformed mutation'
+  const issue = result.error.issues[0]
+  const field = issue.path[0]
+  const setField = issue.path[1]
+  if (field === 'entity_id') return 'entity_id is required'
+  if (field === 'set' && setField === undefined) return 'set must be an object'
+  if (field === 'set' && (setField === 'title' || setField === 'body')) {
+    return `set.${setField} must be a string`
+  }
+  if (field === 'set' && setField === 'status') {
+    const set = jsonObjectSchema.safeParse(raw.set)
+    const status = set.success ? set.data.status : undefined
+    return `unknown status ${JSON.stringify(status)}`
+  }
+  if (field === 'base_seq' && operation === MutationOp.Create) {
+    return 'create must not include base_seq'
+  }
+  if (field === 'base_seq') return `${operation} requires a valid base_seq`
+  return 'malformed mutation'
 }
 
 async function boundedBody(request: Request, maximumBytes: number): Promise<ArrayBuffer | null> {
@@ -364,7 +387,8 @@ export class TenantDO extends DurableObject<Env> {
     prefix: 'flat_setup' | 'flat_oprec',
     configured: string | undefined
   ): Promise<boolean> {
-    const value = typeof credential === 'string' ? credential : ''
+    const parsedCredential = stringValueSchema.safeParse(credential)
+    const value = parsedCredential.success ? parsedCredential.data : ''
     const wellFormed =
       value.startsWith(`${prefix}_`) && /^[A-Za-z0-9_-]{43,}$/.test(value.slice(prefix.length + 1))
     const parsed = configuredVerifier(configured)
@@ -465,23 +489,25 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   private async handleSetup(request: Request): Promise<Response> {
-    const body = await requestObject(request)
-    if (!body) return jsonError(400, 'invalid_json')
+    const rawBody = await requestObject(request)
+    if (!rawBody) return jsonError(400, 'invalid_json')
+    const body = setupBodySchema.parse(rawBody)
     if (this.initialized()) return jsonError(409, 'setup_already_completed')
     const validSecret = await this.verifyConfiguredCredential(
-      body.setup_credential ?? body.credential,
+      body.credential,
       'flat_setup',
       this.env.FLAT_SETUP_VERIFIER
     )
     if (!validSecret) return jsonError(401, 'invalid_setup')
 
-    const email = invalidEmail(body.email ?? body.admin_email)
-    if (email === null) return jsonError(422, 'invalid_email')
-    const tenantName = invalidTenantName(body.tenant_name ?? body.display_name)
-    if (tenantName === null) return jsonError(422, 'invalid_tenant_name')
-    const rawTokenName = body.token_name ?? body.cli_name ?? body.name
-    const tokenName = typeof rawTokenName === 'string' ? rawTokenName.trim() : ''
-    if (invalidTokenName(tokenName)) return jsonError(422, 'invalid_token_name')
+    const identity = setupIdentitySchema.safeParse(body)
+    if (!identity.success) {
+      const field = identity.error.issues[0].path[0]
+      if (field === 'email') return jsonError(422, 'invalid_email')
+      if (field === 'tenantName') return jsonError(422, 'invalid_tenant_name')
+      return jsonError(422, 'invalid_token_name')
+    }
+    const { email, tenantName, tokenName } = identity.data
 
     const token = await this.prepareCredential('flat_pat')
     const memberId = newUlid()
@@ -540,22 +566,16 @@ export class TenantDO extends DurableObject<Env> {
 
   private async handleSync(request: Request, principal: Principal): Promise<Response> {
     if (!may(principal, 'work.read')) return jsonError(403, 'forbidden')
-    const body = await requestObject(request)
-    if (!body) return jsonError(400, 'invalid_json')
-    if (body.protocol_version !== PROTOCOL_VERSION) {
+    const rawBody = await requestObject(request)
+    if (!rawBody) return jsonError(400, 'invalid_json')
+    if (rawBody.protocol_version !== PROTOCOL_VERSION) {
       return jsonError(400, 'unsupported_protocol_version')
     }
-    if (
-      !Array.isArray(body.mutations) ||
-      typeof body.last_seq !== 'number' ||
-      !Number.isSafeInteger(body.last_seq) ||
-      body.last_seq < 0 ||
-      body.last_seq > MAX_SEQUENCE
-    ) {
+    const envelope = syncEnvelopeSchema.safeParse(rawBody)
+    if (!envelope.success) {
       return jsonError(400, 'malformed_sync_request')
     }
-    const lastSeq = body.last_seq
-    const mutations = body.mutations
+    const { last_seq: lastSeq, mutations } = envelope.data
 
     const hashes = await Promise.all(mutations.map((mutation) => canonicalSha256(mutation)))
 
@@ -564,24 +584,30 @@ export class TenantDO extends DurableObject<Env> {
     this.ctx.storage.transactionSync(() => {
       const currentPrincipal = this.requireCurrentPrincipal(principal, 'work.read')
       for (const [index, raw] of mutations.entries()) {
-        if (!isRecord(raw)) {
+        const record = mutationRecordSchema.safeParse(raw)
+        if (!record.success) {
           conflicts.push({ mutation_id: '', entity_id: '', reason: 'malformed mutation' })
           continue
         }
-        const mutation = raw
+        const identity = mutationIdentitySchema.parse(record.data)
         const reject = (reason: string): void => {
           conflicts.push({
-            mutation_id: typeof mutation.mutation_id === 'string' ? mutation.mutation_id : '',
-            entity_id: typeof mutation.entity_id === 'string' ? mutation.entity_id : '',
+            mutation_id: identity.mutation_id,
+            entity_id: identity.entity_id,
             reason,
           })
         }
-        if (typeof mutation.mutation_id !== 'string' || mutation.mutation_id.length === 0) {
+        if (identity.mutation_id.length === 0) {
           reject('mutation_id is required')
           continue
         }
-        const action = this.mutationAction(mutation)
-        if (!action || !may(currentPrincipal, action)) {
+        const authorized = mutationAuthorizationSchema.safeParse(record.data)
+        if (!authorized.success) {
+          reject('forbidden')
+          continue
+        }
+        const action = this.mutationAction(authorized.data)
+        if (!may(currentPrincipal, action)) {
           reject('forbidden')
           continue
         }
@@ -595,7 +621,7 @@ export class TenantDO extends DurableObject<Env> {
           }>(
             `SELECT actor_member_id, mutation_hash, COALESCE(stored_result, result) AS stored_result
            FROM applied_mutations WHERE mutation_id = ?`,
-            mutation.mutation_id
+            authorized.data.mutation_id
           )
           .toArray()[0]
         if (prior) {
@@ -603,15 +629,26 @@ export class TenantDO extends DurableObject<Env> {
             reject('mutation_id_reused')
             continue
           }
-          const stored = parseApplied(JSON.parse(prior.stored_result))
-          if (!stored) {
+          const storedJson = parseJson(prior.stored_result)
+          if (!storedJson.success) {
             reject('stored_result_corrupt')
             continue
           }
-          applied.push(stored)
+          const stored = appliedMutationSchema.safeParse(storedJson.data)
+          if (!stored.success) {
+            reject('stored_result_corrupt')
+            continue
+          }
+          applied.push(stored.data)
           continue
         }
 
+        const parsed = mutationInputSchema.safeParse(record.data)
+        if (!parsed.success) {
+          reject(mutationReason(record.data, authorized.data.op))
+          continue
+        }
+        const mutation = parsed.data
         const outcome = this.apply(mutation)
         if ('reason' in outcome) {
           conflicts.push(outcome)
@@ -668,46 +705,19 @@ export class TenantDO extends DurableObject<Env> {
     }
   }
 
-  private mutationAction(mutation: Record<string, unknown> | Mutation): Action | null {
-    if (mutation.entity !== Entity.Ticket) return null
+  private mutationAction(mutation: Pick<Mutation, 'entity' | 'op'>): Action {
     if (mutation.op === MutationOp.Create) return 'ticket.create'
     if (mutation.op === MutationOp.Update) return 'ticket.update'
-    if (mutation.op === MutationOp.Delete) return 'ticket.delete'
-    return null
+    return 'ticket.delete'
   }
 
-  private apply(mutation: Record<string, unknown> | Mutation): AppliedMutation | MutationConflict {
+  private apply(mutation: Mutation): AppliedMutation | MutationConflict {
     const reject = (reason: string): MutationConflict => ({
-      mutation_id: typeof mutation.mutation_id === 'string' ? mutation.mutation_id : '',
-      entity_id: typeof mutation.entity_id === 'string' ? mutation.entity_id : '',
+      mutation_id: mutation.mutation_id,
+      entity_id: mutation.entity_id,
       reason,
     })
-    if (mutation.entity !== Entity.Ticket) {
-      return reject(`unknown entity ${JSON.stringify(mutation.entity)}`)
-    }
-    if (typeof mutation.mutation_id !== 'string' || mutation.mutation_id.length === 0) {
-      return reject('mutation_id is required')
-    }
-    if (typeof mutation.entity_id !== 'string' || mutation.entity_id.length === 0) {
-      return reject('entity_id is required')
-    }
-    if (mutation.set !== undefined && !isRecord(mutation.set)) {
-      return reject('set must be an object')
-    }
-    const set = isRecord(mutation.set) ? mutation.set : {}
-    for (const field of ['title', 'body'] as const) {
-      if (set[field] != null && typeof set[field] !== 'string') {
-        return reject(`set.${field} must be a string`)
-      }
-    }
-    if (set.status != null && (typeof set.status !== 'string' || !STATUSES.has(set.status))) {
-      return reject(`unknown status ${JSON.stringify(set.status)}`)
-    }
-    const parsedSet: TicketSet = {}
-    if (typeof set.title === 'string') parsedSet.title = set.title
-    if (typeof set.body === 'string') parsedSet.body = set.body
-    const status = enumValue(set.status, new Set(Object.values(Status)))
-    if (status !== null) parsedSet.status = status
+    const parsedSet = mutation.set
     const title = parsedSet.title != null ? parsedSet.title.trim() : null
     if (title !== null) {
       const reason = invalidTitle(title)
@@ -761,16 +771,7 @@ export class TenantDO extends DurableObject<Env> {
       .toArray()
     if (rows.length === 0) return reject(`unknown ticket ${mutation.entity_id}`)
     const { key, seq: currentSeq } = rows[0]
-    if (
-      typeof mutation.base_seq !== 'number' ||
-      !Number.isSafeInteger(mutation.base_seq) ||
-      mutation.base_seq < 0 ||
-      mutation.base_seq > MAX_SEQUENCE
-    ) {
-      return reject(
-        `${typeof mutation.op === 'string' ? mutation.op : 'mutation'} requires a valid base_seq`
-      )
-    }
+    if (mutation.base_seq === undefined) return reject(`${mutation.op} requires a valid base_seq`)
     if (mutation.base_seq > currentSeq) {
       return reject(`base_seq ${mutation.base_seq} is ahead of the ticket (seq ${currentSeq})`)
     }
@@ -804,14 +805,11 @@ export class TenantDO extends DurableObject<Env> {
         )
         .toArray()
         .map((row) => {
-          const parsed: unknown = JSON.parse(row.payload)
-          if (!isRecord(parsed) || !isRecord(parsed.set)) return {}
-          const prior: TicketSet = {}
-          if (typeof parsed.set.title === 'string') prior.title = parsed.set.title
-          if (typeof parsed.set.body === 'string') prior.body = parsed.set.body
-          const priorStatus = enumValue(parsed.set.status, new Set(Object.values(Status)))
-          if (priorStatus !== null) prior.status = priorStatus
-          return prior
+          const parsed = parseJson(row.payload)
+          if (!parsed.success) return {}
+          const prior = mutationInputSchema.safeParse(parsed.data)
+          if (!prior.success) return {}
+          return prior.data.set
         })
       const conflicting = conflictingFields(parsedSet, serverSets)
       if (conflicting.length > 0) {
@@ -931,51 +929,26 @@ export class TenantDO extends DurableObject<Env> {
     } catch {
       return jsonError(400, 'invalid_json')
     }
-    if (!isRecord(parsed)) return jsonError(400, 'invalid_github_payload')
+    const payload = githubPayloadSchema.safeParse(parsed)
+    if (!payload.success) return jsonError(400, 'invalid_github_payload')
     if (event === 'ping' || event !== 'pull_request') return emptyOk()
-    if (parsed.action !== 'closed') return emptyOk()
+    if (payload.data.action !== 'closed') return emptyOk()
 
-    if (!isRecord(parsed.pull_request) || !isRecord(parsed.repository)) {
+    const mergeTarget = githubMergeTargetSchema.safeParse(payload.data)
+    if (!mergeTarget.success) {
       return jsonError(400, 'invalid_github_payload')
     }
-    const pull = parsed.pull_request
-    const repository = parsed.repository
     if (
-      typeof pull.merged !== 'boolean' ||
-      !isRecord(pull.base) ||
-      typeof pull.base.ref !== 'string' ||
-      typeof repository.default_branch !== 'string'
+      !mergeTarget.data.pull_request.merged ||
+      mergeTarget.data.pull_request.base.ref !== mergeTarget.data.repository.default_branch
     ) {
-      return jsonError(400, 'invalid_github_payload')
-    }
-    if (!pull.merged || pull.base.ref !== repository.default_branch) {
       return emptyOk()
     }
-    const pullNumber = pull.number ?? parsed.number
-    const validBody = pull.body === undefined || pull.body === null || typeof pull.body === 'string'
-    if (
-      typeof pullNumber !== 'number' ||
-      !Number.isSafeInteger(pullNumber) ||
-      pullNumber <= 0 ||
-      typeof pull.title !== 'string' ||
-      typeof pull.html_url !== 'string' ||
-      typeof repository.full_name !== 'string' ||
-      !validBody
-    ) {
-      return jsonError(400, 'invalid_github_payload')
-    }
-    if (
-      pull.title.length > MAX_GITHUB_TITLE_LENGTH ||
-      repository.full_name.length > MAX_GITHUB_REPOSITORY_LENGTH ||
-      pull.html_url.length > MAX_GITHUB_URL_LENGTH ||
-      pull.base.ref.length > 255 ||
-      repository.default_branch.length > 255
-    ) {
-      return jsonError(400, 'invalid_github_payload')
-    }
 
-    const pullBody = typeof pull.body === 'string' ? pull.body : null
-    const keys = closingTicketKeys(pull.title, pullBody)
+    const relevant = relevantGithubPullRequestSchema.safeParse(payload.data)
+    if (!relevant.success) return jsonError(400, 'invalid_github_payload')
+    const pull = relevant.data
+    const keys = closingTicketKeys(pull.title, pull.body)
     this.ctx.storage.transactionSync(() => {
       if (
         this.sql.exec('SELECT 1 FROM github_deliveries WHERE delivery_id = ?', delivery).toArray()
@@ -1043,11 +1016,11 @@ export class TenantDO extends DurableObject<Env> {
       this.sql.exec(
         `INSERT INTO github_deliveries
          (delivery_id, repository, pull_number, pull_url, processed_at, results_json)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        VALUES (?, ?, ?, ?, ?, ?)`,
         delivery,
-        repository.full_name,
-        pullNumber,
-        pull.html_url,
+        pull.repository,
+        pull.pullNumber,
+        pull.url,
         isoNow(),
         JSON.stringify({ version: 1, tickets: results })
       )
@@ -1059,40 +1032,26 @@ export class TenantDO extends DurableObject<Env> {
     if (!may(principal, 'member.invite')) return jsonError(403, 'forbidden')
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
-    if (Array.isArray(body.members)) {
-      return this.handleBulkInvitation(body.members, body, principal)
+    if (bulkInvitationMarkerSchema.safeParse(body).success) {
+      const parsed = bulkInvitationSchema(
+        DEFAULT_ENROLLMENT_SECONDS,
+        MAX_ENROLLMENT_SECONDS
+      ).safeParse(body)
+      if (!parsed.success) return jsonError(422, 'invalid_invitation')
+      return this.handleBulkInvitation(parsed.data, principal)
     }
     return this.createInvitation(body, principal)
   }
 
   private async handleBulkInvitation(
-    rawMembers: unknown[],
-    body: Record<string, unknown>,
+    body: {
+      members: Array<{ email: string; role: Role }>
+      expires_in_seconds: number
+    },
     principal: Principal
   ): Promise<Response> {
-    const seconds = duration(
-      body.expires_in_seconds,
-      DEFAULT_ENROLLMENT_SECONDS,
-      MAX_ENROLLMENT_SECONDS
-    )
-    if (seconds === null || rawMembers.length === 0) {
-      return jsonError(422, 'invalid_invitation')
-    }
-    const members: Array<{ email: string; role: Role }> = []
-    const seen = new Set<string>()
-    for (const raw of rawMembers) {
-      if (!isRecord(raw)) {
-        return jsonError(422, 'invalid_invitation')
-      }
-      const item = raw
-      const email = invalidEmail(item.email)
-      const role = enumValue<Role>(item.role ?? Role.Member, ROLES)
-      if (email === null || role === null || seen.has(email)) {
-        return jsonError(422, 'invalid_invitation')
-      }
-      seen.add(email)
-      members.push({ email, role })
-    }
+    const members = body.members
+    const seconds = body.expires_in_seconds
     for (const member of members) {
       const existing = this.memberByEmail(member.email)
       if (existing?.status === MemberStatus.Active) {
@@ -1137,20 +1096,17 @@ export class TenantDO extends DurableObject<Env> {
     )
   }
 
-  private async createInvitation(
-    body: Record<string, unknown>,
-    principal: Principal
-  ): Promise<Response> {
-    const email = invalidEmail(body.email)
-    const role = enumValue<Role>(body.role ?? Role.Member, ROLES)
-    const seconds = duration(
-      body.expires_in_seconds,
-      DEFAULT_ENROLLMENT_SECONDS,
-      MAX_ENROLLMENT_SECONDS
+  private async createInvitation(body: unknown, principal: Principal): Promise<Response> {
+    const parsed = invitationSchema(DEFAULT_ENROLLMENT_SECONDS, MAX_ENROLLMENT_SECONDS).safeParse(
+      body
     )
-    if (email === null) return jsonError(422, 'invalid_email')
-    if (role === null) return jsonError(422, 'invalid_role')
-    if (seconds === null) return jsonError(422, 'invalid_expiry')
+    if (!parsed.success) {
+      const field = parsed.error.issues[0].path[0]
+      if (field === 'email') return jsonError(422, 'invalid_email')
+      if (field === 'role') return jsonError(422, 'invalid_role')
+      return jsonError(422, 'invalid_expiry')
+    }
+    const { email, role, expires_in_seconds: seconds } = parsed.data
     const existing = this.memberByEmail(email)
     if (existing?.status === MemberStatus.Active) {
       return jsonError(409, 'member_already_active')
@@ -1232,16 +1188,12 @@ export class TenantDO extends DurableObject<Env> {
     kind: 'invite' | 'recovery'
   ): Promise<Response> {
     if (!this.initialized()) return jsonError(409, 'setup_required')
-    const body = await requestObject(request)
-    if (!body) return jsonError(400, 'invalid_json')
-    const rawTokenName = body.token_name ?? body.cli_name ?? body.name
-    const tokenName = typeof rawTokenName === 'string' ? rawTokenName.trim() : ''
-    if (invalidTokenName(tokenName)) return jsonError(422, 'invalid_token_name')
-    let enrollmentCredential = body.credential ?? body.recovery_code
-    if (kind === 'invite') {
-      enrollmentCredential = body.credential ?? body.invitation_code
-    }
-    const enrollment = await this.verifyEnrollment(enrollmentCredential, kind)
+    const rawBody = await requestObject(request)
+    if (!rawBody) return jsonError(400, 'invalid_json')
+    const body = enrollmentBodySchema(kind).parse(rawBody)
+    const tokenName = tokenNameSchema.safeParse(body.tokenName)
+    if (!tokenName.success) return jsonError(422, 'invalid_token_name')
+    const enrollment = await this.verifyEnrollment(body.credential, kind)
     if (enrollment instanceof Response) return enrollment
     if (
       enrollment.member_status !== (kind === 'invite' ? MemberStatus.Pending : MemberStatus.Active)
@@ -1275,7 +1227,7 @@ export class TenantDO extends DurableObject<Env> {
           token,
           enrollment.member_id,
           TokenKind.Human,
-          tokenName,
+          tokenName.data,
           roleCeiling(role),
           enrollment.member_id,
           kind,
@@ -1353,30 +1305,31 @@ export class TenantDO extends DurableObject<Env> {
     if (!may(principal, 'member.recover')) return jsonError(403, 'forbidden')
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
-    const email = invalidEmail(body.email)
-    if (email === null) return jsonError(422, 'invalid_email')
-    return this.createRecovery(email, principal, TokenKind.Human)
+    const parsed = emailBodySchema.safeParse(body)
+    if (!parsed.success) return jsonError(422, 'invalid_email')
+    return this.createRecovery(parsed.data.email, principal, TokenKind.Human)
   }
 
   private async handleOperatorRecovery(request: Request): Promise<Response> {
     if (!this.initialized()) return jsonError(409, 'setup_required')
-    const body = await requestObject(request)
-    if (!body) return jsonError(400, 'invalid_json')
+    const rawBody = await requestObject(request)
+    if (!rawBody) return jsonError(400, 'invalid_json')
+    const body = operatorRecoveryBodySchema.parse(rawBody)
     const valid = await this.verifyConfiguredCredential(
-      body.operator_credential ?? body.credential,
+      body.credential,
       'flat_oprec',
       this.env.FLAT_OPERATOR_RECOVERY_VERIFIER
     )
     const verifier = this.env.FLAT_OPERATOR_RECOVERY_VERIFIER ?? ''
     const consumed = this.optionalMeta('consumed_operator_recovery_verifier') === verifier
     if (!valid || consumed) return jsonError(401, 'invalid_operator_recovery')
-    const email = invalidEmail(body.email)
-    if (email === null) return jsonError(422, 'invalid_email')
-    const member = this.memberByEmail(email)
+    const email = emailSchema.safeParse(body.email)
+    if (!email.success) return jsonError(422, 'invalid_email')
+    const member = this.memberByEmail(email.data)
     if (!member || member.status !== MemberStatus.Active || member.role !== Role.Admin) {
       return jsonError(409, 'operator_recovery_target_invalid')
     }
-    return this.createRecovery(email, null, 'deployment', verifier, 15 * 60)
+    return this.createRecovery(email.data, null, 'deployment', verifier, 15 * 60)
   }
 
   private async createRecovery(
@@ -1457,8 +1410,9 @@ export class TenantDO extends DurableObject<Env> {
     if (!may(principal, 'member.upgrade')) return jsonError(403, 'forbidden')
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
-    const email = invalidEmail(body.email)
-    if (email === null) return jsonError(422, 'invalid_email')
+    const parsed = upgradeCreationBodySchema.safeParse(body)
+    if (!parsed.success) return jsonError(422, 'invalid_email')
+    const { email } = parsed.data
     const member = this.memberByEmail(email)
     if (!member || member.status !== MemberStatus.Active || member.role === null) {
       return jsonError(409, 'member_not_active')
@@ -1467,7 +1421,7 @@ export class TenantDO extends DurableObject<Env> {
     const below = this.humanTokensBelow(member.id, intended)
     if (below === 0) return jsonError(409, 'token_already_upgraded')
     const live = this.liveUpgrade(member.id)
-    if (live && body.replace !== true) {
+    if (live && !parsed.data.replace) {
       return jsonError(409, 'upgrade_already_pending')
     }
     const enrollment = await this.prepareCredential('flat_upg')
@@ -1525,9 +1479,10 @@ export class TenantDO extends DurableObject<Env> {
     if (!may(principal, 'token.self.upgrade')) {
       return jsonError(403, 'forbidden')
     }
-    const body = await requestObject(request)
-    if (!body) return jsonError(400, 'invalid_json')
-    const enrollment = await this.verifyEnrollment(body.credential ?? body.upgrade_code, 'upgrade')
+    const rawBody = await requestObject(request)
+    if (!rawBody) return jsonError(400, 'invalid_json')
+    const body = tokenUpgradeBodySchema.parse(rawBody)
+    const enrollment = await this.verifyEnrollment(body.credential, 'upgrade')
     if (enrollment instanceof Response) return enrollment
     if (enrollment.member_id !== principal.memberId) {
       return jsonError(401, 'invalid_enrollment')
@@ -1596,8 +1551,9 @@ export class TenantDO extends DurableObject<Env> {
     if (!may(principal, 'member.cancel')) return jsonError(403, 'forbidden')
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
-    const email = invalidEmail(body.email)
-    if (email === null) return jsonError(422, 'invalid_email')
+    const parsed = emailBodySchema.safeParse(body)
+    if (!parsed.success) return jsonError(422, 'invalid_email')
+    const { email } = parsed.data
     const member = this.memberByEmail(email)
     if (!member || member.status !== MemberStatus.Pending) {
       return jsonError(409, 'member_not_pending')
@@ -1639,8 +1595,9 @@ export class TenantDO extends DurableObject<Env> {
     if (!may(principal, action)) return jsonError(403, 'forbidden')
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
-    const email = invalidEmail(body.email)
-    if (email === null) return jsonError(422, 'invalid_email')
+    const parsed = emailBodySchema.safeParse(body)
+    if (!parsed.success) return jsonError(422, 'invalid_email')
+    const { email } = parsed.data
     const member = this.memberByEmail(email)
     if (!member || member.role === null) {
       return jsonError(409, 'member_not_found')
@@ -1718,10 +1675,13 @@ export class TenantDO extends DurableObject<Env> {
     }
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
-    const email = invalidEmail(body.email)
-    const nextRole = enumValue<Role>(body.role, ROLES)
-    if (email === null) return jsonError(422, 'invalid_email')
-    if (nextRole === null) return jsonError(422, 'invalid_role')
+    const parsed = memberRoleBodySchema.safeParse(body)
+    if (!parsed.success) {
+      const field = parsed.error.issues[0].path[0]
+      if (field === 'email') return jsonError(422, 'invalid_email')
+      return jsonError(422, 'invalid_role')
+    }
+    const { email, role: nextRole } = parsed.data
     const member = this.memberByEmail(email)
     if (!member || member.status === MemberStatus.Pending || member.role === null) {
       return jsonError(409, 'member_not_active')
@@ -1886,20 +1846,23 @@ export class TenantDO extends DurableObject<Env> {
     }
     const body = await requestObject(request)
     if (!body) return jsonError(400, 'invalid_json')
-    const name = typeof body.name === 'string' ? body.name.trim() : ''
-    if (invalidTokenName(name)) return jsonError(422, 'invalid_token_name')
-    const kind = enumValue<TokenKind>(body.kind ?? TokenKind.Agent, TOKEN_KINDS)
-    if (kind === null) return jsonError(422, 'invalid_token_kind')
+    const parsed = tokenCreateBodySchema.safeParse(body)
+    if (!parsed.success) {
+      const field = parsed.error.issues[0].path[0]
+      if (field === 'name') return jsonError(422, 'invalid_token_name')
+      return jsonError(422, 'invalid_token_kind')
+    }
+    const { name, kind } = parsed.data
 
     let target = this.memberById(principal.memberId)
     let issuedVia = 'self'
-    if (body.for_email !== undefined) {
+    if (parsed.data.for_email !== undefined) {
       if (!may(principal, 'token.other.create_agent') || kind !== TokenKind.Agent) {
         return jsonError(403, 'forbidden')
       }
-      const email = invalidEmail(body.for_email)
-      if (email === null) return jsonError(422, 'invalid_email')
-      target = this.memberByEmail(email)
+      const email = emailSchema.safeParse(parsed.data.for_email)
+      if (!email.success) return jsonError(422, 'invalid_email')
+      target = this.memberByEmail(email.data)
       issuedVia = 'admin_delegation'
     }
     if (!target || target.status !== MemberStatus.Active || target.role === null) {
@@ -1909,22 +1872,29 @@ export class TenantDO extends DurableObject<Env> {
     if (kind === TokenKind.Agent && defaultAccess === TokenAccess.Admin) {
       defaultAccess = TokenAccess.Write
     }
-    const access = enumValue<TokenAccess>(body.access ?? defaultAccess, TOKEN_ACCESS)
-    if (access === null || !validTokenAccess(target.role, kind, access)) {
+    const access = tokenAccessSchema.safeParse(parsed.data.access ?? defaultAccess)
+    if (!access.success || !validTokenAccess(target.role, kind, access.data)) {
       return jsonError(422, 'invalid_access')
     }
     if (
       target.id === principal.memberId &&
-      this.accessRank(access) > this.accessRank(principal.access)
+      this.accessRank(access.data) > this.accessRank(principal.access)
     ) {
       return jsonError(403, 'forbidden')
     }
     const max = kind === TokenKind.Agent ? MAX_AGENT_SECONDS : Number.MAX_SAFE_INTEGER
     const fallback = kind === TokenKind.Agent ? DEFAULT_AGENT_SECONDS : 0
     let expiresIn: number | null = null
-    if (body.expires_in_seconds !== undefined || fallback > 0) {
-      expiresIn = duration(body.expires_in_seconds, fallback, max)
-      if (expiresIn === null) return jsonError(422, 'invalid_expiry')
+    if (parsed.data.expires_in_seconds !== undefined || fallback > 0) {
+      const expirySchema = durationSchema(max).optional()
+      const defaultExpiry = fallback > 0 ? fallback : undefined
+      let rawExpiry = parsed.data.expires_in_seconds
+      if (rawExpiry === undefined) rawExpiry = defaultExpiry
+      const expiry = expirySchema.safeParse(rawExpiry)
+      if (!expiry.success || expiry.data === undefined) {
+        return jsonError(422, 'invalid_expiry')
+      }
+      expiresIn = expiry.data
     }
     const token = await this.prepareCredential('flat_pat')
     const now = isoNow()
@@ -1939,13 +1909,13 @@ export class TenantDO extends DurableObject<Env> {
           !currentTarget ||
           currentTarget.status !== MemberStatus.Active ||
           currentTarget.role === null ||
-          !validTokenAccess(currentTarget.role, kind, access)
+          !validTokenAccess(currentTarget.role, kind, access.data)
         ) {
           throw new Error('member_changed')
         }
         if (
           currentTarget.id === currentPrincipal.memberId &&
-          this.accessRank(access) > this.accessRank(currentPrincipal.access)
+          this.accessRank(access.data) > this.accessRank(currentPrincipal.access)
         ) {
           throw new PrincipalChangedError(403, 'forbidden')
         }
@@ -1954,7 +1924,7 @@ export class TenantDO extends DurableObject<Env> {
           currentTarget.id,
           kind,
           name,
-          access,
+          access.data,
           currentPrincipal.memberId,
           issuedVia,
           expiresAt,
@@ -1971,7 +1941,7 @@ export class TenantDO extends DurableObject<Env> {
           {
             member_id: currentTarget.id,
             kind,
-            access,
+            access: access.data,
             issued_via: issuedVia,
           }
         )
@@ -2019,10 +1989,9 @@ export class TenantDO extends DurableObject<Env> {
       return jsonError(403, 'forbidden')
     }
     const body = await requestObject(request)
-    if (!body || typeof body.token_id !== 'string') {
-      return jsonError(422, 'invalid_token_id')
-    }
-    const tokenId = body.token_id
+    const parsed = tokenRevokeBodySchema.safeParse(body)
+    if (!parsed.success) return jsonError(422, 'invalid_token_id')
+    const tokenId = parsed.data.token_id
     const target = this.sql
       .exec<{ id: string; member_id: string; revoked_at: string | null }>(
         'SELECT id, member_id, revoked_at FROM tokens WHERE id = ?',
@@ -2272,11 +2241,8 @@ export class TenantDO extends DurableObject<Env> {
     const revoked = new Set(tokenIds)
     for (const socket of this.ctx.getWebSockets()) {
       const attachment = socket.deserializeAttachment()
-      if (
-        isRecord(attachment) &&
-        typeof attachment.tokenId === 'string' &&
-        revoked.has(attachment.tokenId)
-      ) {
+      const parsed = socketAttachmentSchema.safeParse(attachment)
+      if (parsed.success && revoked.has(parsed.data.tokenId)) {
         socket.close(4001, 'credential revoked')
       }
     }
@@ -2288,7 +2254,7 @@ export class TenantDO extends DurableObject<Env> {
     return seq
   }
 
-  private log(mutation: Record<string, unknown> | Mutation, seq: number): void {
+  private log(mutation: Mutation, seq: number): void {
     this.sql.exec(
       'INSERT INTO mutation_log (seq, mutation_id, entity_id, payload) VALUES (?, ?, ?, ?)',
       seq,
