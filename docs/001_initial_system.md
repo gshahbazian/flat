@@ -76,6 +76,8 @@ the git-like *experience* via the file mirror instead).
 - Project keys: `^[A-Z][A-Z0-9]{1,7}$`, chosen at creation, **immutable in
   v1** (display names rename freely). Ticket numbers: per-project counter
   from 1, never reused, never renumbered.
+- Setup creates a default `DEMO` project so a new tenant has somewhere to put
+  tickets before defining its own projects.
 
 ## Wire protocol (CLI <-> server)
 

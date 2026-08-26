@@ -122,6 +122,9 @@ may change the project's display name, description, and owner list. Project
 keys remain immutable. Project owners cannot delete projects unless they are
 also tenant admins.
 
+Setup creates the default `DEMO` project and makes the claiming admin its
+first owner.
+
 Comments are append-only in v1. No role can edit or delete a comment. An owner
 may remove any owner, including themselves or the project's final owner. A
 project with no owners remains visible and writable through normal ticket

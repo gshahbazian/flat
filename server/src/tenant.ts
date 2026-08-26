@@ -744,10 +744,9 @@ export class TenantDO extends DurableObject<Env> {
           hash,
           stored
         )
-        const auditAction = this.mutationAuditAction(mutation)
         this.audit(
           outcome.seq,
-          auditAction,
+          action,
           currentPrincipal,
           currentPrincipal.tokenKind,
           mutation.entity,
@@ -787,25 +786,27 @@ export class TenantDO extends DurableObject<Env> {
     }
   }
 
-  private mutationAction(mutation: Pick<Mutation, 'entity' | 'op'>): Action {
+  private mutationAction(
+    mutation: Pick<Mutation, 'entity' | 'op'> & {
+      owners_add?: unknown
+      owners_remove?: unknown
+    }
+  ): Action {
     if (mutation.entity === Entity.Ticket) {
       if (mutation.op === MutationOp.Create) return 'ticket.create'
       if (mutation.op === MutationOp.Update) return 'ticket.update'
       return 'ticket.delete'
     }
     if (mutation.op === MutationOp.Create) return 'project.create'
-    if (mutation.op === MutationOp.Update) return 'project.update'
-    return 'project.delete'
-  }
-
-  private mutationAuditAction(mutation: Mutation): Action {
-    if (
-      mutation.entity === Entity.Project &&
-      ((mutation.owners_add?.length ?? 0) > 0 || (mutation.owners_remove?.length ?? 0) > 0)
-    ) {
-      return 'project_owner.update'
+    if (mutation.op === MutationOp.Update) {
+      const ownerDeltas = [mutation.owners_add, mutation.owners_remove]
+      const changesOwners = ownerDeltas.some(
+        (value) => value !== undefined && (!Array.isArray(value) || value.length > 0)
+      )
+      if (changesOwners) return 'project_owner.update'
+      return 'project.update'
     }
-    return this.mutationAction(mutation)
+    return 'project.delete'
   }
 
   private apply(mutation: Mutation, principal: Principal): AppliedMutation | MutationConflict {

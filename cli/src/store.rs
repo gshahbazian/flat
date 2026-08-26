@@ -268,9 +268,17 @@ impl Checkout {
     }
 
     pub fn resolve_assignee(&self, email: &str) -> Result<String> {
-        self.resolve_member(email).map_err(|_| {
-            anyhow::anyhow!("unknown assignee {email:?} in the local member cache; run `flat sync`")
-        })
+        let normalized = flat_schema::normalize_email(email).map_err(anyhow::Error::msg)?;
+        self.state
+            .members
+            .values()
+            .find(|member| member.email == normalized)
+            .map(|member| member.id.clone())
+            .with_context(|| {
+                format!(
+                    "unknown assignee {normalized:?} in the local member cache; run `flat sync`"
+                )
+            })
     }
 
     /// Materializes server deltas into the mirror and base copies.
@@ -664,5 +672,12 @@ mod tests {
             .resolve_assignee("missing@example.com")
             .unwrap_err();
         assert!(error.to_string().contains("run `flat sync`"));
+    }
+
+    #[test]
+    fn invalid_assignee_preserves_the_validation_error() {
+        let checkout = checkout("invalid-assignee");
+        let error = checkout.resolve_assignee("not-an-email").unwrap_err();
+        assert_eq!(error.to_string(), "invalid_email");
     }
 }

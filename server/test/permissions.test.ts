@@ -52,6 +52,24 @@ describe('permission policy', () => {
     ).toBe(true)
   })
 
+  test('owner changes require project ownership or unrestricted admin access', () => {
+    expect(may(principal(), 'project_owner.update', { ownerIds: ['member-1'] })).toBe(true)
+    expect(may(principal(), 'project_owner.update', { ownerIds: [] })).toBe(false)
+    expect(
+      may(principal({ role: Role.Admin }), 'project_owner.update', {
+        ownerIds: ['member-1'],
+      })
+    ).toBe(true)
+    expect(may(principal({ role: Role.Admin }), 'project_owner.update', { ownerIds: [] })).toBe(
+      false
+    )
+    expect(
+      may(principal({ role: Role.Admin, access: TokenAccess.Admin }), 'project_owner.update', {
+        ownerIds: [],
+      })
+    ).toBe(true)
+  })
+
   test('role ceilings match the design', () => {
     expect(roleCeiling(Role.Viewer)).toBe(TokenAccess.Read)
     expect(roleCeiling(Role.Member)).toBe(TokenAccess.Write)

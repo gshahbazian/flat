@@ -179,6 +179,8 @@ export const mutationAuthorizationSchema = z.object({
   entity_id: z.string().catch(''),
   entity: z.enum(Entity),
   op: mutationOpSchema,
+  owners_add: z.unknown().optional(),
+  owners_remove: z.unknown().optional(),
 })
 
 export const syncEnvelopeSchema = z.object({

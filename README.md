@@ -45,6 +45,7 @@ cargo build
 alias flat=target/debug/flat
 flat init http://localhost:8787 --setup
 # local setup code: flat_setup_CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk
+# setup creates a default DEMO project
 flat project create AUTH --name "Authentication"
 flat new "Fix OAuth token refresh race" --project AUTH --priority high --assignee gabe@acme.com
 $EDITOR "$(flat path)/AUTH/AUTH-1.md"     # edit fields or description body

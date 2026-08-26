@@ -64,8 +64,12 @@ projects and `flat project show KEY` shows one. Create a project with
 2-8 uppercase letters or digits, must start with a letter, and cannot be
 changed or reused. The creator becomes the first owner.
 
-Project owners and admins can change metadata with `flat project update KEY`
-and manage owners with `flat project owner add KEY EMAIL` or
+Every tenant starts with a `DEMO` project owned by the claiming admin.
+
+Project owners and admins can change metadata with
+`flat project update KEY --name NAME`,
+`flat project update KEY --description TEXT`, or both flags together. Manage
+owners with `flat project owner add KEY EMAIL` or
 `flat project owner remove KEY EMAIL`. A project may have no owners; only an
 admin can recover it in that state. `flat project delete KEY` requires an
 admin human token and fails while the project contains tickets.

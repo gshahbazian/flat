@@ -7,6 +7,28 @@ const HMAC_KEY = Buffer.alloc(32, 17)
 const SETUP_CREDENTIAL = `flat_setup_${Buffer.alloc(32, 19).toString('base64url')}`
 const SETUP_VERIFIER = createHmac('sha256', HMAC_KEY).update(SETUP_CREDENTIAL).digest('hex')
 type WorkerRequestInit = NonNullable<Parameters<Unstable_DevWorker['fetch']>[1]>
+type Role = 'member' | 'viewer'
+
+interface Member {
+  id: string
+  token: string
+}
+
+interface Project {
+  id: string
+  key: string
+  display_name: string
+  owner_ids: string[]
+  seq: number
+}
+
+interface ProjectSyncResponse {
+  applied: Array<{ mutation_id: string; entity_id: string; key: string; seq: number }>
+  conflicts: Array<{ mutation_id: string; entity_id: string; reason: string }>
+  project_deltas: Project[]
+  project_tombstones: Array<{ id: string; key: string; seq: number }>
+  latest_seq: number
+}
 
 async function json<T>(
   worker: Unstable_DevWorker,
@@ -19,13 +41,12 @@ async function json<T>(
   return body
 }
 
-function authenticated(token: string, body: unknown): WorkerRequestInit {
+function authenticated(token: string, body?: unknown): WorkerRequestInit {
+  const headers = { Authorization: `Bearer ${token}` }
+  if (body === undefined) return { headers }
   return {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   }
 }
@@ -33,12 +54,13 @@ function authenticated(token: string, body: unknown): WorkerRequestInit {
 async function enroll(
   worker: Unstable_DevWorker,
   adminToken: string,
-  email: string
-): Promise<{ id: string; token: string }> {
+  email: string,
+  role: Role = 'member'
+): Promise<Member> {
   const invitation = await json<{ invitation_code: string }>(
     worker,
     '/members/invite',
-    authenticated(adminToken, { email, role: 'member' })
+    authenticated(adminToken, { email, role })
   )
   const enrollment = await json<{ member: { id: string }; token: string }>(
     worker,
@@ -55,8 +77,53 @@ async function enroll(
   return { id: enrollment.member.id, token: enrollment.token }
 }
 
+async function syncProjects(
+  worker: Unstable_DevWorker,
+  token: string,
+  lastSeq: number,
+  mutations: unknown[]
+): Promise<ProjectSyncResponse> {
+  return json<ProjectSyncResponse>(
+    worker,
+    '/sync',
+    authenticated(token, {
+      protocol_version: 2,
+      last_seq: lastSeq,
+      mutations,
+    })
+  )
+}
+
+async function createProject(
+  worker: Unstable_DevWorker,
+  token: string,
+  key: string,
+  entityId: string
+): Promise<{ project: Project; response: ProjectSyncResponse }> {
+  const response = await syncProjects(worker, token, 0, [
+    {
+      mutation_id: `create-${key.toLowerCase()}`,
+      op: 'create',
+      entity: 'project',
+      entity_id: entityId,
+      set: { key, display_name: `${key} project` },
+    },
+  ])
+  expect(response.conflicts).toEqual([])
+  const project = response.project_deltas.find((candidate) => candidate.key === key)
+  expect(project).toBeDefined()
+  return { project: project!, response }
+}
+
 describe.sequential('project mutations', () => {
   let worker: Unstable_DevWorker
+  let setup: {
+    member: { id: string }
+    token: string
+    snapshot: { latest_seq: number; projects: Project[] }
+  }
+  let owner: Member
+  let collaborator: Member
 
   beforeAll(async () => {
     worker = await unstable_dev('src/index.ts', {
@@ -73,18 +140,7 @@ describe.sequential('project mutations', () => {
         watch: false,
       },
     })
-  }, 30_000)
-
-  afterAll(async () => {
-    await worker.stop()
-  })
-
-  test('enforces ownership and project-scoped ticket counters', async () => {
-    const setup = await json<{
-      member: { id: string }
-      token: string
-      snapshot: { latest_seq: number; projects: Array<{ key: string; owner_ids: string[] }> }
-    }>(worker, '/setup', {
+    setup = await json(worker, '/setup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -94,12 +150,18 @@ describe.sequential('project mutations', () => {
         token_name: 'admin-cli',
       }),
     })
+    owner = await enroll(worker, setup.token, 'owner@example.com')
+    collaborator = await enroll(worker, setup.token, 'collaborator@example.com')
+  }, 30_000)
+
+  afterAll(async () => {
+    await worker.stop()
+  })
+
+  test('enforces ownership and project-scoped ticket counters', async () => {
     expect(setup.snapshot.projects).toEqual([
       expect.objectContaining({ key: 'DEMO', owner_ids: [setup.member.id] }),
     ])
-
-    const owner = await enroll(worker, setup.token, 'owner@example.com')
-    const collaborator = await enroll(worker, setup.token, 'collaborator@example.com')
 
     const created = await json<{
       applied: Array<{ mutation_id: string; seq: number }>
@@ -292,5 +354,205 @@ describe.sequential('project mutations', () => {
     )
     expect(removed.conflicts).toEqual([])
     expect(removed.project_tombstones).toEqual([expect.objectContaining({ key: 'AUTH' })])
+  })
+
+  test('makes the effective member the owner when an agent creates a project', async () => {
+    const agent = await json<{ token: string }>(
+      worker,
+      '/tokens',
+      authenticated(owner.token, {
+        name: 'project-agent',
+        kind: 'agent',
+        access: 'write',
+      })
+    )
+    const { project } = await createProject(worker, agent.token, 'AGNT', 'project-agent-created')
+    expect(project.owner_ids).toEqual([owner.id])
+  })
+
+  test('rejects viewer and pending project owners', async () => {
+    const viewer = await enroll(worker, setup.token, 'viewer@example.com', 'viewer')
+    await json(
+      worker,
+      '/members/invite',
+      authenticated(setup.token, { email: 'pending-owner@example.com', role: 'member' })
+    )
+    const pendingMembers = await json<{
+      members: Array<{ id: string; email: string }>
+    }>(worker, '/members?pending=1', authenticated(setup.token))
+    const pendingId = pendingMembers.members.find(
+      (member) => member.email === 'pending-owner@example.com'
+    )?.id
+    expect(pendingId).toBeDefined()
+
+    const { project } = await createProject(worker, owner.token, 'OWNR', 'project-owner-rules')
+    const rejected = await syncProjects(worker, owner.token, 0, [
+      {
+        mutation_id: 'add-viewer-owner',
+        op: 'update',
+        entity: 'project',
+        entity_id: project.id,
+        base_seq: project.seq,
+        set: {},
+        owners_add: [viewer.id],
+      },
+      {
+        mutation_id: 'add-pending-owner',
+        op: 'update',
+        entity: 'project',
+        entity_id: project.id,
+        base_seq: project.seq,
+        set: {},
+        owners_add: [pendingId],
+      },
+    ])
+    expect(rejected.applied).toEqual([])
+    expect(rejected.conflicts).toEqual([
+      {
+        mutation_id: 'add-viewer-owner',
+        entity_id: project.id,
+        reason: `owner ${viewer.id} must be an active member or admin`,
+      },
+      {
+        mutation_id: 'add-pending-owner',
+        entity_id: project.id,
+        reason: `owner ${pendingId} must be an active member or admin`,
+      },
+    ])
+  })
+
+  test('allows an admin token to recover a project with no owners', async () => {
+    const { project } = await createProject(worker, owner.token, 'ZERO', 'project-zero-owners')
+    const removed = await syncProjects(worker, owner.token, 0, [
+      {
+        mutation_id: 'remove-final-owner',
+        op: 'update',
+        entity: 'project',
+        entity_id: project.id,
+        base_seq: project.seq,
+        set: {},
+        owners_remove: [owner.id],
+      },
+    ])
+    expect(removed.conflicts).toEqual([])
+    const ownerless = removed.project_deltas.find((candidate) => candidate.key === 'ZERO')
+    expect(ownerless?.owner_ids).toEqual([])
+
+    const adminWrite = await json<{ token: string }>(
+      worker,
+      '/tokens',
+      authenticated(setup.token, {
+        name: 'project-admin-write',
+        kind: 'human',
+        access: 'write',
+      })
+    )
+    const denied = await syncProjects(worker, adminWrite.token, removed.latest_seq, [
+      {
+        mutation_id: 'write-token-recovery',
+        op: 'update',
+        entity: 'project',
+        entity_id: project.id,
+        base_seq: ownerless?.seq,
+        set: {},
+        owners_add: [owner.id],
+      },
+    ])
+    expect(denied.conflicts).toEqual([
+      {
+        mutation_id: 'write-token-recovery',
+        entity_id: project.id,
+        reason: 'forbidden',
+      },
+    ])
+
+    const recovered = await syncProjects(worker, setup.token, denied.latest_seq, [
+      {
+        mutation_id: 'admin-token-recovery',
+        op: 'update',
+        entity: 'project',
+        entity_id: project.id,
+        base_seq: ownerless?.seq,
+        set: {},
+        owners_add: [owner.id],
+      },
+    ])
+    expect(recovered.conflicts).toEqual([])
+    expect(recovered.project_deltas).toEqual([
+      expect.objectContaining({ key: 'ZERO', owner_ids: [owner.id] }),
+    ])
+  })
+
+  test('does not reuse a deleted project key', async () => {
+    const { project, response } = await createProject(
+      worker,
+      owner.token,
+      'USED',
+      'project-used-once'
+    )
+    const deleted = await syncProjects(worker, setup.token, response.latest_seq, [
+      {
+        mutation_id: 'delete-used-project',
+        op: 'delete',
+        entity: 'project',
+        entity_id: project.id,
+        base_seq: project.seq,
+        set: {},
+      },
+    ])
+    expect(deleted.conflicts).toEqual([])
+    expect(deleted.project_tombstones).toEqual([expect.objectContaining({ key: 'USED' })])
+
+    const reused = await syncProjects(worker, owner.token, deleted.latest_seq, [
+      {
+        mutation_id: 'reuse-used-project',
+        op: 'create',
+        entity: 'project',
+        entity_id: 'project-used-twice',
+        set: { key: 'USED', display_name: 'Used again' },
+      },
+    ])
+    expect(reused.applied).toEqual([])
+    expect(reused.conflicts).toEqual([
+      {
+        mutation_id: 'reuse-used-project',
+        entity_id: 'project-used-twice',
+        reason: 'project key USED is already used',
+      },
+    ])
+  })
+
+  test('rejects stale overlapping project metadata edits', async () => {
+    const { project } = await createProject(worker, owner.token, 'STAL', 'project-stale-edit')
+    const first = await syncProjects(worker, owner.token, 0, [
+      {
+        mutation_id: 'first-project-name',
+        op: 'update',
+        entity: 'project',
+        entity_id: project.id,
+        base_seq: project.seq,
+        set: { display_name: 'First name' },
+      },
+    ])
+    expect(first.conflicts).toEqual([])
+
+    const stale = await syncProjects(worker, owner.token, first.latest_seq, [
+      {
+        mutation_id: 'stale-project-name',
+        op: 'update',
+        entity: 'project',
+        entity_id: project.id,
+        base_seq: project.seq,
+        set: { display_name: 'Second name' },
+      },
+    ])
+    expect(stale.applied).toEqual([])
+    expect(stale.conflicts).toEqual([
+      expect.objectContaining({
+        mutation_id: 'stale-project-name',
+        entity_id: project.id,
+        reason: expect.stringContaining('conflicting edits to display_name'),
+      }),
+    ])
   })
 })
