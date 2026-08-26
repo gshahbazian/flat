@@ -57,6 +57,19 @@ The mirror lives out-of-repo at `~/.flat/<host>/<PROJECT>/<PROJECT-N>.md`
 (`FLAT_DIR` overrides the root, which is also the easy way to make a second
 checkout).
 
+## End-to-end verification
+
+The black-box E2E suite builds the CLI, starts a real local Wrangler server,
+and drives separate admin and member checkouts through the core ticket flow:
+
+```sh
+pnpm install
+pnpm e2e
+```
+
+Set `FLAT_E2E_KEEP=1` to preserve the temporary server log, Durable Object
+state, and CLI mirrors for debugging a run.
+
 ## The file format
 
 ```markdown

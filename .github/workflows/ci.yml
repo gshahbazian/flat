@@ -52,3 +52,20 @@ jobs:
       # Round-trips the schema fixtures through the generated TS types.
       - run: pnpm --dir server test
       - run: pnpm --dir infra typecheck
+
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: pnpm install --frozen-lockfile
+      - name: Run black-box E2E scenarios
+        run: pnpm e2e

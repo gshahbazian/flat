@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "check": "pnpm format:check && pnpm lint && pnpm -r typecheck && pnpm -r test",
+    "e2e": "bash scripts/e2e/run.sh",
     "format": "oxfmt '**/*.{ts,tsx,mts,cts}'",
     "format:check": "oxfmt --check '**/*.{ts,tsx,mts,cts}'",
     "lint": "oxlint .",
