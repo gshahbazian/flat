@@ -102,21 +102,22 @@ with `flat comment KEY TEXT` or pipe multiline Markdown to `flat comment KEY
 --stdin`. Comments must contain non-whitespace content and may be at most 1 MiB
 of UTF-8. The exact sentinel line is reserved and cannot appear in a ticket
 description. If a mutation is pending, run `flat sync` before adding another
-comment.
-`flat push`
-diffs each file against its base copy and sends one atomic update mutation per
-ticket; replaying a mutation is idempotent. Assignment emails are normalized
-and resolved through the synced member cache; run `flat sync` when a member is
-not found locally.
+comment. Comments-only syncs replace the read-only suffix while preserving
+local edits above it. CRLF conversion and final newlines do not count as
+comment edits. `flat push` diffs each file against its base copy and sends one
+atomic update mutation per ticket; replaying a mutation is idempotent.
+Assignment emails are normalized and resolved through the synced member cache;
+run `flat sync` when a member is not found locally.
 
 Conflicts are field-level: concurrent pushes that touch different fields of
 the same ticket both apply, and a field both sides changed rejects the whole
 ticket (the body merges line-wise, so only overlapping regions conflict).
-`flat sync` never overwrites a file with local edits — it reports them and
-withholds that ticket's delta; `flat sync --merge` merges the server's
-changes in, writing `<<<<<<< local` / `>>>>>>> server` markers where the
-edits collide. Edit the markers away and push again. To discard local edits
-instead, delete the file: `flat sync` restores the last synced server state.
+`flat sync` never overwrites editable fields with local changes. A comments-only
+delta updates the read-only suffix directly; an editable server change is
+withheld until `flat sync --merge` merges it, writing `<<<<<<< local` /
+`>>>>>>> server` markers where edits collide. Edit the markers away and push
+again. To discard local edits instead, delete the file: `flat sync` restores
+the last synced server state.
 
 ## Deploying
 

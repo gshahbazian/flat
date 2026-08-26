@@ -41,9 +41,10 @@ description edit.
 
 The CLI caches comments by immutable ID and renders each ticket's comments in
 sequence order. If the ticket file is clean, a new comment rematerializes it
-immediately. If the file has local edits, normal sync preserves the file and
-holds back its cursor. `flat sync --merge` merges editable ticket fields and
-takes the server comment section unchanged.
+immediately. If the ticket row's sequence is unchanged, the CLI knows the
+parent delta is comments-only and replaces an untouched comment suffix while
+preserving local edits above it. A real ticket-row change still preserves a
+dirty file and requires `flat sync --merge`.
 
 Comments ship as part of protocol 2 because there are no deployed older
 clients or servers to preserve compatibility with.
@@ -71,6 +72,8 @@ with the base copy byte-for-byte and rejects edits, deletion, duplication, or
 a mangled sentinel with a direction to use `flat comment KEY`. The sentinel is
 required in every mirror file. To discard a file with a missing sentinel,
 delete it and run `flat sync` so Flat restores the base copy.
+Suffix comparisons normalize CRLF and ignore final newline characters, but
+any change to rendered comment content remains a read-only violation.
 
 `flat comment KEY TEXT` adds a single-line or shell-quoted comment.
 `flat comment KEY --stdin` reads multiline Markdown. One form is required and

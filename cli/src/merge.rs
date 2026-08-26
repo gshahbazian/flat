@@ -82,7 +82,7 @@ pub fn merge(
     members: &BTreeMap<String, MemberProfile>,
     comments: &[Comment],
 ) -> Result<Merged> {
-    if local.comments != base.comments {
+    if !markdown::comment_sections_equal(&local.comments, &base.comments) {
         bail!("comments are read-only — use `flat comment {}`", server.key);
     }
     let server_body = server.body.trim_end().to_string();

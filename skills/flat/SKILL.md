@@ -72,6 +72,10 @@ contain non-whitespace content and may be at most 1 MiB of UTF-8. Do not edit
 the rendered comment section in a ticket file; `flat push` rejects changed,
 deleted, or mangled comment sections.
 
+A comments-only sync updates that read-only suffix even when editable ticket
+fields have local changes. CRLF conversion and final newlines do not count as
+comment edits; changing rendered comment content does.
+
 If Flat reports a pending mutation, run `flat sync` before adding another
 comment. This replays the original mutation ID instead of creating a duplicate.
 
@@ -108,8 +112,9 @@ admin human token; agent tokens cannot delete tickets.
 
 ## Handle conflicts
 
-`flat sync` preserves local edits when the server copy also changed and exits
-nonzero. Run `flat sync --merge` to merge the changes. If they overlap, Flat
-writes `<<<<<<< local` / `>>>>>>> server` conflict markers into the ticket
-file. Resolve every marker before running `flat push`; both sync and push
-refuse to complete while markers remain.
+`flat sync` preserves local edits when editable server fields also changed and
+exits nonzero. Run `flat sync --merge` to merge the changes. If they overlap,
+Flat writes `<<<<<<< local` / `>>>>>>> server` conflict markers into the
+ticket file. Resolve every marker before running `flat push`; both sync and
+push refuse to complete while markers remain. A failure to merge one ticket
+does not prevent Flat from merging other tickets in the same run.

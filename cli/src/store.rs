@@ -307,17 +307,11 @@ impl Checkout {
 
     /// Materializes server deltas into the mirror and base copies.
     ///
-    /// A file with unpushed local edits is never clobbered here: a delta only
-    /// lands when the mirror file is provably clean — missing, already at
-    /// server state, equal to its base copy, or byte-identical to the content
-    /// in `pushed` (push: the exact bytes each mutation was built from, so an
-    /// edit saved mid-flight is preserved). Tickets in `keep_local` are
-    /// skipped entirely (push: a conflicted ticket keeps its local edits).
-    /// Everything else — including a dirty file whose base copy is missing or
-    /// unreadable, which proves nothing — is left in place and returned to
-    /// the caller, who reports it (or three-way merges it, `flat sync
-    /// --merge`) and holds back last_seq so a later sync re-delivers the
-    /// withheld delta.
+    /// A file with unpushed local edits is never clobbered here. A full ticket
+    /// delta lands only when the mirror is provably clean. When the ticket seq
+    /// is unchanged, only comments moved, so an untouched comment suffix can
+    /// be replaced while preserving the editable prefix byte-for-byte.
+    /// Everything else is returned to the caller for reporting or merge.
     pub fn apply_deltas(
         &mut self,
         deltas: &[Ticket],
@@ -326,26 +320,53 @@ impl Checkout {
     ) -> Result<Vec<Ticket>> {
         let mut skipped = Vec::new();
         for ticket in deltas {
-            if keep_local.contains(&ticket.key) {
+            let comments_only = self
+                .state
+                .tickets
+                .get(&ticket.key)
+                .is_some_and(|state| state.id == ticket.id && state.seq == ticket.seq);
+            if keep_local.contains(&ticket.key) && !comments_only {
                 continue;
             }
             let rendered =
                 markdown::render(ticket, &self.state.members, &self.comments_for(&ticket.id))?;
-            let clean = match fs::read_to_string(self.mirror_path(&ticket.key)) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
-                Err(e) => return Err(e).context(format!("reading mirror file of {}", ticket.key)),
-                Ok(current) => {
-                    current == rendered
-                        || pushed.get(&ticket.key) == Some(&current)
-                        || fs::read_to_string(self.base_path(&ticket.key))
-                            .is_ok_and(|base| base == current)
+            let current = match fs::read_to_string(self.mirror_path(&ticket.key)) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.write_ticket(ticket, &rendered, &rendered)?;
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error).context(format!("reading mirror file of {}", ticket.key))
+                }
+                Ok(current) => current,
+            };
+            let base = match fs::read_to_string(self.base_path(&ticket.key)) {
+                Ok(base) => Some(base),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(error).context(format!("reading base copy of {}", ticket.key))
                 }
             };
-            if !clean {
-                skipped.push(ticket.clone());
+            let clean = current == rendered
+                || pushed.get(&ticket.key) == Some(&current)
+                || base.as_deref() == Some(current.as_str());
+            if clean {
+                self.write_ticket(ticket, &rendered, &rendered)?;
                 continue;
             }
-            self.write_ticket(ticket, &rendered, &rendered)?;
+            let Some(base) = base else {
+                skipped.push(ticket.clone());
+                continue;
+            };
+            if comments_only {
+                if let Some(mirror) =
+                    markdown::replace_unchanged_comment_section(&current, &base, &rendered)
+                {
+                    self.write_ticket(ticket, &mirror, &rendered)?;
+                    continue;
+                }
+            }
+            skipped.push(ticket.clone());
         }
         Ok(skipped)
     }
@@ -605,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn comment_delta_rerenders_clean_file_and_preserves_dirty_file() {
+    fn comment_delta_updates_clean_and_dirty_files_without_overwriting_comment_edits() {
         let ticket = Ticket {
             id: "ticket-1".into(),
             key: "DEMO-1".into(),
@@ -641,7 +662,8 @@ mod tests {
         };
         let mut clean = checkout("clean-comment");
         let mut dirty = checkout("dirty-comment");
-        for checkout in [&mut clean, &mut dirty] {
+        let mut tampered = checkout("tampered-comment");
+        for checkout in [&mut clean, &mut dirty, &mut tampered] {
             checkout.update_members(std::slice::from_ref(&member));
             checkout
                 .apply_deltas(
@@ -656,8 +678,13 @@ mod tests {
             .unwrap()
             .replace("title: Title", "title: Local title");
         fs::write(&dirty_path, &dirty_content).unwrap();
+        let tampered_path = tampered.mirror_path(&ticket.key);
+        let tampered_content = fs::read_to_string(&tampered_path)
+            .unwrap()
+            .replace("## Comments\n", "## Comments\nlocally changed\n");
+        fs::write(&tampered_path, &tampered_content).unwrap();
 
-        for checkout in [&mut clean, &mut dirty] {
+        for checkout in [&mut clean, &mut dirty, &mut tampered] {
             checkout.update_comments(std::slice::from_ref(&comment));
         }
         assert!(clean
@@ -675,16 +702,42 @@ mod tests {
                 &HashMap::new(),
             )
             .unwrap();
+        let tampered_skipped = tampered
+            .apply_deltas(
+                std::slice::from_ref(&ticket),
+                &HashSet::new(),
+                &HashMap::new(),
+            )
+            .unwrap();
 
-        assert_eq!(skipped.as_slice(), std::slice::from_ref(&ticket));
+        assert!(skipped.is_empty());
+        assert_eq!(tampered_skipped.as_slice(), std::slice::from_ref(&ticket));
         assert!(fs::read_to_string(clean.mirror_path(&ticket.key))
             .unwrap()
             .contains("### gabe@example.com — 2026-08-25T13:00:00.000Z\nComment body"));
-        assert_eq!(fs::read_to_string(dirty_path).unwrap(), dirty_content);
+        let dirty_result = fs::read_to_string(dirty_path).unwrap();
+        assert!(dirty_result.contains("title: Local title"));
+        assert!(dirty_result.contains("### gabe@example.com — 2026-08-25T13:00:00.000Z"));
+        assert_eq!(fs::read_to_string(tampered_path).unwrap(), tampered_content);
+
+        let mut changed_ticket = ticket.clone();
+        changed_ticket.title = "Server title".into();
+        changed_ticket.seq = 4;
+        assert_eq!(
+            dirty
+                .apply_deltas(
+                    std::slice::from_ref(&changed_ticket),
+                    &HashSet::new(),
+                    &HashMap::new(),
+                )
+                .unwrap(),
+            [changed_ticket]
+        );
         assert_eq!(dirty.comments_for(&ticket.id), [comment]);
 
         std::fs::remove_dir_all(clean.host_dir()).unwrap();
         std::fs::remove_dir_all(dirty.host_dir()).unwrap();
+        std::fs::remove_dir_all(tampered.host_dir()).unwrap();
     }
 
     #[test]

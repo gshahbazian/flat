@@ -43,7 +43,7 @@ pub struct TicketFile {
     /// Missing only for a pre-priority mirror that has not synced yet.
     pub updated: Option<String>,
     pub body: String,
-    /// Exact rendered suffix beginning at the sentinel.
+    /// Rendered suffix beginning at the sentinel.
     pub comments: String,
 }
 
@@ -142,11 +142,11 @@ pub fn render_comment_section(
     Ok(out)
 }
 
-fn split_comments(content: &str) -> Result<(&str, String)> {
+pub(crate) fn split_comment_section(content: &str) -> Result<(&str, &str)> {
     let mut offset = 0;
     for line in content.split_inclusive('\n') {
         if line.trim_end_matches(['\r', '\n']) == COMMENT_SENTINEL {
-            return Ok((&content[..offset], content[offset..].to_string()));
+            return Ok((&content[..offset], &content[offset..]));
         }
         offset += line.len();
     }
@@ -155,8 +155,28 @@ fn split_comments(content: &str) -> Result<(&str, String)> {
     );
 }
 
+pub(crate) fn comment_sections_equal(left: &str, right: &str) -> bool {
+    let left = left.replace("\r\n", "\n");
+    let right = right.replace("\r\n", "\n");
+    left.trim_end_matches('\n') == right.trim_end_matches('\n')
+}
+
+pub(crate) fn replace_unchanged_comment_section(
+    content: &str,
+    base: &str,
+    replacement: &str,
+) -> Option<String> {
+    let (editable, current_comments) = split_comment_section(content).ok()?;
+    let (_, base_comments) = split_comment_section(base).ok()?;
+    if !comment_sections_equal(current_comments, base_comments) {
+        return None;
+    }
+    let (_, replacement_comments) = split_comment_section(replacement).ok()?;
+    Some(format!("{editable}{replacement_comments}"))
+}
+
 pub fn parse(content: &str) -> Result<TicketFile> {
-    let (editable, comments) = split_comments(content)?;
+    let (editable, comments) = split_comment_section(content)?;
     let mut lines = editable.lines();
     if lines.next() != Some("---") {
         bail!("file must start with `---` frontmatter");
@@ -219,7 +239,7 @@ pub fn parse(content: &str) -> Result<TicketFile> {
         created,
         updated,
         body: body.trim_start_matches('\n').trim_end().to_string(),
-        comments,
+        comments: comments.to_string(),
     })
 }
 
@@ -419,5 +439,17 @@ mod tests {
         assert!(error
             .to_string()
             .contains("missing `<!-- flat:comments -->`"));
+    }
+
+    #[test]
+    fn comment_sections_ignore_crlf_and_trailing_newlines() {
+        let canonical = "<!-- flat:comments -->\n## Comments\n\n### author — now\nbody\n";
+        let normalized =
+            "<!-- flat:comments -->\r\n## Comments\r\n\r\n### author — now\r\nbody\r\n\r\n";
+        assert!(comment_sections_equal(canonical, normalized));
+        assert!(!comment_sections_equal(
+            canonical,
+            "<!-- flat:comments -->\n## Comments\n\n### author — now\nchanged\n"
+        ));
     }
 }

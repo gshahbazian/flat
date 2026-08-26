@@ -57,17 +57,20 @@ Use `flat comment KEY TEXT` or `flat comment KEY --stdin` instead. Comment
 bodies preserve Markdown, must contain non-whitespace content, and are limited
 to 1 MiB of UTF-8. Comment creates are journaled before sending. If a mutation
 is already pending, `flat comment` requires `flat sync` to replay it before a
-new comment can be added.
+new comment can be added. A comments-only sync replaces the suffix while
+preserving local edits above it. CRLF conversion and final newlines do not
+count as edits to rendered comments.
 
 Notes:
 
-- `flat sync` never overwrites a file with local edits: without `--merge` it
-  reports the file and withholds that ticket's delta (last_seq doesn't
-  advance, so the next sync re-delivers it); with `--merge` it three-way
-  merges the server's changes in, leaving `<<<<<<< local` / `>>>>>>> server`
-  conflict markers where both sides changed the same thing. `flat push`
-  refuses files with unresolved markers, and `flat sync` exits non-zero as
-  long as any mirror file still contains them.
+- `flat sync` applies comments-only suffix updates without touching local
+  editable fields. When editable server fields also changed, sync without
+  `--merge` reports the file and withholds that ticket's delta (last_seq
+  doesn't advance, so the next sync re-delivers it); with `--merge` it
+  three-way merges the server's changes in, leaving `<<<<<<< local` /
+  `>>>>>>> server` conflict markers where both sides changed the same thing.
+  `flat push` refuses files with unresolved markers, and `flat sync` exits
+  non-zero as long as any mirror file still contains them.
 - Deleting a mirror file discards its local edits: `flat sync` restores the
   last synced server state from the base copy.
 - A ticket deleted on the server arrives as a tombstone. Sync removes its

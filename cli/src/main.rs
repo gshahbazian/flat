@@ -1217,7 +1217,7 @@ fn changed_ticket_set(
     if file.updated != base.updated {
         bail!("{}: updated is read-only", path.display());
     }
-    if file.comments != base.comments {
+    if !markdown::comment_sections_equal(&file.comments, &base.comments) {
         bail!(
             "{}: comments are read-only — use `flat comment {}`",
             path.display(),
@@ -1394,8 +1394,9 @@ fn report_kept(checkout: &Checkout, skipped: &[Ticket]) {
 }
 
 /// Three-way merges each withheld delta into its dirty mirror file. Returns
-/// how many were left untouched (unparseable local files); merges that wrote
-/// conflict markers are picked up by the caller's marker scan.
+/// how many were left untouched because that file could not be parsed or
+/// merged; merges that wrote conflict markers are picked up by the caller's
+/// marker scan.
 fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<usize> {
     let mut unresolved = 0;
     for ticket in skipped {
@@ -1417,7 +1418,17 @@ fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<usize> {
         let base = markdown::parse(&base_raw)
             .with_context(|| format!("parsing base copy of {}", ticket.key))?;
         let comments = checkout.comments_for(&ticket.id);
-        let merged = merge::merge(&base, &local, ticket, &checkout.state.members, &comments)?;
+        let merged = match merge::merge(&base, &local, ticket, &checkout.state.members, &comments) {
+            Ok(merged) => merged,
+            Err(error) => {
+                eprintln!(
+                    "cannot merge {}: {error:#} (fix the file, or delete it to discard local edits)",
+                    mirror.display()
+                );
+                unresolved += 1;
+                continue;
+            }
+        };
         checkout.write_merged(ticket, &merged.content)?;
         if !merged.conflicted {
             println!("merged {} (kept local edits)", ticket.key);
@@ -1598,6 +1609,50 @@ mod tests {
             markdown::render(&updated, &checkout.state.members, &[]).unwrap()
         );
 
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn merge_skipped_continues_after_a_touched_comment_section() {
+        let root = std::env::temp_dir().join(format!("flat-merge-comments-{}", Ulid::new()));
+        let config = Config {
+            server: "https://flat.example".into(),
+            token: "test-token".into(),
+        };
+        let mut checkout = Checkout::initialize(&root, config).unwrap();
+        let first = ticket("ticket-1", "DEMO-1", "First", 1);
+        let second = ticket("ticket-2", "DEMO-2", "Second", 2);
+        checkout
+            .apply_deltas(
+                &[first.clone(), second.clone()],
+                &HashSet::new(),
+                &HashMap::new(),
+            )
+            .unwrap();
+
+        let first_path = checkout.mirror_path(&first.key);
+        let mut first_local = fs::read_to_string(&first_path).unwrap();
+        first_local.push_str("locally changed\n");
+        fs::write(&first_path, &first_local).unwrap();
+        let second_path = checkout.mirror_path(&second.key);
+        let second_local = fs::read_to_string(&second_path)
+            .unwrap()
+            .replace("title: Second", "title: Local second");
+        fs::write(&second_path, second_local).unwrap();
+
+        let mut server_first = first;
+        server_first.status = Status::Done;
+        server_first.seq = 3;
+        let mut server_second = second;
+        server_second.status = Status::InProgress;
+        server_second.seq = 4;
+        let unresolved = merge_skipped(&mut checkout, &[server_first, server_second]).unwrap();
+
+        assert_eq!(unresolved, 1);
+        assert_eq!(fs::read_to_string(first_path).unwrap(), first_local);
+        let merged_second = markdown::parse(&fs::read_to_string(second_path).unwrap()).unwrap();
+        assert_eq!(merged_second.title, "Local second");
+        assert_eq!(merged_second.status, Status::InProgress);
         std::fs::remove_dir_all(root).unwrap();
     }
 
