@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const LATEST_SCHEMA_VERSION = 5
+export const LATEST_SCHEMA_VERSION = 6
 
 const storedSchemaVersionSchema = z.union([z.string(), z.number()])
 const schemaVersionSchema = storedSchemaVersionSchema
@@ -189,6 +189,22 @@ const MIGRATIONS = [
     strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), id
   FROM members WHERE status = 'active' AND role = 'admin';
   DELETE FROM meta WHERE key IN ('project_key', 'next_ticket_num')`,
+  `CREATE TABLE comments (
+    id TEXT PRIMARY KEY,
+    ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+    body TEXT NOT NULL,
+    member_id TEXT NOT NULL REFERENCES members(id),
+    token_id TEXT NOT NULL REFERENCES tokens(id),
+    token_kind TEXT NOT NULL CHECK (token_kind IN ('human', 'agent')),
+    agent_name TEXT,
+    delegating_member_id TEXT REFERENCES members(id),
+    created_at TEXT NOT NULL,
+    seq INTEGER NOT NULL UNIQUE CHECK (seq >= 0),
+    CHECK ((token_kind = 'agent' AND agent_name IS NOT NULL)
+      OR (token_kind = 'human' AND agent_name IS NULL)),
+    CHECK (token_kind = 'agent' OR delegating_member_id IS NULL)
+  );
+  CREATE INDEX comments_ticket_seq ON comments (ticket_id, seq)`,
 ] as const
 
 type MigrationValue = ArrayBuffer | string | number | null

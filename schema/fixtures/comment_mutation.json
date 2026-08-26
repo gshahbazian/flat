@@ -1,0 +1,10 @@
+{
+  "mutation_id": "01JG4C6Q90PQRSTVWXYZ012345",
+  "op": "create",
+  "entity": "comment",
+  "entity_id": "01JG4C6Q90ABCDEFGHJKMNPQRS",
+  "set": {
+    "ticket": "01JG4C2Q4V8XKZ3W5D9E7F2H6M",
+    "body": "Reproduced this with two concurrent refreshes."
+  }
+}

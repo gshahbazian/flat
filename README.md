@@ -5,14 +5,14 @@ markdown files that agents grep, edit, and push back. See
 [docs/001_initial_system.md](docs/001_initial_system.md) for the full design.
 
 Current implemented slice: projects and ownership, multi-project mirrors,
-ticket priority, assignment, timestamps, per-member permissions for the HTTP
-ticket-sync and administration surfaces, and GitHub PR webhooks. A deployment
-is claimed once, admins invite members, and each installation or agent has a
-distinct credential. The Durable Object enforces role, access, and token-kind
-permissions. Signed GitHub pull-request webhooks can silently close tickets.
+ticket fields, append-only comments, per-member permissions for the HTTP
+ticket-sync and administration surfaces, and GitHub PR webhooks. Comments
+retain server-derived human or agent attribution and render directly in ticket
+files. A deployment is claimed once, admins invite members, and each
+installation or agent has a distinct credential.
 
 The broader accepted design is not complete yet. WebSocket/watch sessions,
-search and remote MCP, comments, labels, force pushes, native
+search and remote MCP, labels, force pushes, native
 OS-keychain storage, and the operator-recovery deployment runbook remain
 explicit follow-up work.
 
@@ -48,6 +48,7 @@ flat init http://localhost:8787 --setup
 # setup creates a default DEMO project
 flat project create AUTH --name "Authentication"
 flat new "Fix OAuth token refresh race" --project AUTH --priority high --assignee gabe@acme.com
+flat comment AUTH-1 "Reproduced with two concurrent refreshes."
 $EDITOR "$(flat path)/AUTH/AUTH-1.md"     # edit fields or description body
 flat push
 flat sync
@@ -85,11 +86,21 @@ updated: 2026-08-25T13:45:00.000Z
 ---
 
 Description body.
+
+<!-- flat:comments -->
+## Comments
+
+### ticket-triage (for gabe@acme.com) — 2026-08-25T14:10:00.000Z
+Reproduced with two concurrent refreshes.
 ```
 
 Editable: `title`, `status` (`backlog|todo|in_progress|in_review|done|canceled`),
 `priority` (`none|low|medium|high|urgent`), `assignee` (a member email or
-`null`), and the body. Read-only: `id`, `project`, `created`, and `updated`.
+`null`), and the body. Read-only: `id`, `project`, `created`, `updated`, and
+everything from the `<!-- flat:comments -->` sentinel onward. Add comments
+with `flat comment KEY TEXT` or pipe multiline Markdown to `flat comment KEY
+--stdin`. Comments must contain non-whitespace content and may be at most 1 MiB
+of UTF-8.
 `flat push`
 diffs each file against its base copy and sends one atomic update mutation per
 ticket; replaying a mutation is idempotent. Assignment emails are normalized

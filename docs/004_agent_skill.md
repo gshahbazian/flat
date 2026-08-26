@@ -33,13 +33,14 @@ working copy. The skill explains how to:
 1. Sync the mirror with `flat sync`.
 2. Find the checkout root with `flat path`, then search and read the mirrored
    ticket files beneath it with tools such as `rg` and `cat`.
-3. Edit a ticket's `title`, `status`, and description. The `id` stays
-   read-only.
+3. Edit a ticket's `title`, `status`, `priority`, `assignee`, and description.
+   Identity, timestamps, and rendered comments stay read-only.
 4. Create a ticket with `flat new TITLE --project KEY`.
-5. Publish local edits with `flat push`.
-6. Use `flat sync --merge` and resolve conflict markers when local and server
+5. Add an append-only comment with `flat comment KEY TEXT` or `--stdin`.
+6. Publish local edits with `flat push`.
+7. Use `flat sync --merge` and resolve conflict markers when local and server
    edits overlap.
-7. Delete a server ticket with `flat delete KEY` only on an explicit request
+8. Delete a server ticket with `flat delete KEY` only on an explicit request
    and with the required admin human token.
 
 The skill lists every current status, including `in_progress` and `done`. It

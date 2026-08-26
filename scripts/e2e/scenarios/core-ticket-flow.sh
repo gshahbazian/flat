@@ -83,10 +83,29 @@ mv "$member_ticket.updated" "$member_ticket"
 e2e_assert_line "$member_ticket" "status: in_progress"
 FLAT_DIR="$member_root" "$FLAT_E2E_BIN" push
 
-e2e_log "Syncing as the admin and verifying the member update"
-FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" sync
-e2e_assert_line "$admin_ticket" "title: Core E2E ticket"
+e2e_log "Adding a comment while the admin has a local ticket edit"
+sed 's/^title: Core E2E ticket$/title: Admin local title/' "$admin_ticket" >"$admin_ticket.updated"
+mv "$admin_ticket.updated" "$admin_ticket"
+printf 'Found the cause.\n\n- Added a regression test.\n' |
+  FLAT_DIR="$member_root" "$FLAT_E2E_BIN" comment "$ticket_key" --stdin
+if FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" sync; then
+  e2e_fail "sync overwrote a dirty ticket when a comment arrived"
+fi
+e2e_assert_line "$admin_ticket" "title: Admin local title"
+if grep -Fq "Found the cause." "$admin_ticket"; then
+  e2e_fail "comment landed before the dirty ticket was merged"
+fi
+
+e2e_log "Merging the comment, pushing the local edit, and converging mirrors"
+FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" sync --merge
+e2e_assert_line "$admin_ticket" "title: Admin local title"
 e2e_assert_line "$admin_ticket" "status: in_progress"
+e2e_assert_line "$admin_ticket" "<!-- flat:comments -->"
+grep -Fq "### $MEMBER_EMAIL — " "$admin_ticket" ||
+  e2e_fail "comment did not render member attribution"
+e2e_assert_line "$admin_ticket" "Found the cause."
+FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" push
+FLAT_DIR="$member_root" "$FLAT_E2E_BIN" sync
 if ! cmp -s "$member_ticket" "$admin_ticket"; then
   e2e_fail "admin and member mirrors did not converge"
 fi

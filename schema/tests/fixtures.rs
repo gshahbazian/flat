@@ -2,7 +2,9 @@
 //! and require the result to be byte-for-byte the same JSON value. Catches
 //! renamed fields, wrong enum casing, and dropped fields on either side.
 
-use flat_schema::{Mutation, Project, Snapshot, SyncRequest, SyncResponse, Ticket, TicketSet};
+use flat_schema::{
+    Comment, Mutation, Project, Snapshot, SyncRequest, SyncResponse, Ticket, TicketSet,
+};
 use serde::{de::DeserializeOwned, Serialize};
 
 fn roundtrip<T: Serialize + DeserializeOwned>(name: &str) {
@@ -25,6 +27,11 @@ fn ticket() {
 }
 
 #[test]
+fn comment() {
+    roundtrip::<Comment>("comment");
+}
+
+#[test]
 fn project() {
     roundtrip::<Project>("project");
 }
@@ -37,6 +44,11 @@ fn mutation() {
 #[test]
 fn project_mutation() {
     roundtrip::<Mutation>("project_mutation");
+}
+
+#[test]
+fn comment_mutation() {
+    roundtrip::<Mutation>("comment_mutation");
 }
 
 #[test]
@@ -172,6 +184,28 @@ fn token_names() {
     for name in ["", "bad name", "-leading", &"a".repeat(65)] {
         assert!(flat_schema::validate_token_name(name).is_err(), "{name:?}");
     }
+}
+
+#[test]
+fn comment_bodies() {
+    assert!(flat_schema::validate_comment_body("Markdown\n\n- works").is_ok());
+    assert!(flat_schema::validate_comment_body(" \n\t").is_err());
+    assert!(flat_schema::validate_comment_body("\u{0085}").is_err());
+    assert!(flat_schema::validate_comment_body("\u{feff}").is_ok());
+    assert!(
+        flat_schema::validate_comment_body(&"a".repeat(flat_schema::MAX_COMMENT_BYTES)).is_ok()
+    );
+    assert!(
+        flat_schema::validate_comment_body(&"a".repeat(flat_schema::MAX_COMMENT_BYTES + 1))
+            .is_err()
+    );
+    assert!(
+        flat_schema::validate_comment_body(&"é".repeat(flat_schema::MAX_COMMENT_BYTES / 2)).is_ok()
+    );
+    assert!(flat_schema::validate_comment_body(
+        &"é".repeat(flat_schema::MAX_COMMENT_BYTES / 2 + 1)
+    )
+    .is_err());
 }
 
 #[test]

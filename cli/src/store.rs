@@ -7,7 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use flat_schema::{MemberProfile, Mutation, Project, ProjectTombstone, Ticket, TicketTombstone};
+use flat_schema::{
+    Comment, MemberProfile, Mutation, Project, ProjectTombstone, Ticket, TicketTombstone,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::markdown;
@@ -41,6 +43,8 @@ pub struct State {
     /// Member ULID -> safe profile used to render and resolve assignees.
     #[serde(default)]
     pub members: BTreeMap<String, MemberProfile>,
+    /// Comment ULID -> append-only row used to render ticket suffixes.
+    pub comments: BTreeMap<String, Comment>,
 }
 
 pub fn flat_root() -> Result<PathBuf> {
@@ -240,6 +244,26 @@ impl Checkout {
             .collect();
     }
 
+    pub fn update_comments(&mut self, comments: &[Comment]) {
+        for comment in comments {
+            self.state
+                .comments
+                .insert(comment.id.clone(), comment.clone());
+        }
+    }
+
+    pub fn comments_for(&self, ticket_id: &str) -> Vec<Comment> {
+        let mut comments: Vec<Comment> = self
+            .state
+            .comments
+            .values()
+            .filter(|comment| comment.ticket_id == ticket_id)
+            .cloned()
+            .collect();
+        comments.sort_by_key(|comment| comment.seq);
+        comments
+    }
+
     pub fn apply_projects(&mut self, projects: &[Project]) {
         for project in projects {
             self.state
@@ -305,7 +329,8 @@ impl Checkout {
             if keep_local.contains(&ticket.key) {
                 continue;
             }
-            let rendered = markdown::render(ticket, &self.state.members)?;
+            let rendered =
+                markdown::render(ticket, &self.state.members, &self.comments_for(&ticket.id))?;
             let clean = match fs::read_to_string(self.mirror_path(&ticket.key)) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
                 Err(e) => return Err(e).context(format!("reading mirror file of {}", ticket.key)),
@@ -342,6 +367,9 @@ impl Checkout {
                 }
             }
             self.state.tickets.remove(&tombstone.key);
+            self.state
+                .comments
+                .retain(|_, comment| comment.ticket_id != tombstone.id);
         }
         Ok(())
     }
@@ -367,7 +395,7 @@ impl Checkout {
     /// and state advance to the server row — so the next `flat push` sends
     /// exactly the local side of the merge with a fresh base_seq.
     pub fn write_merged(&mut self, ticket: &Ticket, merged: &str) -> Result<()> {
-        let base = markdown::render(ticket, &self.state.members)?;
+        let base = markdown::render(ticket, &self.state.members, &self.comments_for(&ticket.id))?;
         self.write_ticket(ticket, merged, &base)
     }
 
@@ -506,7 +534,10 @@ fn verify_writable(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use flat_schema::{Priority, Project, ProjectTombstone, Status, TicketTombstone};
+    use flat_schema::{
+        Comment, MemberProfile, Priority, Project, ProjectTombstone, Status, TicketTombstone,
+        TokenKind,
+    };
 
     use super::*;
 
@@ -553,7 +584,7 @@ mod tests {
         };
         let mut first = checkout("first");
         let mut second = checkout("second");
-        let rendered = markdown::render(&ticket, &BTreeMap::new()).unwrap();
+        let rendered = markdown::render(&ticket, &BTreeMap::new(), &[]).unwrap();
         first.write_ticket(&ticket, &rendered, &rendered).unwrap();
         second.write_ticket(&ticket, &rendered, &rendered).unwrap();
 
@@ -571,6 +602,89 @@ mod tests {
 
         std::fs::remove_dir_all(first.host_dir()).unwrap();
         std::fs::remove_dir_all(second.host_dir()).unwrap();
+    }
+
+    #[test]
+    fn comment_delta_rerenders_clean_file_and_preserves_dirty_file() {
+        let ticket = Ticket {
+            id: "ticket-1".into(),
+            key: "DEMO-1".into(),
+            project: "project-demo".into(),
+            title: "Title".into(),
+            body: "Description".into(),
+            status: Status::Todo,
+            priority: Priority::None,
+            assignee: None,
+            created_at: "2026-08-25T12:34:56.000Z".into(),
+            updated_at: "2026-08-25T12:34:56.000Z".into(),
+            seq: 2,
+        };
+        let member = MemberProfile {
+            id: "member-1".into(),
+            email: "gabe@example.com".into(),
+            role: flat_schema::Role::Member,
+            status: flat_schema::MemberStatus::Active,
+            created_at: "2026-08-01T10:00:00.000Z".into(),
+            activated_at: Some("2026-08-01T10:01:00.000Z".into()),
+        };
+        let comment = Comment {
+            id: "comment-1".into(),
+            ticket_id: ticket.id.clone(),
+            body: "Comment body".into(),
+            member_id: member.id.clone(),
+            token_id: "token-1".into(),
+            token_kind: TokenKind::Human,
+            agent_name: None,
+            delegating_member_id: None,
+            created_at: "2026-08-25T13:00:00.000Z".into(),
+            seq: 3,
+        };
+        let mut clean = checkout("clean-comment");
+        let mut dirty = checkout("dirty-comment");
+        for checkout in [&mut clean, &mut dirty] {
+            checkout.update_members(std::slice::from_ref(&member));
+            checkout
+                .apply_deltas(
+                    std::slice::from_ref(&ticket),
+                    &HashSet::new(),
+                    &HashMap::new(),
+                )
+                .unwrap();
+        }
+        let dirty_path = dirty.mirror_path(&ticket.key);
+        let dirty_content = fs::read_to_string(&dirty_path)
+            .unwrap()
+            .replace("title: Title", "title: Local title");
+        fs::write(&dirty_path, &dirty_content).unwrap();
+
+        for checkout in [&mut clean, &mut dirty] {
+            checkout.update_comments(std::slice::from_ref(&comment));
+        }
+        assert!(clean
+            .apply_deltas(
+                std::slice::from_ref(&ticket),
+                &HashSet::new(),
+                &HashMap::new(),
+            )
+            .unwrap()
+            .is_empty());
+        let skipped = dirty
+            .apply_deltas(
+                std::slice::from_ref(&ticket),
+                &HashSet::new(),
+                &HashMap::new(),
+            )
+            .unwrap();
+
+        assert_eq!(skipped.as_slice(), std::slice::from_ref(&ticket));
+        assert!(fs::read_to_string(clean.mirror_path(&ticket.key))
+            .unwrap()
+            .contains("### gabe@example.com — 2026-08-25T13:00:00.000Z\nComment body"));
+        assert_eq!(fs::read_to_string(dirty_path).unwrap(), dirty_content);
+        assert_eq!(dirty.comments_for(&ticket.id), [comment]);
+
+        std::fs::remove_dir_all(clean.host_dir()).unwrap();
+        std::fs::remove_dir_all(dirty.host_dir()).unwrap();
     }
 
     #[test]
@@ -658,7 +772,7 @@ mod tests {
     #[test]
     fn old_state_without_member_cache_deserializes() {
         let state: State = serde_json::from_str(
-            r#"{"last_seq":7,"tickets":{"DEMO-1":{"id":"ticket-1","seq":7}}}"#,
+            r#"{"last_seq":7,"tickets":{"DEMO-1":{"id":"ticket-1","seq":7}},"comments":{}}"#,
         )
         .unwrap();
         assert_eq!(state.last_seq, 7);

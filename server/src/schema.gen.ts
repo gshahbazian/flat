@@ -6,8 +6,29 @@
 export interface AppliedMutation {
 	mutation_id: string;
 	entity_id: string;
-	/** Human-facing entity key assigned or confirmed by the server. */
+	/** Human-facing entity key, or the parent ticket key for a comment. */
 	key: string;
+	seq: number;
+}
+
+export enum TokenKind {
+	Human = "human",
+	Agent = "agent",
+}
+
+/** An append-only comment with server-derived author attribution. */
+export interface Comment {
+	id: string;
+	/** Parent ticket ULID. */
+	ticket_id: string;
+	body: string;
+	/** Effective member and accepted token captured when the comment is made. */
+	member_id: string;
+	token_id: string;
+	token_kind: TokenKind;
+	agent_name: string | null;
+	delegating_member_id: string | null;
+	created_at: string;
 	seq: number;
 }
 
@@ -41,6 +62,7 @@ export enum MutationOp {
 
 export enum Entity {
 	Ticket = "ticket",
+	Comment = "comment",
 	Project = "project",
 }
 
@@ -76,6 +98,8 @@ export interface MutationSet {
 	/** Outer `None` omits the field; `Some(None)` explicitly clears it. */
 	assignee?: string | null;
 	body?: string;
+	/** Parent ticket ULID. Required on comment create and immutable afterward. */
+	ticket?: string;
 	/** Required on project create and immutable afterward. */
 	key?: string;
 	display_name?: string;
@@ -165,6 +189,7 @@ export interface Ticket {
 export interface Snapshot {
 	projects: Project[];
 	tickets: Ticket[];
+	comments: Comment[];
 	members?: MemberProfile[];
 	/** The seq watermark this snapshot represents. */
 	latest_seq: number;
@@ -190,6 +215,8 @@ export interface SyncResponse {
 	conflicts: MutationConflict[];
 	/** Full rows for every ticket changed since the request's `last_seq`. */
 	deltas: Ticket[];
+	/** Comments changed since the request's `last_seq`. */
+	comment_deltas: Comment[];
 	/** Projects changed since the request's `last_seq`. */
 	project_deltas?: Project[];
 	/** Tickets deleted since `last_seq`. */
@@ -207,10 +234,5 @@ export enum TokenAccess {
 	Read = "read",
 	Write = "write",
 	Admin = "admin",
-}
-
-export enum TokenKind {
-	Human = "human",
-	Agent = "agent",
 }
 

@@ -10,6 +10,8 @@ flat init URL --token                  # configure an existing FLAT_TOKEN
 flat new TITLE --project KEY [--priority PRIORITY] [--assignee EMAIL]
 flat sync [--merge]                    # pull server changes into the mirror
 flat push                              # send locally edited files back
+flat comment KEY TEXT                  # add an append-only comment
+flat comment KEY --stdin               # read multiline Markdown from stdin
 flat path                              # print the mirror location
 flat member ...                        # invitations, roles, suspension, recovery
 flat token ...                         # per-installation and agent credentials
@@ -46,6 +48,14 @@ is one of `none`, `low`, `medium`, `high`, or `urgent`; unassigned tickets use
 `assignee: null`. Assignment emails use the shared normalization rules and are
 resolved through synced member profiles. If an email is missing from the
 local cache, run `flat sync` and retry.
+
+Each file ends with a `<!-- flat:comments -->` section rendered from the
+server's append-only comments. Everything from that sentinel onward is
+read-only; `flat push` rejects changed, deleted, or mangled comment sections.
+Use `flat comment KEY TEXT` or `flat comment KEY --stdin` instead. Comment
+bodies preserve Markdown, must contain non-whitespace content, and are limited
+to 1 MiB of UTF-8. Comment creates are journaled before sending, so retrying a
+lost response cannot duplicate them.
 
 Notes:
 

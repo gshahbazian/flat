@@ -14,15 +14,20 @@
 //! ---
 //!
 //! Description body.
+//!
+//! <!-- flat:comments -->
+//! ## Comments
 //! ```
 //!
 //! Editable: title, status, priority, assignee, body. Read-only: id, project,
-//! created, updated.
+//! created, updated, and the rendered comment section.
 
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
-use flat_schema::{MemberProfile, Priority, Status, Ticket};
+use flat_schema::{Comment, MemberProfile, Priority, Status, Ticket, TokenKind};
+
+pub const COMMENT_SENTINEL: &str = "<!-- flat:comments -->";
 
 /// The editable fields of one ticket file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +43,8 @@ pub struct TicketFile {
     /// Missing only for a pre-priority mirror that has not synced yet.
     pub updated: Option<String>,
     pub body: String,
+    /// Exact rendered suffix beginning at the sentinel.
+    pub comments: String,
 }
 
 pub(crate) fn assignee_email(
@@ -58,7 +65,11 @@ pub(crate) fn assignee_email(
         .transpose()
 }
 
-pub fn render(ticket: &Ticket, members: &BTreeMap<String, MemberProfile>) -> Result<String> {
+pub fn render(
+    ticket: &Ticket,
+    members: &BTreeMap<String, MemberProfile>,
+    comments: &[Comment],
+) -> Result<String> {
     let assignee = assignee_email(ticket, members)?;
     let assignee = assignee.as_deref().unwrap_or("null");
     let project = ticket
@@ -83,11 +94,69 @@ pub fn render(ticket: &Ticket, members: &BTreeMap<String, MemberProfile>) -> Res
         out.push_str(body);
         out.push('\n');
     }
+    out.push_str(&render_comment_section(comments, members)?);
     Ok(out)
 }
 
+pub fn render_comment_section(
+    comments: &[Comment],
+    members: &BTreeMap<String, MemberProfile>,
+) -> Result<String> {
+    let mut out = format!("\n{COMMENT_SENTINEL}\n## Comments\n");
+    let mut comments: Vec<&Comment> = comments.iter().collect();
+    comments.sort_by_key(|comment| comment.seq);
+    for comment in comments {
+        let member = members.get(&comment.member_id).with_context(|| {
+            format!(
+                "missing member profile for comment author {}; run `flat sync`",
+                comment.member_id
+            )
+        })?;
+        let author = match comment.token_kind {
+            TokenKind::Human => member.email.clone(),
+            TokenKind::Agent => {
+                let agent = comment
+                    .agent_name
+                    .as_deref()
+                    .context("agent comment is missing its agent name")?;
+                if let Some(delegating_id) = &comment.delegating_member_id {
+                    let delegating = members.get(delegating_id).with_context(|| {
+                        format!(
+                            "missing member profile for delegating member {delegating_id}; run `flat sync`"
+                        )
+                    })?;
+                    format!(
+                        "{agent} (for {}, delegated by {})",
+                        member.email, delegating.email
+                    )
+                } else {
+                    format!("{agent} (for {})", member.email)
+                }
+            }
+        };
+        out.push_str(&format!("\n### {author} — {}\n", comment.created_at));
+        out.push_str(comment.body.trim_end());
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+fn split_comments(content: &str) -> Result<(&str, String)> {
+    let mut offset = 0;
+    for line in content.split_inclusive('\n') {
+        if line.trim_end_matches(['\r', '\n']) == COMMENT_SENTINEL {
+            return Ok((&content[..offset], content[offset..].to_string()));
+        }
+        offset += line.len();
+    }
+    bail!(
+        "ticket file is missing `{COMMENT_SENTINEL}`; restore it or delete the file and run `flat sync`"
+    );
+}
+
 pub fn parse(content: &str) -> Result<TicketFile> {
-    let mut lines = content.lines();
+    let (editable, comments) = split_comments(content)?;
+    let mut lines = editable.lines();
     if lines.next() != Some("---") {
         bail!("file must start with `---` frontmatter");
     }
@@ -149,6 +218,7 @@ pub fn parse(content: &str) -> Result<TicketFile> {
         created,
         updated,
         body: body.trim_start_matches('\n').trim_end().to_string(),
+        comments,
     })
 }
 
@@ -197,7 +267,7 @@ mod tests {
             ),
             ticket("done thing", Status::Done, "trailing newline\n"),
         ] {
-            let parsed = parse(&render(&t, &members()).unwrap()).unwrap();
+            let parsed = parse(&render(&t, &members(), &[]).unwrap()).unwrap();
             assert_eq!(parsed.key, t.key);
             assert_eq!(parsed.project, "DEMO");
             assert_eq!(parsed.title, t.title);
@@ -207,6 +277,7 @@ mod tests {
             assert_eq!(parsed.created.as_deref(), Some(t.created_at.as_str()));
             assert_eq!(parsed.updated.as_deref(), Some(t.updated_at.as_str()));
             assert_eq!(parsed.body, t.body.trim_end());
+            assert!(parsed.comments.starts_with(COMMENT_SENTINEL));
         }
     }
 
@@ -214,42 +285,115 @@ mod tests {
     fn renders_assigned_and_unassigned_tickets() {
         let mut assigned = ticket("assigned", Status::Todo, "");
         assigned.assignee = Some("01JG4BZ4M6PQRSTVWXYZ012345".into());
-        let rendered = render(&assigned, &members()).unwrap();
+        let rendered = render(&assigned, &members(), &[]).unwrap();
         assert!(rendered.contains("priority: high\nassignee: gabe@acme.com\n"));
         assert_eq!(
             parse(&rendered).unwrap().assignee.as_deref(),
             Some("gabe@acme.com")
         );
 
-        let rendered = render(&ticket("unassigned", Status::Todo, ""), &members()).unwrap();
+        let rendered = render(&ticket("unassigned", Status::Todo, ""), &members(), &[]).unwrap();
         assert!(rendered.contains("assignee: null\n"));
         assert_eq!(parse(&rendered).unwrap().assignee, None);
     }
 
     #[test]
+    fn renders_ordered_human_agent_and_delegated_comments() {
+        let mut members = members();
+        for (id, email) in [
+            ("member-maya", "maya@acme.com"),
+            ("member-admin", "admin@acme.com"),
+        ] {
+            members.insert(
+                id.into(),
+                MemberProfile {
+                    id: id.into(),
+                    email: email.into(),
+                    role: flat_schema::Role::Member,
+                    status: flat_schema::MemberStatus::Suspended,
+                    created_at: "2026-08-01T10:00:00.000Z".into(),
+                    activated_at: Some("2026-08-01T10:01:00.000Z".into()),
+                },
+            );
+        }
+        let comment = |id: &str,
+                       seq: u32,
+                       token_kind: TokenKind,
+                       agent_name: Option<&str>,
+                       delegating_member_id: Option<&str>| Comment {
+            id: id.into(),
+            ticket_id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M".into(),
+            body: format!("body {seq}"),
+            member_id: if token_kind == TokenKind::Human {
+                "01JG4BZ4M6PQRSTVWXYZ012345".into()
+            } else {
+                "member-maya".into()
+            },
+            token_id: format!("token-{seq}"),
+            token_kind,
+            agent_name: agent_name.map(str::to_string),
+            delegating_member_id: delegating_member_id.map(str::to_string),
+            created_at: format!("2026-08-25T13:4{seq}:00.000Z"),
+            seq,
+        };
+        let rendered = render(
+            &ticket("comments", Status::Todo, "description"),
+            &members,
+            &[
+                comment(
+                    "delegated",
+                    3,
+                    TokenKind::Agent,
+                    Some("ticket-triage"),
+                    Some("member-admin"),
+                ),
+                comment("human", 1, TokenKind::Human, None, None),
+                comment("agent", 2, TokenKind::Agent, Some("claude"), None),
+            ],
+        )
+        .unwrap();
+        let human = rendered.find("### gabe@acme.com —").unwrap();
+        let agent = rendered.find("### claude (for maya@acme.com) —").unwrap();
+        let delegated = rendered
+            .find("### ticket-triage (for maya@acme.com, delegated by admin@acme.com) —")
+            .unwrap();
+        assert!(human < agent && agent < delegated);
+        let parsed = parse(&rendered).unwrap();
+        assert_eq!(parsed.body, "description");
+        assert!(parsed.comments.starts_with(COMMENT_SENTINEL));
+    }
+
+    #[test]
     fn rejects_unknown_fields() {
-        let err = parse("---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: todo\nwat: high\n---\n")
-            .unwrap_err();
+        let err = parse(
+            "---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: todo\nwat: high\n---\n\n<!-- flat:comments -->\n## Comments\n",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("unknown frontmatter field"));
     }
 
     #[test]
     fn rejects_empty_title() {
-        let err = parse("---\nid: DEMO-1\nproject: DEMO\ntitle:\nstatus: todo\n---\n").unwrap_err();
+        let err = parse(
+            "---\nid: DEMO-1\nproject: DEMO\ntitle:\nstatus: todo\n---\n\n<!-- flat:comments -->\n## Comments\n",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("title must not be empty"));
     }
 
     #[test]
     fn rejects_unknown_status() {
-        let err =
-            parse("---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: shipped\n---\n").unwrap_err();
+        let err = parse(
+            "---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: shipped\n---\n\n<!-- flat:comments -->\n## Comments\n",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("unknown status"));
     }
 
     #[test]
     fn rejects_unknown_priority() {
         let err = parse(
-            "---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: todo\npriority: critical\n---\n",
+            "---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: todo\npriority: critical\n---\n\n<!-- flat:comments -->\n## Comments\n",
         )
         .unwrap_err();
         assert!(err.to_string().contains("unknown priority"));
@@ -257,11 +401,22 @@ mod tests {
 
     #[test]
     fn accepts_frontmatter_without_optional_fields() {
-        let parsed =
-            parse("---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: todo\n---\nbody\n").unwrap();
+        let parsed = parse(
+            "---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: todo\n---\nbody\n\n<!-- flat:comments -->\n## Comments\n",
+        )
+        .unwrap();
         assert_eq!(parsed.priority, Priority::None);
         assert_eq!(parsed.assignee, None);
         assert_eq!(parsed.created, None);
         assert_eq!(parsed.updated, None);
+    }
+
+    #[test]
+    fn rejects_files_without_comment_sentinel() {
+        let error =
+            parse("---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: todo\n---\n").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("missing `<!-- flat:comments -->`"));
     }
 }

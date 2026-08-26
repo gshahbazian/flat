@@ -104,6 +104,29 @@ describe('ordered database migrations', () => {
       'seq',
     ])
     expect(columns.find((column) => column.name === 'priority')?.notnull).toBe(1)
+    const commentColumns = sql.database.prepare('PRAGMA table_info(comments)').all() as Array<{
+      name: string
+    }>
+    expect(commentColumns.map((column) => column.name)).toEqual([
+      'id',
+      'ticket_id',
+      'body',
+      'member_id',
+      'token_id',
+      'token_kind',
+      'agent_name',
+      'delegating_member_id',
+      'created_at',
+      'seq',
+    ])
+    const foreignKeys = sql.database.prepare('PRAGMA foreign_key_list(comments)').all() as Array<{
+      table: string
+      from: string
+      on_delete: string
+    }>
+    expect(foreignKeys).toContainEqual(
+      expect.objectContaining({ table: 'tickets', from: 'ticket_id', on_delete: 'CASCADE' })
+    )
   })
 
   test('version-3 tickets survive with safe defaults and timestamps', () => {

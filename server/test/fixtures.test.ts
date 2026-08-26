@@ -8,8 +8,9 @@ import { describe, expect, test } from 'vitest'
 import { z } from 'zod'
 
 import { canonicalJson } from '../src/crypto'
-import { invalidEmail, invalidTitle } from '../src/validate'
+import { invalidCommentBody, invalidEmail, invalidTitle, MAX_COMMENT_BYTES } from '../src/validate'
 import {
+  commentSchema,
   mutationSchema,
   projectSchema,
   snapshotSchema,
@@ -29,6 +30,10 @@ describe('schema fixtures round-trip through the generated types', () => {
     expect(ticketSchema.parse(fixture('ticket'))).toEqual(fixture('ticket'))
   })
 
+  test('comment', () => {
+    expect(commentSchema.parse(fixture('comment'))).toEqual(fixture('comment'))
+  })
+
   test('project', () => {
     expect(projectSchema.parse(fixture('project'))).toEqual(fixture('project'))
   })
@@ -39,6 +44,10 @@ describe('schema fixtures round-trip through the generated types', () => {
 
   test('project mutation', () => {
     expect(mutationSchema.parse(fixture('project_mutation'))).toEqual(fixture('project_mutation'))
+  })
+
+  test('comment mutation', () => {
+    expect(mutationSchema.parse(fixture('comment_mutation'))).toEqual(fixture('comment_mutation'))
   })
 
   test('sync_request', () => {
@@ -93,5 +102,18 @@ describe('email rule matches the Rust rule', () => {
 
   test('invalid emails reject', () => {
     for (const email of emails.invalid) expect(invalidEmail(email)).toBeNull()
+  })
+})
+
+describe('comment body rule matches the Rust rule', () => {
+  test('accepts Markdown and rejects empty or oversized UTF-8 bodies', () => {
+    expect(invalidCommentBody('Markdown\n\n- works')).toBeNull()
+    expect(invalidCommentBody(' \n\t')).not.toBeNull()
+    expect(invalidCommentBody('\u0085')).not.toBeNull()
+    expect(invalidCommentBody('\ufeff')).toBeNull()
+    expect(invalidCommentBody('a'.repeat(MAX_COMMENT_BYTES))).toBeNull()
+    expect(invalidCommentBody('a'.repeat(MAX_COMMENT_BYTES + 1))).not.toBeNull()
+    expect(invalidCommentBody('é'.repeat(MAX_COMMENT_BYTES / 2))).toBeNull()
+    expect(invalidCommentBody('é'.repeat(MAX_COMMENT_BYTES / 2 + 1))).not.toBeNull()
   })
 })
