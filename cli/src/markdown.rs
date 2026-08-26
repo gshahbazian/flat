@@ -6,15 +6,22 @@
 //! id: DEMO-1
 //! title: Fix OAuth token refresh race
 //! status: todo
+//! priority: high
+//! assignee: gabe@example.com
+//! created: 2026-08-25T12:34:56.000Z
+//! updated: 2026-08-25T13:45:00.000Z
 //! ---
 //!
 //! Description body.
 //! ```
 //!
-//! Editable: title, status, body. Read-only: id.
+//! Editable: title, status, priority, assignee, body. Read-only: id, created,
+//! updated.
+
+use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
-use flat_schema::{Status, Ticket};
+use flat_schema::{MemberProfile, Priority, Status, Ticket};
 
 /// The editable fields of one ticket file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -22,15 +29,45 @@ pub struct TicketFile {
     pub key: String,
     pub title: String,
     pub status: Status,
+    pub priority: Priority,
+    pub assignee: Option<String>,
+    /// Missing only for a pre-priority mirror that has not synced yet.
+    pub created: Option<String>,
+    /// Missing only for a pre-priority mirror that has not synced yet.
+    pub updated: Option<String>,
     pub body: String,
 }
 
-pub fn render(ticket: &Ticket) -> String {
+pub(crate) fn assignee_email(
+    ticket: &Ticket,
+    members: &BTreeMap<String, MemberProfile>,
+) -> Result<Option<String>> {
+    ticket
+        .assignee
+        .as_ref()
+        .map(|id| {
+            members
+                .get(id)
+                .map(|member| member.email.clone())
+                .with_context(|| {
+                    format!("missing member profile for assignee {id}; run `flat sync`")
+                })
+        })
+        .transpose()
+}
+
+pub fn render(ticket: &Ticket, members: &BTreeMap<String, MemberProfile>) -> Result<String> {
+    let assignee = assignee_email(ticket, members)?;
+    let assignee = assignee.as_deref().unwrap_or("null");
     let mut out = format!(
-        "---\nid: {}\ntitle: {}\nstatus: {}\n---\n",
+        "---\nid: {}\ntitle: {}\nstatus: {}\npriority: {}\nassignee: {}\ncreated: {}\nupdated: {}\n---\n",
         ticket.key,
         ticket.title,
-        ticket.status.as_str()
+        ticket.status.as_str(),
+        ticket.priority.as_str(),
+        assignee,
+        ticket.created_at,
+        ticket.updated_at
     );
     let body = ticket.body.trim_end();
     if !body.is_empty() {
@@ -38,7 +75,7 @@ pub fn render(ticket: &Ticket) -> String {
         out.push_str(body);
         out.push('\n');
     }
-    out
+    Ok(out)
 }
 
 pub fn parse(content: &str) -> Result<TicketFile> {
@@ -50,6 +87,10 @@ pub fn parse(content: &str) -> Result<TicketFile> {
     let mut id = None;
     let mut title = None;
     let mut status = None;
+    let mut priority = None;
+    let mut assignee = None;
+    let mut created = None;
+    let mut updated = None;
     loop {
         let line = lines
             .next()
@@ -65,7 +106,21 @@ pub fn parse(content: &str) -> Result<TicketFile> {
             "id" => id = Some(value.to_string()),
             "title" => title = Some(value.to_string()),
             "status" => status = Some(value.parse::<Status>().map_err(anyhow::Error::msg)?),
-            other => bail!("unknown frontmatter field {other:?} (fields: id, title, status)"),
+            "priority" => {
+                priority = Some(value.parse::<Priority>().map_err(anyhow::Error::msg)?)
+            }
+            "assignee" => {
+                assignee = Some(if value == "null" {
+                    None
+                } else {
+                    Some(flat_schema::normalize_email(value).map_err(anyhow::Error::msg)?)
+                })
+            }
+            "created" => created = Some(value.to_string()),
+            "updated" => updated = Some(value.to_string()),
+            other => bail!(
+                "unknown frontmatter field {other:?} (fields: id, title, status, priority, assignee, created, updated)"
+            ),
         }
     }
 
@@ -78,6 +133,10 @@ pub fn parse(content: &str) -> Result<TicketFile> {
         key: id.context("frontmatter is missing `id`")?,
         title,
         status: status.context("frontmatter is missing `status`")?,
+        priority: priority.unwrap_or(Priority::None),
+        assignee: assignee.unwrap_or(None),
+        created,
+        updated,
         body: body.trim_start_matches('\n').trim_end().to_string(),
     })
 }
@@ -93,8 +152,26 @@ mod tests {
             title: title.into(),
             body: body.into(),
             status,
+            priority: Priority::High,
+            assignee: None,
+            created_at: "2026-08-25T12:34:56.000Z".into(),
+            updated_at: "2026-08-25T13:45:00.000Z".into(),
             seq: 7,
         }
+    }
+
+    fn members() -> BTreeMap<String, MemberProfile> {
+        [MemberProfile {
+            id: "01JG4BZ4M6PQRSTVWXYZ012345".into(),
+            email: "gabe@acme.com".into(),
+            role: flat_schema::Role::Admin,
+            status: flat_schema::MemberStatus::Active,
+            created_at: "2026-08-01T10:00:00.000Z".into(),
+            activated_at: Some("2026-08-01T10:01:00.000Z".into()),
+        }]
+        .into_iter()
+        .map(|member| (member.id.clone(), member))
+        .collect()
     }
 
     #[test]
@@ -108,18 +185,37 @@ mod tests {
             ),
             ticket("done thing", Status::Done, "trailing newline\n"),
         ] {
-            let parsed = parse(&render(&t)).unwrap();
+            let parsed = parse(&render(&t, &members()).unwrap()).unwrap();
             assert_eq!(parsed.key, t.key);
             assert_eq!(parsed.title, t.title);
             assert_eq!(parsed.status, t.status);
+            assert_eq!(parsed.priority, t.priority);
+            assert_eq!(parsed.assignee, None);
+            assert_eq!(parsed.created.as_deref(), Some(t.created_at.as_str()));
+            assert_eq!(parsed.updated.as_deref(), Some(t.updated_at.as_str()));
             assert_eq!(parsed.body, t.body.trim_end());
         }
     }
 
     #[test]
+    fn renders_assigned_and_unassigned_tickets() {
+        let mut assigned = ticket("assigned", Status::Todo, "");
+        assigned.assignee = Some("01JG4BZ4M6PQRSTVWXYZ012345".into());
+        let rendered = render(&assigned, &members()).unwrap();
+        assert!(rendered.contains("priority: high\nassignee: gabe@acme.com\n"));
+        assert_eq!(
+            parse(&rendered).unwrap().assignee.as_deref(),
+            Some("gabe@acme.com")
+        );
+
+        let rendered = render(&ticket("unassigned", Status::Todo, ""), &members()).unwrap();
+        assert!(rendered.contains("assignee: null\n"));
+        assert_eq!(parse(&rendered).unwrap().assignee, None);
+    }
+
+    #[test]
     fn rejects_unknown_fields() {
-        let err =
-            parse("---\nid: DEMO-1\ntitle: x\nstatus: todo\npriority: high\n---\n").unwrap_err();
+        let err = parse("---\nid: DEMO-1\ntitle: x\nstatus: todo\nwat: high\n---\n").unwrap_err();
         assert!(err.to_string().contains("unknown frontmatter field"));
     }
 
@@ -133,5 +229,21 @@ mod tests {
     fn rejects_unknown_status() {
         let err = parse("---\nid: DEMO-1\ntitle: x\nstatus: shipped\n---\n").unwrap_err();
         assert!(err.to_string().contains("unknown status"));
+    }
+
+    #[test]
+    fn rejects_unknown_priority() {
+        let err = parse("---\nid: DEMO-1\ntitle: x\nstatus: todo\npriority: critical\n---\n")
+            .unwrap_err();
+        assert!(err.to_string().contains("unknown priority"));
+    }
+
+    #[test]
+    fn accepts_legacy_frontmatter_without_new_fields() {
+        let parsed = parse("---\nid: DEMO-1\ntitle: x\nstatus: todo\n---\nbody\n").unwrap();
+        assert_eq!(parsed.priority, Priority::None);
+        assert_eq!(parsed.assignee, None);
+        assert_eq!(parsed.created, None);
+        assert_eq!(parsed.updated, None);
     }
 }

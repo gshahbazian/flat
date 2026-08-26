@@ -4,15 +4,16 @@ A ticket system with no UI, designed for AI agents: tickets sync down to plain
 markdown files that agents grep, edit, and push back. See
 [docs/001_initial_system.md](docs/001_initial_system.md) for the full design.
 
-Current implemented slice: per-member permissions for the HTTP ticket-sync and
-administration surfaces, plus GitHub PR webhooks. A deployment is claimed once,
-admins invite members, each installation or agent has a distinct credential,
-and the Durable Object enforces role, access, and token-kind permissions.
-Signed GitHub pull-request webhooks can silently close tickets.
+Current implemented slice: ticket priority, assignment, timestamps, per-member
+permissions for the HTTP ticket-sync and administration surfaces, and GitHub
+PR webhooks. A deployment is claimed once, admins invite members, each
+installation or agent has a distinct credential, and the Durable Object
+enforces role, access, and token-kind permissions. Signed GitHub pull-request
+webhooks can silently close tickets.
 
 The broader accepted design is not complete yet. WebSocket/watch sessions,
-search and remote MCP, comments, labels, projects, assignments, force pushes,
-native OS-keychain storage, and the operator-recovery deployment runbook remain
+search and remote MCP, comments, labels, projects, force pushes, native
+OS-keychain storage, and the operator-recovery deployment runbook remain
 explicit follow-up work.
 
 ## Layout
@@ -44,8 +45,8 @@ cargo build
 alias flat=target/debug/flat
 flat init http://localhost:8787 --setup
 # local setup code: flat_setup_CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk
-flat new "Fix OAuth token refresh race"   # -> DEMO-1  ~/.flat/localhost-8787/DEMO/DEMO-1.md
-$EDITOR "$(flat path)/DEMO/DEMO-1.md"     # edit title, status, body
+flat new "Fix OAuth token refresh race" --priority high --assignee gabe@acme.com
+$EDITOR "$(flat path)/DEMO/DEMO-1.md"     # edit fields or description body
 flat push
 flat sync
 ```
@@ -60,15 +61,22 @@ overrides the root, which is also the easy way to make a second checkout).
 id: DEMO-1
 title: Fix OAuth token refresh race
 status: todo
+priority: high
+assignee: gabe@acme.com
+created: 2026-08-25T12:34:56.000Z
+updated: 2026-08-25T13:45:00.000Z
 ---
 
 Description body.
 ```
 
 Editable: `title`, `status` (`backlog|todo|in_progress|in_review|done|canceled`),
-and the body. Read-only: `id`. `flat push` diffs each file against its base
-copy and sends one atomic update mutation per ticket; replaying a mutation is
-idempotent.
+`priority` (`none|low|medium|high|urgent`), `assignee` (a member email or
+`null`), and the body. Read-only: `id`, `created`, and `updated`. `flat push`
+diffs each file against its base copy and sends one atomic update mutation per
+ticket; replaying a mutation is idempotent. Assignment emails are normalized
+and resolved through the synced member cache; run `flat sync` when a member is
+not found locally.
 
 Conflicts are field-level: concurrent pushes that touch different fields of
 the same ticket both apply, and a field both sides changed rejects the whole

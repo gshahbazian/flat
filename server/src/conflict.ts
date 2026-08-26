@@ -8,11 +8,15 @@
 // where the base copy lives: `flat sync --merge`.
 import type { TicketSet } from './schema.gen'
 
-export const TICKET_FIELDS = ['title', 'status', 'body'] as const
+export const TICKET_FIELDS = ['title', 'status', 'priority', 'assignee', 'body'] as const
 export type TicketField = (typeof TICKET_FIELDS)[number]
 
 export function fieldsSet(set: TicketSet | null | undefined): TicketField[] {
-  return TICKET_FIELDS.filter((field) => set?.[field] != null)
+  if (!set) return []
+  return TICKET_FIELDS.filter((field) => {
+    if (field === 'assignee') return Object.hasOwn(set, field)
+    return set[field] != null
+  })
 }
 
 /** Fields the incoming `set` touches that any of `serverSets` also touched. */

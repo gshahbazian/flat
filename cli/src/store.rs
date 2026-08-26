@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use flat_schema::{Mutation, Ticket, TicketTombstone};
+use flat_schema::{MemberProfile, Mutation, Ticket, TicketTombstone};
 use serde::{Deserialize, Serialize};
 
 use crate::markdown;
@@ -34,6 +34,9 @@ pub struct State {
     pub last_seq: u32,
     /// Ticket key -> local sync state.
     pub tickets: BTreeMap<String, TicketState>,
+    /// Member ULID -> safe profile used to render and resolve assignees.
+    #[serde(default)]
+    pub members: BTreeMap<String, MemberProfile>,
 }
 
 pub fn flat_root() -> Result<PathBuf> {
@@ -213,6 +216,30 @@ impl Checkout {
         )
     }
 
+    /// Sync responses carry the full safe profile list. Replace it before
+    /// rendering any ticket delta so assignment IDs always have names.
+    pub fn update_members(&mut self, members: &[MemberProfile]) {
+        self.state.members = members
+            .iter()
+            .cloned()
+            .map(|member| (member.id.clone(), member))
+            .collect();
+    }
+
+    pub fn resolve_assignee(&self, email: &str) -> Result<String> {
+        let normalized = flat_schema::normalize_email(email).map_err(anyhow::Error::msg)?;
+        self.state
+            .members
+            .values()
+            .find(|member| member.email == normalized)
+            .map(|member| member.id.clone())
+            .with_context(|| {
+                format!(
+                    "unknown assignee {normalized:?} in the local member cache; run `flat sync`"
+                )
+            })
+    }
+
     /// Materializes server deltas into the mirror and base copies.
     ///
     /// A file with unpushed local edits is never clobbered here: a delta only
@@ -237,7 +264,7 @@ impl Checkout {
             if keep_local.contains(&ticket.key) {
                 continue;
             }
-            let rendered = markdown::render(ticket);
+            let rendered = markdown::render(ticket, &self.state.members)?;
             let clean = match fs::read_to_string(self.mirror_path(&ticket.key)) {
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
                 Err(e) => return Err(e).context(format!("reading mirror file of {}", ticket.key)),
@@ -283,7 +310,8 @@ impl Checkout {
     /// and state advance to the server row — so the next `flat push` sends
     /// exactly the local side of the merge with a fresh base_seq.
     pub fn write_merged(&mut self, ticket: &Ticket, merged: &str) -> Result<()> {
-        self.write_ticket(ticket, merged, &markdown::render(ticket))
+        let base = markdown::render(ticket, &self.state.members)?;
+        self.write_ticket(ticket, merged, &base)
     }
 
     fn write_ticket(&mut self, ticket: &Ticket, mirror: &str, base: &str) -> Result<()> {
@@ -420,7 +448,7 @@ fn verify_writable(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use flat_schema::{Status, TicketTombstone};
+    use flat_schema::{Priority, Status, TicketTombstone};
 
     use super::*;
 
@@ -445,11 +473,15 @@ mod tests {
             title: "Delete me".to_string(),
             body: String::new(),
             status: Status::Todo,
+            priority: Priority::None,
+            assignee: None,
+            created_at: "2026-08-25T12:34:56.000Z".to_string(),
+            updated_at: "2026-08-25T12:34:56.000Z".to_string(),
             seq: 2,
         };
         let mut first = checkout("first");
         let mut second = checkout("second");
-        let rendered = markdown::render(&ticket);
+        let rendered = markdown::render(&ticket, &BTreeMap::new()).unwrap();
         first.write_ticket(&ticket, &rendered, &rendered).unwrap();
         second.write_ticket(&ticket, &rendered, &rendered).unwrap();
 
@@ -487,5 +519,24 @@ mod tests {
 
         assert_eq!(Checkout::open(&root).unwrap().state.last_seq, 0);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn old_state_without_member_cache_deserializes() {
+        let state: State = serde_json::from_str(
+            r#"{"last_seq":7,"tickets":{"DEMO-1":{"id":"ticket-1","seq":7}}}"#,
+        )
+        .unwrap();
+        assert_eq!(state.last_seq, 7);
+        assert!(state.members.is_empty());
+    }
+
+    #[test]
+    fn unknown_assignee_suggests_sync() {
+        let checkout = checkout("unknown-assignee");
+        let error = checkout
+            .resolve_assignee("missing@example.com")
+            .unwrap_err();
+        assert!(error.to_string().contains("run `flat sync`"));
     }
 }

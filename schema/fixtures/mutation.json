@@ -6,6 +6,8 @@
   "base_seq": 42,
   "set": {
     "title": "Fix OAuth token refresh race",
-    "status": "in_review"
+    "status": "in_review",
+    "priority": "urgent",
+    "assignee": "01JG4BZ4M6PQRSTVWXYZ012345"
   }
 }

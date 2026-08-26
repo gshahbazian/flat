@@ -2,7 +2,7 @@
 //! and require the result to be byte-for-byte the same JSON value. Catches
 //! renamed fields, wrong enum casing, and dropped fields on either side.
 
-use flat_schema::{Mutation, Snapshot, SyncRequest, SyncResponse, Ticket};
+use flat_schema::{Mutation, Snapshot, SyncRequest, SyncResponse, Ticket, TicketSet};
 use serde::{de::DeserializeOwned, Serialize};
 
 fn roundtrip<T: Serialize + DeserializeOwned>(name: &str) {
@@ -114,6 +114,44 @@ fn mutation_canonical_json() {
         flat_schema::canonical_mutation_json(&fixture.mutation).unwrap(),
         fixture.canonical_json,
     );
+}
+
+#[test]
+fn assignment_set_preserves_omit_assign_and_clear() {
+    let omitted = serde_json::to_value(TicketSet::default()).unwrap();
+    assert_eq!(omitted, serde_json::json!({}));
+
+    let assigned = TicketSet {
+        assignee: Some(Some("member-1".into())),
+        ..TicketSet::default()
+    };
+    assert_eq!(
+        serde_json::to_value(assigned).unwrap(),
+        serde_json::json!({ "assignee": "member-1" })
+    );
+
+    let cleared = TicketSet {
+        assignee: Some(None),
+        ..TicketSet::default()
+    };
+    assert_eq!(
+        serde_json::to_value(cleared).unwrap(),
+        serde_json::json!({ "assignee": null })
+    );
+    assert_eq!(
+        serde_json::from_value::<TicketSet>(serde_json::json!({ "assignee": null }))
+            .unwrap()
+            .assignee,
+        Some(None)
+    );
+}
+
+#[test]
+fn priorities_parse_by_wire_name() {
+    for priority in flat_schema::Priority::ALL {
+        assert_eq!(priority.as_str().parse(), Ok(priority));
+    }
+    assert!("critical".parse::<flat_schema::Priority>().is_err());
 }
 
 #[test]

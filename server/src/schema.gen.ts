@@ -53,10 +53,22 @@ export enum Status {
 	Canceled = "canceled",
 }
 
+/** Ticket priority, ordered here only for stable parsing and documentation. */
+export enum Priority {
+	None = "none",
+	Low = "low",
+	Medium = "medium",
+	High = "high",
+	Urgent = "urgent",
+}
+
 /** Scalar fields a mutation may set. Absent fields are left untouched. */
 export interface TicketSet {
 	title?: string;
 	status?: Status;
+	priority?: Priority;
+	/** Outer `None` omits the field; `Some(None)` explicitly clears it. */
+	assignee?: string | null;
 	body?: string;
 }
 
@@ -101,6 +113,12 @@ export interface Ticket {
 	title: string;
 	body: string;
 	status: Status;
+	priority: Priority;
+	/** Assigned member ULID, or null when unassigned. */
+	assignee: string | null;
+	/** Server-generated UTC timestamps. Clients may not set these fields. */
+	created_at: string;
+	updated_at: string;
 	/** Seq of the last mutation applied to this ticket. */
 	seq: number;
 }

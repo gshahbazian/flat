@@ -278,6 +278,27 @@ describe.sequential('TenantDO integration', () => {
             set: { title: 'Title', status: 'unknown' },
           },
           {
+            mutation_id: 'bad-priority',
+            op: 'create',
+            entity: 'ticket',
+            entity_id: 'ticket-priority',
+            set: { title: 'Title', priority: 'critical' },
+          },
+          {
+            mutation_id: 'bad-assignee',
+            op: 'create',
+            entity: 'ticket',
+            entity_id: 'ticket-assignee',
+            set: { title: 'Title', assignee: 42 },
+          },
+          {
+            mutation_id: 'read-only-timestamps',
+            op: 'create',
+            entity: 'ticket',
+            entity_id: 'ticket-timestamps',
+            set: { title: 'Title', created_at: '2026-08-25T12:34:56.000Z' },
+          },
+          {
             mutation_id: 'bad-base-seq',
             op: 'update',
             entity: 'ticket',
@@ -304,6 +325,21 @@ describe.sequential('TenantDO integration', () => {
         mutation_id: 'bad-status',
         entity_id: 'ticket-4',
         reason: 'unknown status "unknown"',
+      },
+      {
+        mutation_id: 'bad-priority',
+        entity_id: 'ticket-priority',
+        reason: 'unknown priority "critical"',
+      },
+      {
+        mutation_id: 'bad-assignee',
+        entity_id: 'ticket-assignee',
+        reason: 'set.assignee must be a member id or null',
+      },
+      {
+        mutation_id: 'read-only-timestamps',
+        entity_id: 'ticket-timestamps',
+        reason: 'created_at and updated_at are read-only',
       },
       {
         mutation_id: 'bad-base-seq',

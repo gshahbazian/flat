@@ -155,6 +155,55 @@ impl std::str::FromStr for Status {
     }
 }
 
+/// Ticket priority, ordered here only for stable parsing and documentation.
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Priority {
+    None,
+    Low,
+    Medium,
+    High,
+    Urgent,
+}
+
+impl Priority {
+    pub const ALL: [Priority; 5] = [
+        Priority::None,
+        Priority::Low,
+        Priority::Medium,
+        Priority::High,
+        Priority::Urgent,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Priority::None => "none",
+            Priority::Low => "low",
+            Priority::Medium => "medium",
+            Priority::High => "high",
+            Priority::Urgent => "urgent",
+        }
+    }
+}
+
+impl std::str::FromStr for Priority {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Priority::ALL
+            .into_iter()
+            .find(|priority| priority.as_str() == s)
+            .ok_or_else(|| {
+                let expected: Vec<&str> = Priority::ALL.iter().map(|p| p.as_str()).collect();
+                format!(
+                    "unknown priority {s:?} (expected one of: {})",
+                    expected.join(", ")
+                )
+            })
+    }
+}
+
 /// A ticket as stored by the server and mirrored to markdown.
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -166,6 +215,13 @@ pub struct Ticket {
     pub title: String,
     pub body: String,
     pub status: Status,
+    pub priority: Priority,
+    /// Assigned member ULID, or null when unassigned.
+    #[typeshare(serialized_as = "NullableString")]
+    pub assignee: Option<String>,
+    /// Server-generated UTC timestamps. Clients may not set these fields.
+    pub created_at: String,
+    pub updated_at: String,
     /// Seq of the last mutation applied to this ticket.
     pub seq: u32,
 }
@@ -205,7 +261,25 @@ pub struct TicketSet {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<Status>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub priority: Option<Priority>,
+    /// Outer `None` omits the field; `Some(None)` explicitly clears it.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable_string",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub assignee: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+}
+
+fn deserialize_optional_nullable_string<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 /// One atomic change to one entity. All edits to a ticket travel in a single

@@ -4,6 +4,7 @@ import {
   Entity,
   MemberStatus,
   MutationOp,
+  Priority,
   Role,
   Status,
   type AppliedMutation,
@@ -25,6 +26,7 @@ export const roleSchema = z.enum(Role)
 export const memberStatusSchema = z.enum(MemberStatus)
 export const mutationOpSchema = z.enum(MutationOp)
 export const statusSchema = z.enum(Status)
+export const prioritySchema = z.enum(Priority)
 
 const optionalStringSchema = z.preprocess(
   (value) => (value === null ? undefined : value),
@@ -34,18 +36,30 @@ const optionalStatusSchema = z.preprocess(
   (value) => (value === null ? undefined : value),
   statusSchema.optional()
 )
+const optionalPrioritySchema = z.preprocess(
+  (value) => (value === null ? undefined : value),
+  prioritySchema.optional()
+)
 
-export const ticketSetSchema = z.object({
-  title: z.string().optional(),
-  status: statusSchema.optional(),
-  body: z.string().optional(),
-}) satisfies z.ZodType<TicketSet>
+export const ticketSetSchema = z
+  .object({
+    title: z.string().optional(),
+    status: statusSchema.optional(),
+    priority: prioritySchema.optional(),
+    assignee: z.string().nullable().optional(),
+    body: z.string().optional(),
+  })
+  .strict() satisfies z.ZodType<TicketSet>
 
-export const ticketSetInputSchema = z.object({
-  title: optionalStringSchema,
-  status: optionalStatusSchema,
-  body: optionalStringSchema,
-}) satisfies z.ZodType<TicketSet>
+export const ticketSetInputSchema = z
+  .object({
+    title: optionalStringSchema,
+    status: optionalStatusSchema,
+    priority: optionalPrioritySchema,
+    assignee: z.string().nullable().optional(),
+    body: optionalStringSchema,
+  })
+  .strict() satisfies z.ZodType<TicketSet>
 
 const mutationBaseShape = {
   mutation_id: z.string().min(1),
@@ -143,6 +157,10 @@ export const ticketSchema = z.object({
   title: z.string(),
   body: z.string(),
   status: statusSchema,
+  priority: prioritySchema,
+  assignee: z.string().nullable(),
+  created_at: z.string(),
+  updated_at: z.string(),
   seq: sequenceSchema,
 }) satisfies z.ZodType<Ticket>
 
