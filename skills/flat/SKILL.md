@@ -66,13 +66,15 @@ changed or reused. The creator becomes the first owner.
 
 Every tenant starts with a `DEMO` project owned by the claiming admin.
 
-Project owners and admins can change metadata with
+Project owners with `write` access can change metadata with
 `flat project update KEY --name NAME`,
 `flat project update KEY --description TEXT`, or both flags together. Manage
 owners with `flat project owner add KEY EMAIL` or
-`flat project owner remove KEY EMAIL`. A project may have no owners; only an
-admin can recover it in that state. `flat project delete KEY` requires an
-admin human token and fails while the project contains tickets.
+`flat project owner remove KEY EMAIL`. An admin with `write` access may change
+any project's metadata, but changing owners on a project they do not own,
+including recovering an ownerless project, requires a human `admin` token.
+`flat project delete KEY` also requires a human `admin` token and fails while
+the project contains tickets.
 
 ## Delete tickets
 

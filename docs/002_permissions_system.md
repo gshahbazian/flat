@@ -128,7 +128,8 @@ first owner.
 Comments are append-only in v1. No role can edit or delete a comment. An owner
 may remove any owner, including themselves or the project's final owner. A
 project with no owners remains visible and writable through normal ticket
-operations, but only an admin can change its metadata or add an owner.
+operations. An admin with `write` access may change its metadata, but adding
+an owner requires a human `admin` token.
 Only active members with role `member` or `admin` may be project owners.
 
 `flat push --force` requires normal write permission. It changes conflict

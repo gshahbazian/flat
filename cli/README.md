@@ -27,8 +27,10 @@ flat project delete KEY                # admin human token; project must be empt
 Project keys contain 2-8 uppercase letters or digits and start with a letter.
 They are immutable and cannot be reused. The creator becomes the first owner.
 Every tenant starts with a `DEMO` project owned by the claiming admin.
-Owners and admins may update metadata and owner membership; only an admin
-using a human token can delete an empty project.
+Project owners with `write` access may update metadata and owners. An admin
+with `write` access may update any project's metadata, but changing owners on
+a project they do not own requires a human `admin` token. Deleting an empty
+project also requires a human `admin` token.
 
 The mirror lives at `~/.flat/<host>/<PROJECT>/<PROJECT-N>.md` (`FLAT_DIR`
 overrides the root). Base copies and sync state sit next to it under
