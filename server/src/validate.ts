@@ -1,3 +1,5 @@
+import { z } from 'zod'
+
 // Mirrors `flat_schema::validate_title` (schema/src/lib.rs): non-empty,
 // single line, no control characters. A newline would corrupt the markdown
 // frontmatter every client materializes. Rust checks `char::is_control()`
@@ -15,30 +17,54 @@ export function invalidTitle(title: string): string | null {
   return null
 }
 
+export const titleSchema = z.string().transform((title, context) => {
+  const trimmed = title.trim()
+  const reason = invalidTitle(trimmed)
+  if (reason) {
+    context.addIssue({ code: 'custom', message: reason })
+    return z.NEVER
+  }
+  return trimmed
+})
+
 const ASCII_TRIM = /^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g
 
-export function invalidEmail(value: unknown): string | null {
+export const emailSchema = z
+  .string()
   // oxlint-disable-next-line eslint/no-control-regex -- Reject anything outside ASCII, including the control-character range.
-  if (typeof value !== 'string' || /[^\u0000-\u007f]/.test(value)) return null
-  const email = value.replace(ASCII_TRIM, '').toLowerCase()
+  .refine((value) => !/[^\u0000-\u007f]/.test(value))
+  .transform((value) => value.replace(ASCII_TRIM, '').toLowerCase())
   // oxlint-disable-next-line eslint/no-control-regex -- Reject ASCII whitespace and control characters.
-  if (/[\u0000-\u0020\u007f]/.test(email)) return null
-  const parts = email.split('@')
-  if (parts.length !== 2 || parts[0].length === 0) return null
-  const labels = parts[1].split('.')
-  if (labels.length < 2 || labels.some((label) => label.length === 0)) {
-    return null
-  }
-  return email
+  .refine((email) => !/[\u0000-\u0020\u007f]/.test(email))
+  .refine((email) => {
+    const parts = email.split('@')
+    if (parts.length !== 2 || parts[0].length === 0) return false
+    const labels = parts[1].split('.')
+    return labels.length >= 2 && labels.every((label) => label.length > 0)
+  })
+
+export function invalidEmail(value: unknown): string | null {
+  const result = emailSchema.safeParse(value)
+  if (!result.success) return null
+  return result.data
 }
 
+export const tenantNameSchema = z
+  .string()
+  .transform((value) => value.trim())
+  .refine((name) => name.length > 0 && Array.from(name).length <= 80)
+
 export function invalidTenantName(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  const name = value.trim()
-  if (name.length === 0 || Array.from(name).length > 80) return null
-  return name
+  const result = tenantNameSchema.safeParse(value)
+  if (!result.success) return null
+  return result.data
 }
 
 export function invalidTokenName(name: string): boolean {
   return !/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)
 }
+
+export const tokenNameSchema = z
+  .string()
+  .transform((name) => name.trim())
+  .refine((name) => !invalidTokenName(name))

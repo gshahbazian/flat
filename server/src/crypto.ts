@@ -1,3 +1,5 @@
+import { z } from 'zod'
+
 export interface HmacKey {
   id: string
   secret: string
@@ -6,6 +8,13 @@ export interface HmacKey {
 const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
 const BASE64URL = /^[A-Za-z0-9_-]+$/
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/
+
+const hmacKeySchema = z.object({
+  id: z.string(),
+  secret: z.string(),
+}) satisfies z.ZodType<HmacKey>
+
+const hmacKeyRingSchema = z.array(hmacKeySchema).min(1)
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
@@ -80,23 +89,16 @@ export function parseKeyRing(raw: string | undefined): HmacKey[] {
   } catch {
     throw new Error('FLAT_HMAC_KEYS is not valid JSON')
   }
-  if (!Array.isArray(parsed) || parsed.length === 0) {
+  const array = z.array(z.unknown()).min(1).safeParse(parsed)
+  if (!array.success) {
     throw new Error('FLAT_HMAC_KEYS must be a non-empty array')
   }
-  const keys: HmacKey[] = []
-  for (const item of parsed) {
-    if (!isHmacKey(item)) {
-      throw new Error('FLAT_HMAC_KEYS contains an invalid key')
-    }
-    keys.push({ id: item.id, secret: item.secret })
-  }
-  return keys
-}
 
-function isHmacKey(value: unknown): value is HmacKey {
-  if (value === null || typeof value !== 'object') return false
-  if (!('id' in value) || !('secret' in value)) return false
-  return typeof value.id === 'string' && typeof value.secret === 'string'
+  const keys = hmacKeyRingSchema.safeParse(array.data)
+  if (!keys.success) {
+    throw new Error('FLAT_HMAC_KEYS contains an invalid key')
+  }
+  return keys.data
 }
 
 export async function hmacHex(key: HmacKey, value: string): Promise<string> {
@@ -130,13 +132,15 @@ export interface ParsedCredential {
 }
 
 export function parseCredential(value: unknown, prefix: string): ParsedCredential | null {
-  if (typeof value !== 'string') return null
+  const parsed = z.string().safeParse(value)
+  if (!parsed.success) return null
+  const credential = parsed.data
   const marker = `${prefix}_`
-  if (!value.startsWith(marker)) return null
+  if (!credential.startsWith(marker)) return null
   const idStart = marker.length
-  const id = value.slice(idStart, idStart + 26)
-  if (!ULID.test(id) || value[idStart + 26] !== '_') return null
-  const secret = value.slice(idStart + 27)
+  const id = credential.slice(idStart, idStart + 26)
+  if (!ULID.test(id) || credential[idStart + 26] !== '_') return null
+  const secret = credential.slice(idStart + 27)
   const bytes = base64urlToBytes(secret)
   if (!bytes || bytes.length < 32) return null
   return { id, secret }
