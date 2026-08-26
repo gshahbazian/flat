@@ -5,14 +5,14 @@ markdown files that agents grep, edit, and push back. See
 [docs/001_initial_system.md](docs/001_initial_system.md) for the full design.
 
 Current implemented slice: projects and ownership, multi-project mirrors,
-ticket priority, assignment, timestamps, per-member permissions for the HTTP
-ticket-sync and administration surfaces, and GitHub PR webhooks. A deployment
-is claimed once, admins invite members, and each installation or agent has a
-distinct credential. The Durable Object enforces role, access, and token-kind
-permissions. Signed GitHub pull-request webhooks can silently close tickets.
+ticket fields, append-only comments, per-member permissions for the HTTP
+ticket-sync and administration surfaces, and GitHub PR webhooks. Comments
+retain server-derived human or agent attribution and render directly in ticket
+files. A deployment is claimed once, admins invite members, and each
+installation or agent has a distinct credential.
 
 The broader accepted design is not complete yet. WebSocket/watch sessions,
-search and remote MCP, comments, labels, force pushes, native
+search and remote MCP, labels, force pushes, native
 OS-keychain storage, and the operator-recovery deployment runbook remain
 explicit follow-up work.
 
@@ -48,6 +48,7 @@ flat init http://localhost:8787 --setup
 # setup creates a default DEMO project
 flat project create AUTH --name "Authentication"
 flat new "Fix OAuth token refresh race" --project AUTH --priority high --assignee gabe@acme.com
+flat comment AUTH-1 "Reproduced with two concurrent refreshes."
 $EDITOR "$(flat path)/AUTH/AUTH-1.md"     # edit fields or description body
 flat push
 flat sync
@@ -85,25 +86,38 @@ updated: 2026-08-25T13:45:00.000Z
 ---
 
 Description body.
+
+<!-- flat:comments -->
+## Comments
+
+### ticket-triage (for gabe@acme.com) — 2026-08-25T14:10:00.000Z
+Reproduced with two concurrent refreshes.
 ```
 
 Editable: `title`, `status` (`backlog|todo|in_progress|in_review|done|canceled`),
 `priority` (`none|low|medium|high|urgent`), `assignee` (a member email or
-`null`), and the body. Read-only: `id`, `project`, `created`, and `updated`.
-`flat push`
-diffs each file against its base copy and sends one atomic update mutation per
-ticket; replaying a mutation is idempotent. Assignment emails are normalized
-and resolved through the synced member cache; run `flat sync` when a member is
-not found locally.
+`null`), and the body. Read-only: `id`, `project`, `created`, `updated`, and
+everything from the `<!-- flat:comments -->` sentinel onward. Add comments
+with `flat comment KEY TEXT` or pipe multiline Markdown to `flat comment KEY
+--stdin`. Comments must contain non-whitespace content and may be at most 1 MiB
+of UTF-8. The exact sentinel line is reserved and cannot appear in a ticket
+description. If a mutation is pending, run `flat sync` before adding another
+comment. Comments-only syncs replace the read-only suffix while preserving
+local edits above it. CRLF conversion and final newlines do not count as
+comment edits. `flat push` diffs each file against its base copy and sends one
+atomic update mutation per ticket; replaying a mutation is idempotent.
+Assignment emails are normalized and resolved through the synced member cache;
+run `flat sync` when a member is not found locally.
 
 Conflicts are field-level: concurrent pushes that touch different fields of
 the same ticket both apply, and a field both sides changed rejects the whole
 ticket (the body merges line-wise, so only overlapping regions conflict).
-`flat sync` never overwrites a file with local edits — it reports them and
-withholds that ticket's delta; `flat sync --merge` merges the server's
-changes in, writing `<<<<<<< local` / `>>>>>>> server` markers where the
-edits collide. Edit the markers away and push again. To discard local edits
-instead, delete the file: `flat sync` restores the last synced server state.
+`flat sync` never overwrites editable fields with local changes. A comments-only
+delta updates the read-only suffix directly; an editable server change is
+withheld until `flat sync --merge` merges it, writing `<<<<<<< local` /
+`>>>>>>> server` markers where edits collide. Edit the markers away and push
+again. To discard local edits instead, delete the file: `flat sync` restores
+the last synced server state.
 
 ## Deploying
 

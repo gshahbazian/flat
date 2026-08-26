@@ -115,12 +115,12 @@ One combined endpoint — every push also freshens the client:
 
 ```
 POST /sync
-  { "protocol_version": 1, "last_seq": 4021, "mutations": [ ... ] }
+  { "protocol_version": 2, "last_seq": 4021, "mutations": [ ... ] }
 ->
   { "applied": [...], "conflicts": [...], "deltas": [...], "latest_seq": 4090 }
 ```
 
-- `protocol_version` handshake; server rejects versions below its minimum.
+- `protocol_version` handshake; server rejects mismatched versions.
 - `flat sync --watch`: WebSocket to the DO (hibernation-friendly); frames
   reuse the delta format and may carry a watermark without entity data.
 - Bootstrap: `GET /snapshot` — paginated JSON of all entities + the seq
@@ -182,8 +182,12 @@ Fix in PR #482.
   `<!-- flat:comments -->` sentinel. Edits below the sentinel (or a mangled
   sentinel) reject that ticket's push: "comments are read-only — use
   `flat comment AUTH-142`".
+- **Reserved**: the exact `<!-- flat:comments -->` line cannot appear in the
+  editable description body.
 - `(for <email>)` in a comment heading renders server-derived agent
   attribution. Clients cannot submit the acting member.
+- Comment bodies must contain non-whitespace content and are limited to 1 MiB
+  of UTF-8.
 - Priorities are **named strings**, not ints — self-documenting for agents.
 
 ## Enums

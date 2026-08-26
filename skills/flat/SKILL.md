@@ -36,6 +36,12 @@ updated: 2026-08-25T13:45:00.000Z
 ---
 
 Description body.
+
+<!-- flat:comments -->
+## Comments
+
+### claude (for gabe@acme.com) — 2026-08-25T14:10:00.000Z
+Reproduced with two concurrent refreshes.
 ```
 
 ## Write tickets
@@ -47,14 +53,35 @@ find valid project keys. Do not create ticket files by hand; `flat push` skips
 files that were not materialized by Flat.
 
 Edit an existing file's `title`, `status`, `priority`, `assignee`, or
-description body directly. The `id`, `project`, `created`, `updated`, and
-filename are read-only. Valid statuses are `backlog`, `todo`, `in_progress`,
+description body directly. The `id`, `project`, `created`, `updated`, filename,
+and everything from the `<!-- flat:comments -->` sentinel onward are read-only.
+The exact sentinel line is reserved and cannot appear in the description body.
+Valid statuses are `backlog`, `todo`, `in_progress`,
 `in_review`, `done`, and `canceled`. Valid priorities are `none`, `low`,
 `medium`, `high`, and `urgent`. Assignees are member email addresses; use
 `assignee: null` to
 clear an assignment. Flat normalizes assignment emails and resolves them from
 the synced member profiles. If an assignee cannot be found locally, run
 `flat sync` and retry. Run `flat push` to publish local edits to the server.
+
+## Add comments
+
+Add an append-only comment with `flat comment KEY TEXT`. For multiline
+Markdown, pipe the content to `flat comment KEY --stdin`. A comment must
+contain non-whitespace content and may be at most 1 MiB of UTF-8. Do not edit
+the rendered comment section in a ticket file; `flat push` rejects changed,
+deleted, or mangled comment sections.
+
+A comments-only sync updates that read-only suffix even when editable ticket
+fields have local changes. CRLF conversion and final newlines do not count as
+comment edits; changing rendered comment content does.
+
+If Flat reports a pending mutation, run `flat sync` before adding another
+comment. This replays the original mutation ID instead of creating a duplicate.
+
+Comments record the accepted token on the server. Human comments render the
+member email. Agent comments render the agent name and member email, including
+the delegating member when an admin created the agent token for someone else.
 
 ## Manage projects
 
@@ -85,8 +112,9 @@ admin human token; agent tokens cannot delete tickets.
 
 ## Handle conflicts
 
-`flat sync` preserves local edits when the server copy also changed and exits
-nonzero. Run `flat sync --merge` to merge the changes. If they overlap, Flat
-writes `<<<<<<< local` / `>>>>>>> server` conflict markers into the ticket
-file. Resolve every marker before running `flat push`; both sync and push
-refuse to complete while markers remain.
+`flat sync` preserves local edits when editable server fields also changed and
+exits nonzero. Run `flat sync --merge` to merge the changes. If they overlap,
+Flat writes `<<<<<<< local` / `>>>>>>> server` conflict markers into the
+ticket file. Resolve every marker before running `flat push`; both sync and
+push refuse to complete while markers remain. A failure to merge one ticket
+does not prevent Flat from merging other tickets in the same run.

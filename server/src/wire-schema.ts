@@ -7,7 +7,9 @@ import {
   Priority,
   Role,
   Status,
+  TokenKind,
   type AppliedMutation,
+  type Comment,
   type MemberProfile,
   type Mutation,
   type MutationConflict,
@@ -68,6 +70,20 @@ const ticketCreateSetInputSchema = z
 export const ticketSetSchema = ticketCreateSetSchema.omit({ project: true })
 export const ticketSetInputSchema = ticketCreateSetInputSchema.omit({ project: true })
 
+const commentCreateSetSchema = z
+  .object({
+    ticket: z.string().optional(),
+    body: z.string().optional(),
+  })
+  .strict()
+
+const commentCreateSetInputSchema = z
+  .object({
+    ticket: optionalStringSchema,
+    body: optionalStringSchema,
+  })
+  .strict()
+
 const projectCreateSetSchema = z
   .object({
     key: projectKeySchema.optional(),
@@ -118,6 +134,16 @@ const ticketDeleteMutationSchema = z.object({
   owners_remove: z.undefined().optional(),
 })
 
+const commentCreateMutationSchema = z.object({
+  ...mutationBaseShape,
+  entity: z.literal(Entity.Comment),
+  op: z.literal(MutationOp.Create),
+  base_seq: z.undefined().optional(),
+  set: commentCreateSetSchema,
+  owners_add: z.undefined().optional(),
+  owners_remove: z.undefined().optional(),
+})
+
 const projectCreateMutationSchema = z.object({
   ...mutationBaseShape,
   entity: z.literal(Entity.Project),
@@ -151,6 +177,7 @@ export const mutationSchema = z.union([
   ticketCreateMutationSchema,
   ticketUpdateMutationSchema,
   ticketDeleteMutationSchema,
+  commentCreateMutationSchema,
   projectCreateMutationSchema,
   projectUpdateMutationSchema,
   projectDeleteMutationSchema,
@@ -160,6 +187,9 @@ const mutationInputSchemas = [
   ticketCreateMutationSchema.extend({ set: ticketCreateSetInputSchema.optional().default({}) }),
   ticketUpdateMutationSchema.extend({ set: ticketSetInputSchema.optional().default({}) }),
   ticketDeleteMutationSchema.extend({ set: z.object({}).strict().optional().default({}) }),
+  commentCreateMutationSchema.extend({
+    set: commentCreateSetInputSchema.optional().default({}),
+  }),
   projectCreateMutationSchema.extend({ set: projectCreateSetSchema.optional().default({}) }),
   projectUpdateMutationSchema.extend({ set: projectUpdateSetSchema.optional().default({}) }),
   projectDeleteMutationSchema.extend({ set: z.object({}).strict().optional().default({}) }),
@@ -222,6 +252,19 @@ export const ticketSchema = z.object({
   seq: sequenceSchema,
 }) satisfies z.ZodType<Ticket>
 
+export const commentSchema = z.object({
+  id: z.string(),
+  ticket_id: z.string(),
+  body: z.string(),
+  member_id: z.string(),
+  token_id: z.string(),
+  token_kind: z.enum(TokenKind),
+  agent_name: z.string().nullable(),
+  delegating_member_id: z.string().nullable(),
+  created_at: z.string(),
+  seq: sequenceSchema,
+}) satisfies z.ZodType<Comment>
+
 export const projectSchema = z.object({
   id: z.string(),
   key: z.string(),
@@ -258,6 +301,7 @@ export const syncResponseSchema = z.object({
   applied: z.array(appliedMutationSchema),
   conflicts: z.array(mutationConflictSchema),
   deltas: z.array(ticketSchema),
+  comment_deltas: z.array(commentSchema),
   project_deltas: z.array(projectSchema).optional(),
   tombstones: z.array(ticketTombstoneSchema).optional(),
   project_tombstones: z.array(projectTombstoneSchema).optional(),
@@ -268,6 +312,7 @@ export const syncResponseSchema = z.object({
 export const snapshotSchema = z.object({
   projects: z.array(projectSchema),
   tickets: z.array(ticketSchema),
+  comments: z.array(commentSchema),
   members: z.array(memberProfileSchema).optional(),
   latest_seq: sequenceSchema,
 }) satisfies z.ZodType<Snapshot>

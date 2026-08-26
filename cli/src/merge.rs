@@ -8,8 +8,8 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::Result;
-use flat_schema::{MemberProfile, Ticket};
+use anyhow::{bail, Result};
+use flat_schema::{Comment, MemberProfile, Ticket};
 
 use crate::markdown::{self, TicketFile};
 
@@ -27,10 +27,15 @@ pub struct Merged {
 /// the ticket — an unpushable file that fails every sync. The one predicate
 /// shared by everything that must not treat a half-merged file as clean
 /// (`flat push` refuses it, `flat sync` exits non-zero while any remain).
+/// Rendered comments are immutable server state, so scanning stops at their
+/// sentinel and cannot mistake comment content for a merge conflict.
 pub fn has_markers(content: &str) -> bool {
     const BLOCK: [&str; 3] = ["<<<<<<< local", "=======", ">>>>>>> server"];
     let mut expect = 0;
     for line in content.lines() {
+        if line == markdown::COMMENT_SENTINEL {
+            break;
+        }
         if line == BLOCK[expect] {
             expect += 1;
             if expect == BLOCK.len() {
@@ -75,7 +80,11 @@ pub fn merge(
     local: &TicketFile,
     server: &Ticket,
     members: &BTreeMap<String, MemberProfile>,
+    comments: &[Comment],
 ) -> Result<Merged> {
+    if !markdown::comment_sections_equal(&local.comments, &base.comments) {
+        bail!("comments are read-only — use `flat comment {}`", server.key);
+    }
     let server_body = server.body.trim_end().to_string();
     let server_assignee = markdown::assignee_email(server, members)?;
     let title = pick(&base.title, &local.title, &server.title);
@@ -105,6 +114,7 @@ pub fn merge(
         out.push_str(body_text);
         out.push('\n');
     }
+    out.push_str(&markdown::render_comment_section(comments, members)?);
     Ok(Merged {
         content: out,
         conflicted: title.conflicted()
@@ -209,6 +219,7 @@ mod tests {
             created: Some("2026-08-25T12:34:56.000Z".into()),
             updated: Some("2026-08-25T13:45:00.000Z".into()),
             body: body.into(),
+            comments: format!("{}\n## Comments\n", markdown::COMMENT_SENTINEL),
         }
     }
 
@@ -237,6 +248,7 @@ mod tests {
             &file("mine", Status::Todo, "line"),
             &server("theirs", Status::Todo, "line"),
             &BTreeMap::new(),
+            &[],
         )
         .unwrap();
         let body = merge(
@@ -244,6 +256,7 @@ mod tests {
             &file("t", Status::Todo, "mine"),
             &server("t", Status::Todo, "theirs"),
             &BTreeMap::new(),
+            &[],
         )
         .unwrap();
         assert!(has_markers(&frontmatter.content));
@@ -254,17 +267,21 @@ mod tests {
         ));
         assert!(!has_markers("a setext heading\n=======\n"));
         assert!(!has_markers("resolved: kept the local side\n"));
+        assert!(!has_markers(&format!(
+            "body\n\n{}\n## Comments\n\n<<<<<<< local\ntheirs\n=======\nours\n>>>>>>> server\n",
+            markdown::COMMENT_SENTINEL
+        )));
     }
 
     #[test]
     fn no_local_edits_yields_exact_server_render() {
         let base = file("t", Status::Todo, "body");
         let server = server("new title", Status::Done, "new body");
-        let merged = merge(&base, &base.clone(), &server, &BTreeMap::new()).unwrap();
+        let merged = merge(&base, &base.clone(), &server, &BTreeMap::new(), &[]).unwrap();
         assert!(!merged.conflicted);
         assert_eq!(
             merged.content,
-            markdown::render(&server, &BTreeMap::new()).unwrap()
+            markdown::render(&server, &BTreeMap::new(), &[]).unwrap()
         );
     }
 
@@ -273,7 +290,7 @@ mod tests {
         let base = file("t", Status::Todo, "body");
         let local = file("my title", Status::Todo, "body");
         let server = server("t", Status::InProgress, "body");
-        let merged = merge(&base, &local, &server, &BTreeMap::new()).unwrap();
+        let merged = merge(&base, &local, &server, &BTreeMap::new(), &[]).unwrap();
         assert!(!merged.conflicted);
         let parsed = markdown::parse(&merged.content).unwrap();
         assert_eq!(parsed.title, "my title");
@@ -297,7 +314,7 @@ mod tests {
             Status::Todo,
             "one\ntwo\nthree\nfour\nfive\nsix\nseven\nEIGHT",
         );
-        let merged = merge(&base, &local, &server, &BTreeMap::new()).unwrap();
+        let merged = merge(&base, &local, &server, &BTreeMap::new(), &[]).unwrap();
         assert!(!merged.conflicted);
         let parsed = markdown::parse(&merged.content).unwrap();
         assert_eq!(
@@ -311,7 +328,7 @@ mod tests {
         let base = file("t", Status::Todo, "body");
         let local = file("t", Status::Done, "body");
         let server = server("t", Status::Done, "body");
-        let merged = merge(&base, &local, &server, &BTreeMap::new()).unwrap();
+        let merged = merge(&base, &local, &server, &BTreeMap::new(), &[]).unwrap();
         assert!(!merged.conflicted);
         assert_eq!(
             markdown::parse(&merged.content).unwrap().status,
@@ -324,7 +341,7 @@ mod tests {
         let base = file("t", Status::Todo, "body");
         let local = file("mine", Status::Todo, "body");
         let server = server("theirs", Status::Todo, "body");
-        let merged = merge(&base, &local, &server, &BTreeMap::new()).unwrap();
+        let merged = merge(&base, &local, &server, &BTreeMap::new(), &[]).unwrap();
         assert!(merged.conflicted);
         let expected = "<<<<<<< local\ntitle: mine\n=======\ntitle: theirs\n>>>>>>> server\n";
         assert!(
@@ -342,7 +359,7 @@ mod tests {
         let base = file("t", Status::Todo, "line");
         let local = file("t", Status::Todo, "mine");
         let server = server("t", Status::Todo, "theirs");
-        let merged = merge(&base, &local, &server, &BTreeMap::new()).unwrap();
+        let merged = merge(&base, &local, &server, &BTreeMap::new(), &[]).unwrap();
         assert!(merged.conflicted);
         assert!(
             merged
@@ -361,7 +378,7 @@ mod tests {
         let mut server = server("t", Status::Todo, "body");
         server.assignee = Some("member-server".into());
 
-        let merged = merge(&base, &local, &server, &members()).unwrap();
+        let merged = merge(&base, &local, &server, &members(), &[]).unwrap();
         assert!(!merged.conflicted);
         let parsed = markdown::parse(&merged.content).unwrap();
         assert_eq!(parsed.priority, Priority::High);
@@ -378,7 +395,7 @@ mod tests {
         let mut server = server("t", Status::Todo, "body");
         server.priority = Priority::Urgent;
 
-        let merged = merge(&base, &local, &server, &members()).unwrap();
+        let merged = merge(&base, &local, &server, &members(), &[]).unwrap();
         assert!(merged.conflicted);
         assert!(merged
             .content
@@ -394,7 +411,7 @@ mod tests {
         let mut server = server("t", Status::Todo, "body");
         server.assignee = Some("member-server".into());
 
-        let merged = merge(&base, &local, &server, &members()).unwrap();
+        let merged = merge(&base, &local, &server, &members(), &[]).unwrap();
         assert!(merged.conflicted);
         assert!(merged.content.contains(
             "<<<<<<< local\nassignee: null\n=======\nassignee: server@example.com\n>>>>>>> server"

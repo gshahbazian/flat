@@ -53,6 +53,7 @@ import {
   TokenAccess,
   TokenKind,
   type AppliedMutation,
+  type Comment,
   type MemberProfile,
   type Mutation,
   type MutationConflict,
@@ -65,6 +66,8 @@ import {
 } from './schema.gen'
 import {
   emailSchema,
+  invalidCommentBody,
+  invalidTicketBody,
   invalidTitle,
   projectKeySchema,
   projectNameSchema,
@@ -263,6 +266,14 @@ function mutationReason(
     }
     if (set.project != null && typeof set.project !== 'string') {
       return 'set.project must be a project id'
+    }
+  } else if (entity === Entity.Comment) {
+    if (operation !== MutationOp.Create) return 'comments are append-only'
+    if (set.ticket != null && typeof set.ticket !== 'string') {
+      return 'set.ticket must be a ticket id'
+    }
+    if (set.body != null && typeof set.body !== 'string') {
+      return 'set.body must be a string'
     }
   } else {
     if (set.key !== undefined && !projectKeySchema.safeParse(set.key).success) {
@@ -763,6 +774,7 @@ export class TenantDO extends DurableObject<Env> {
       applied,
       conflicts,
       deltas: this.ticketsSince(lastSeq),
+      comment_deltas: this.commentsSince(lastSeq),
       project_deltas: this.projectsSince(lastSeq),
       tombstones: this.tombstonesSince(lastSeq),
       project_tombstones: this.projectTombstonesSince(lastSeq),
@@ -781,6 +793,7 @@ export class TenantDO extends DurableObject<Env> {
     return {
       projects: this.projects(),
       tickets: this.ticketsSince(0),
+      comments: this.commentsSince(0),
       members: this.memberProfiles(),
       latest_seq: this.latestSeq(),
     }
@@ -797,6 +810,7 @@ export class TenantDO extends DurableObject<Env> {
       if (mutation.op === MutationOp.Update) return 'ticket.update'
       return 'ticket.delete'
     }
+    if (mutation.entity === Entity.Comment) return 'comment.create'
     if (mutation.op === MutationOp.Create) return 'project.create'
     if (mutation.op === MutationOp.Update) {
       const ownerDeltas = [mutation.owners_add, mutation.owners_remove]
@@ -811,7 +825,71 @@ export class TenantDO extends DurableObject<Env> {
 
   private apply(mutation: Mutation, principal: Principal): AppliedMutation | MutationConflict {
     if (mutation.entity === Entity.Project) return this.applyProject(mutation, principal)
+    if (mutation.entity === Entity.Comment) return this.applyComment(mutation, principal)
     return this.applyTicket(mutation)
+  }
+
+  private applyComment(
+    mutation: Mutation,
+    principal: Principal
+  ): AppliedMutation | MutationConflict {
+    const reject = (reason: string): MutationConflict => ({
+      mutation_id: mutation.mutation_id,
+      entity_id: mutation.entity_id,
+      reason,
+    })
+    if (mutation.op !== MutationOp.Create) return reject('comments are append-only')
+    if (mutation.base_seq !== undefined) return reject('create must not include base_seq')
+    if (this.sql.exec('SELECT 1 FROM comments WHERE id = ?', mutation.entity_id).toArray().length) {
+      return reject(`comment ${mutation.entity_id} already exists`)
+    }
+
+    const ticketId = mutation.set.ticket
+    if (ticketId == null) return reject('create requires set.ticket')
+    const ticket = this.sql
+      .exec<{ key: string }>('SELECT key FROM tickets WHERE id = ?', ticketId)
+      .toArray()[0]
+    if (!ticket) return reject(`unknown ticket ${ticketId}`)
+
+    const body = mutation.set.body
+    if (body == null) return reject('create requires set.body')
+    const invalidBody = invalidCommentBody(body)
+    if (invalidBody) return reject(invalidBody)
+
+    let delegatingMemberId: string | null = null
+    if (
+      principal.tokenKind === TokenKind.Agent &&
+      principal.createdBy !== null &&
+      principal.createdBy !== principal.memberId
+    ) {
+      delegatingMemberId = principal.createdBy
+    }
+    const agentName = principal.tokenKind === TokenKind.Agent ? principal.tokenName : null
+    const seq = this.nextSeq()
+    const now = isoNow()
+    this.sql.exec(
+      `INSERT INTO comments
+       (id, ticket_id, body, member_id, token_id, token_kind, agent_name,
+        delegating_member_id, created_at, seq)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      mutation.entity_id,
+      ticketId,
+      body,
+      principal.memberId,
+      principal.tokenId,
+      principal.tokenKind,
+      agentName,
+      delegatingMemberId,
+      now,
+      seq
+    )
+    this.log(mutation, seq)
+    return {
+      mutation_id: mutation.mutation_id,
+      entity_id: mutation.entity_id,
+      key: ticket.key,
+      seq,
+    }
   }
 
   private applyTicket(mutation: Mutation): AppliedMutation | MutationConflict {
@@ -824,8 +902,13 @@ export class TenantDO extends DurableObject<Env> {
     const setsAssignee = Object.hasOwn(parsedSet, 'assignee')
     const assigneeId = setsAssignee ? (parsedSet.assignee ?? null) : null
     const title = parsedSet.title != null ? parsedSet.title.trim() : null
+    const body = parsedSet.body
     if (title !== null) {
       const reason = invalidTitle(title)
+      if (reason) return reject(reason)
+    }
+    if (body !== undefined) {
+      const reason = invalidTicketBody(body)
       if (reason) return reject(reason)
     }
 
@@ -875,7 +958,7 @@ export class TenantDO extends DurableObject<Env> {
         key,
         projectId,
         title,
-        parsedSet.body ?? '',
+        body ?? '',
         parsedSet.status ?? Status.Todo,
         parsedSet.priority ?? Priority.None,
         assigneeId,
@@ -968,7 +1051,7 @@ export class TenantDO extends DurableObject<Env> {
       parsedSet.priority ?? null,
       setsAssignee ? 1 : 0,
       assigneeId,
-      parsedSet.body ?? null,
+      body ?? null,
       updatedAt,
       seq,
       mutation.entity_id
@@ -2620,7 +2703,21 @@ export class TenantDO extends DurableObject<Env> {
     return this.sql
       .exec<SqlRow<Ticket>>(
         `SELECT id, key, project, title, body, status, priority, assignee, created_at, updated_at, seq
-         FROM tickets WHERE seq > ? ORDER BY seq`,
+         FROM tickets
+         WHERE seq > ? OR id IN (SELECT ticket_id FROM comments WHERE seq > ?)
+         ORDER BY seq, key`,
+        seq,
+        seq
+      )
+      .toArray()
+  }
+
+  private commentsSince(seq: number): Comment[] {
+    return this.sql
+      .exec<SqlRow<Comment>>(
+        `SELECT id, ticket_id, body, member_id, token_id, token_kind, agent_name,
+                delegating_member_id, created_at, seq
+         FROM comments WHERE seq > ? ORDER BY seq`,
         seq
       )
       .toArray()

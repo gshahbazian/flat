@@ -7,7 +7,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use flat_schema::{MemberProfile, Mutation, Project, ProjectTombstone, Ticket, TicketTombstone};
+use flat_schema::{
+    Comment, MemberProfile, Mutation, Project, ProjectTombstone, Ticket, TicketTombstone,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::markdown;
@@ -41,6 +43,8 @@ pub struct State {
     /// Member ULID -> safe profile used to render and resolve assignees.
     #[serde(default)]
     pub members: BTreeMap<String, MemberProfile>,
+    /// Comment ULID -> append-only row used to render ticket suffixes.
+    pub comments: BTreeMap<String, Comment>,
 }
 
 pub fn flat_root() -> Result<PathBuf> {
@@ -240,6 +244,26 @@ impl Checkout {
             .collect();
     }
 
+    pub fn update_comments(&mut self, comments: &[Comment]) {
+        for comment in comments {
+            self.state
+                .comments
+                .insert(comment.id.clone(), comment.clone());
+        }
+    }
+
+    pub fn comments_for(&self, ticket_id: &str) -> Vec<Comment> {
+        let mut comments: Vec<Comment> = self
+            .state
+            .comments
+            .values()
+            .filter(|comment| comment.ticket_id == ticket_id)
+            .cloned()
+            .collect();
+        comments.sort_by_key(|comment| comment.seq);
+        comments
+    }
+
     pub fn apply_projects(&mut self, projects: &[Project]) {
         for project in projects {
             self.state
@@ -283,17 +307,11 @@ impl Checkout {
 
     /// Materializes server deltas into the mirror and base copies.
     ///
-    /// A file with unpushed local edits is never clobbered here: a delta only
-    /// lands when the mirror file is provably clean — missing, already at
-    /// server state, equal to its base copy, or byte-identical to the content
-    /// in `pushed` (push: the exact bytes each mutation was built from, so an
-    /// edit saved mid-flight is preserved). Tickets in `keep_local` are
-    /// skipped entirely (push: a conflicted ticket keeps its local edits).
-    /// Everything else — including a dirty file whose base copy is missing or
-    /// unreadable, which proves nothing — is left in place and returned to
-    /// the caller, who reports it (or three-way merges it, `flat sync
-    /// --merge`) and holds back last_seq so a later sync re-delivers the
-    /// withheld delta.
+    /// A file with unpushed local edits is never clobbered here. A full ticket
+    /// delta lands only when the mirror is provably clean. When the ticket seq
+    /// is unchanged, only comments moved, so an untouched comment suffix can
+    /// be replaced while preserving the editable prefix byte-for-byte.
+    /// Everything else is returned to the caller for reporting or merge.
     pub fn apply_deltas(
         &mut self,
         deltas: &[Ticket],
@@ -302,25 +320,68 @@ impl Checkout {
     ) -> Result<Vec<Ticket>> {
         let mut skipped = Vec::new();
         for ticket in deltas {
-            if keep_local.contains(&ticket.key) {
+            let comments_only = self
+                .state
+                .tickets
+                .get(&ticket.key)
+                .is_some_and(|state| state.id == ticket.id && state.seq == ticket.seq);
+            let keep_local = keep_local.contains(&ticket.key);
+            if keep_local && !comments_only {
                 continue;
             }
-            let rendered = markdown::render(ticket, &self.state.members)?;
-            let clean = match fs::read_to_string(self.mirror_path(&ticket.key)) {
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
-                Err(e) => return Err(e).context(format!("reading mirror file of {}", ticket.key)),
-                Ok(current) => {
-                    current == rendered
-                        || pushed.get(&ticket.key) == Some(&current)
-                        || fs::read_to_string(self.base_path(&ticket.key))
-                            .is_ok_and(|base| base == current)
+            let rendered =
+                markdown::render(ticket, &self.state.members, &self.comments_for(&ticket.id))?;
+            let current = match fs::read_to_string(self.mirror_path(&ticket.key)) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && keep_local => {
+                    continue;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.write_ticket(ticket, &rendered, &rendered)?;
+                    continue;
+                }
+                Err(error) => {
+                    return Err(error).context(format!("reading mirror file of {}", ticket.key))
+                }
+                Ok(current) => current,
+            };
+            let base = match fs::read_to_string(self.base_path(&ticket.key)) {
+                Ok(base) => Some(base),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(error).context(format!("reading base copy of {}", ticket.key))
                 }
             };
-            if !clean {
-                skipped.push(ticket.clone());
+            if keep_local {
+                let Some(base) = base else {
+                    continue;
+                };
+                if let Some(mirror) =
+                    markdown::replace_unchanged_comment_section(&current, &base, &rendered)
+                {
+                    self.write_ticket(ticket, &mirror, &rendered)?;
+                }
                 continue;
             }
-            self.write_ticket(ticket, &rendered, &rendered)?;
+            let clean = current == rendered
+                || pushed.get(&ticket.key) == Some(&current)
+                || base.as_deref() == Some(current.as_str());
+            if clean {
+                self.write_ticket(ticket, &rendered, &rendered)?;
+                continue;
+            }
+            let Some(base) = base else {
+                skipped.push(ticket.clone());
+                continue;
+            };
+            if comments_only {
+                if let Some(mirror) =
+                    markdown::replace_unchanged_comment_section(&current, &base, &rendered)
+                {
+                    self.write_ticket(ticket, &mirror, &rendered)?;
+                    continue;
+                }
+            }
+            skipped.push(ticket.clone());
         }
         Ok(skipped)
     }
@@ -342,6 +403,9 @@ impl Checkout {
                 }
             }
             self.state.tickets.remove(&tombstone.key);
+            self.state
+                .comments
+                .retain(|_, comment| comment.ticket_id != tombstone.id);
         }
         Ok(())
     }
@@ -367,7 +431,7 @@ impl Checkout {
     /// and state advance to the server row — so the next `flat push` sends
     /// exactly the local side of the merge with a fresh base_seq.
     pub fn write_merged(&mut self, ticket: &Ticket, merged: &str) -> Result<()> {
-        let base = markdown::render(ticket, &self.state.members)?;
+        let base = markdown::render(ticket, &self.state.members, &self.comments_for(&ticket.id))?;
         self.write_ticket(ticket, merged, &base)
     }
 
@@ -506,7 +570,10 @@ fn verify_writable(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use flat_schema::{Priority, Project, ProjectTombstone, Status, TicketTombstone};
+    use flat_schema::{
+        Comment, MemberProfile, Priority, Project, ProjectTombstone, Status, TicketTombstone,
+        TokenKind,
+    };
 
     use super::*;
 
@@ -553,7 +620,7 @@ mod tests {
         };
         let mut first = checkout("first");
         let mut second = checkout("second");
-        let rendered = markdown::render(&ticket, &BTreeMap::new()).unwrap();
+        let rendered = markdown::render(&ticket, &BTreeMap::new(), &[]).unwrap();
         first.write_ticket(&ticket, &rendered, &rendered).unwrap();
         second.write_ticket(&ticket, &rendered, &rendered).unwrap();
 
@@ -571,6 +638,142 @@ mod tests {
 
         std::fs::remove_dir_all(first.host_dir()).unwrap();
         std::fs::remove_dir_all(second.host_dir()).unwrap();
+    }
+
+    #[test]
+    fn comment_delta_updates_clean_and_dirty_files_without_overwriting_comment_edits() {
+        let ticket = Ticket {
+            id: "ticket-1".into(),
+            key: "DEMO-1".into(),
+            project: "project-demo".into(),
+            title: "Title".into(),
+            body: "Description".into(),
+            status: Status::Todo,
+            priority: Priority::None,
+            assignee: None,
+            created_at: "2026-08-25T12:34:56.000Z".into(),
+            updated_at: "2026-08-25T12:34:56.000Z".into(),
+            seq: 2,
+        };
+        let member = MemberProfile {
+            id: "member-1".into(),
+            email: "gabe@example.com".into(),
+            role: flat_schema::Role::Member,
+            status: flat_schema::MemberStatus::Active,
+            created_at: "2026-08-01T10:00:00.000Z".into(),
+            activated_at: Some("2026-08-01T10:01:00.000Z".into()),
+        };
+        let comment = Comment {
+            id: "comment-1".into(),
+            ticket_id: ticket.id.clone(),
+            body: "Comment body".into(),
+            member_id: member.id.clone(),
+            token_id: "token-1".into(),
+            token_kind: TokenKind::Human,
+            agent_name: None,
+            delegating_member_id: None,
+            created_at: "2026-08-25T13:00:00.000Z".into(),
+            seq: 3,
+        };
+        let mut clean = checkout("clean-comment");
+        let mut dirty = checkout("dirty-comment");
+        let mut tampered = checkout("tampered-comment");
+        let mut rejected = checkout("rejected-push-comment");
+        for checkout in [&mut clean, &mut dirty, &mut tampered, &mut rejected] {
+            checkout.update_members(std::slice::from_ref(&member));
+            checkout
+                .apply_deltas(
+                    std::slice::from_ref(&ticket),
+                    &HashSet::new(),
+                    &HashMap::new(),
+                )
+                .unwrap();
+        }
+        let dirty_path = dirty.mirror_path(&ticket.key);
+        let dirty_content = fs::read_to_string(&dirty_path)
+            .unwrap()
+            .replace("title: Title", "title: Local title");
+        fs::write(&dirty_path, &dirty_content).unwrap();
+        let tampered_path = tampered.mirror_path(&ticket.key);
+        let tampered_content = fs::read_to_string(&tampered_path)
+            .unwrap()
+            .replace("## Comments\n", "## Comments\nlocally changed\n");
+        fs::write(&tampered_path, &tampered_content).unwrap();
+        let rejected_path = rejected.mirror_path(&ticket.key);
+        let rejected_content = fs::read_to_string(&rejected_path)
+            .unwrap()
+            .replace("title: Title", "title: Rejected local title");
+        fs::write(&rejected_path, &rejected_content).unwrap();
+
+        for checkout in [&mut clean, &mut dirty, &mut tampered, &mut rejected] {
+            checkout.update_comments(std::slice::from_ref(&comment));
+        }
+        assert!(clean
+            .apply_deltas(
+                std::slice::from_ref(&ticket),
+                &HashSet::new(),
+                &HashMap::new(),
+            )
+            .unwrap()
+            .is_empty());
+        let skipped = dirty
+            .apply_deltas(
+                std::slice::from_ref(&ticket),
+                &HashSet::new(),
+                &HashMap::new(),
+            )
+            .unwrap();
+        let tampered_skipped = tampered
+            .apply_deltas(
+                std::slice::from_ref(&ticket),
+                &HashSet::new(),
+                &HashMap::new(),
+            )
+            .unwrap();
+        let rejected_skipped = rejected
+            .apply_deltas(
+                std::slice::from_ref(&ticket),
+                &HashSet::from([ticket.key.clone()]),
+                &HashMap::from([(ticket.key.clone(), rejected_content.clone())]),
+            )
+            .unwrap();
+
+        assert!(skipped.is_empty());
+        assert_eq!(tampered_skipped.as_slice(), std::slice::from_ref(&ticket));
+        assert!(rejected_skipped.is_empty());
+        assert!(fs::read_to_string(clean.mirror_path(&ticket.key))
+            .unwrap()
+            .contains("### gabe@example.com — 2026-08-25T13:00:00.000Z\nComment body"));
+        let dirty_result = fs::read_to_string(dirty_path).unwrap();
+        assert!(dirty_result.contains("title: Local title"));
+        assert!(dirty_result.contains("### gabe@example.com — 2026-08-25T13:00:00.000Z"));
+        assert_eq!(fs::read_to_string(tampered_path).unwrap(), tampered_content);
+        let rejected_result = fs::read_to_string(rejected_path).unwrap();
+        assert!(rejected_result.contains("title: Rejected local title"));
+        assert!(rejected_result.contains("### gabe@example.com — 2026-08-25T13:00:00.000Z"));
+        let rejected_base = fs::read_to_string(rejected.base_path(&ticket.key)).unwrap();
+        assert!(rejected_base.contains("title: Title"));
+        assert!(rejected_base.contains("### gabe@example.com — 2026-08-25T13:00:00.000Z"));
+
+        let mut changed_ticket = ticket.clone();
+        changed_ticket.title = "Server title".into();
+        changed_ticket.seq = 4;
+        assert_eq!(
+            dirty
+                .apply_deltas(
+                    std::slice::from_ref(&changed_ticket),
+                    &HashSet::new(),
+                    &HashMap::new(),
+                )
+                .unwrap(),
+            [changed_ticket]
+        );
+        assert_eq!(dirty.comments_for(&ticket.id), [comment]);
+
+        std::fs::remove_dir_all(clean.host_dir()).unwrap();
+        std::fs::remove_dir_all(dirty.host_dir()).unwrap();
+        std::fs::remove_dir_all(tampered.host_dir()).unwrap();
+        std::fs::remove_dir_all(rejected.host_dir()).unwrap();
     }
 
     #[test]
@@ -658,7 +861,7 @@ mod tests {
     #[test]
     fn old_state_without_member_cache_deserializes() {
         let state: State = serde_json::from_str(
-            r#"{"last_seq":7,"tickets":{"DEMO-1":{"id":"ticket-1","seq":7}}}"#,
+            r#"{"last_seq":7,"tickets":{"DEMO-1":{"id":"ticket-1","seq":7}},"comments":{}}"#,
         )
         .unwrap();
         assert_eq!(state.last_seq, 7);

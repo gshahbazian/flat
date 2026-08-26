@@ -1,5 +1,8 @@
 import { z } from 'zod'
 
+export const MAX_COMMENT_BYTES = 1024 * 1024
+export const COMMENT_SENTINEL = '<!-- flat:comments -->'
+
 // Mirrors `flat_schema::validate_title` (schema/src/lib.rs): non-empty,
 // single line, no control characters. A newline would corrupt the markdown
 // frontmatter every client materializes. Rust checks `char::is_control()`
@@ -26,6 +29,30 @@ export const titleSchema = z.string().transform((title, context) => {
   }
   return trimmed
 })
+
+// JavaScript trim differs from Rust char::is_whitespace for U+0085 and U+FEFF.
+function isRustWhitespace(character: string): boolean {
+  const codePoint = character.codePointAt(0)!
+  if (codePoint >= 0x09 && codePoint <= 0x0d) return true
+  if (codePoint === 0x20 || codePoint === 0x85 || codePoint === 0xa0) return true
+  if (codePoint === 0x1680 || (codePoint >= 0x2000 && codePoint <= 0x200a)) return true
+  return [0x2028, 0x2029, 0x202f, 0x205f, 0x3000].includes(codePoint)
+}
+
+export function invalidCommentBody(body: string): string | null {
+  if (Array.from(body).every(isRustWhitespace)) return 'comment must not be empty'
+  if (new TextEncoder().encode(body).byteLength > MAX_COMMENT_BYTES) {
+    return `comment exceeds the ${MAX_COMMENT_BYTES}-byte limit`
+  }
+  return null
+}
+
+export function invalidTicketBody(body: string): string | null {
+  if (body.split(/\r?\n/).includes(COMMENT_SENTINEL)) {
+    return 'ticket body contains reserved comment sentinel'
+  }
+  return null
+}
 
 const ASCII_TRIM = /^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g
 

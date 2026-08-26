@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use typeshare::typeshare;
 
 pub const PROTOCOL_VERSION: u32 = 2;
+pub const MAX_COMMENT_BYTES: usize = 1024 * 1024;
+pub const COMMENT_SENTINEL: &str = "<!-- flat:comments -->";
 
 /// Validates the immutable, human-facing project key used in ticket aliases
 /// and mirror directory names.
@@ -51,6 +53,29 @@ pub fn validate_title(title: &str) -> Result<(), String> {
     }
     if title.chars().any(|c| c.is_control()) {
         return Err("title must be a single line without control characters".into());
+    }
+    Ok(())
+}
+
+/// Comments preserve Markdown verbatim, but must contain visible content and
+/// stay within the request and storage bound shared by every client.
+pub fn validate_comment_body(body: &str) -> Result<(), String> {
+    if body.chars().all(char::is_whitespace) {
+        return Err("comment must not be empty".into());
+    }
+    if body.len() > MAX_COMMENT_BYTES {
+        return Err(format!(
+            "comment exceeds the {MAX_COMMENT_BYTES}-byte limit"
+        ));
+    }
+    Ok(())
+}
+
+/// Ticket bodies cannot contain the line reserved for the rendered comment
+/// section because the local mirror uses it as a structural delimiter.
+pub fn validate_ticket_body(body: &str) -> Result<(), String> {
+    if body.lines().any(|line| line == COMMENT_SENTINEL) {
+        return Err("ticket body contains reserved comment sentinel".into());
     }
     Ok(())
 }
@@ -254,6 +279,26 @@ pub struct Ticket {
     pub seq: u32,
 }
 
+/// An append-only comment with server-derived author attribution.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Comment {
+    pub id: String,
+    /// Parent ticket ULID.
+    pub ticket_id: String,
+    pub body: String,
+    /// Effective member and accepted token captured when the comment is made.
+    pub member_id: String,
+    pub token_id: String,
+    pub token_kind: TokenKind,
+    #[typeshare(serialized_as = "NullableString")]
+    pub agent_name: Option<String>,
+    #[typeshare(serialized_as = "NullableString")]
+    pub delegating_member_id: Option<String>,
+    pub created_at: String,
+    pub seq: u32,
+}
+
 /// A project as stored by the server and cached by the CLI.
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -302,6 +347,7 @@ pub enum MutationOp {
 #[serde(rename_all = "snake_case")]
 pub enum Entity {
     Ticket,
+    Comment,
     Project,
 }
 
@@ -328,6 +374,9 @@ pub struct MutationSet {
     pub assignee: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// Parent ticket ULID. Required on comment create and immutable afterward.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ticket: Option<String>,
     /// Required on project create and immutable afterward.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
@@ -419,7 +468,7 @@ pub struct SyncRequest {
 pub struct AppliedMutation {
     pub mutation_id: String,
     pub entity_id: String,
-    /// Human-facing entity key assigned or confirmed by the server.
+    /// Human-facing entity key, or the parent ticket key for a comment.
     pub key: String,
     pub seq: u32,
 }
@@ -440,6 +489,8 @@ pub struct SyncResponse {
     pub conflicts: Vec<MutationConflict>,
     /// Full rows for every ticket changed since the request's `last_seq`.
     pub deltas: Vec<Ticket>,
+    /// Comments changed since the request's `last_seq`.
+    pub comment_deltas: Vec<Comment>,
     /// Projects changed since the request's `last_seq`.
     #[serde(default)]
     pub project_deltas: Vec<Project>,
@@ -461,6 +512,7 @@ pub struct SyncResponse {
 pub struct Snapshot {
     pub projects: Vec<Project>,
     pub tickets: Vec<Ticket>,
+    pub comments: Vec<Comment>,
     #[serde(default)]
     pub members: Vec<MemberProfile>,
     /// The seq watermark this snapshot represents.

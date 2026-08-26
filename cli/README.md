@@ -10,6 +10,8 @@ flat init URL --token                  # configure an existing FLAT_TOKEN
 flat new TITLE --project KEY [--priority PRIORITY] [--assignee EMAIL]
 flat sync [--merge]                    # pull server changes into the mirror
 flat push                              # send locally edited files back
+flat comment KEY TEXT                  # add an append-only comment
+flat comment KEY --stdin               # read multiline Markdown from stdin
 flat path                              # print the mirror location
 flat member ...                        # invitations, roles, suspension, recovery
 flat token ...                         # per-installation and agent credentials
@@ -47,15 +49,28 @@ is one of `none`, `low`, `medium`, `high`, or `urgent`; unassigned tickets use
 resolved through synced member profiles. If an email is missing from the
 local cache, run `flat sync` and retry.
 
+Each file ends with a `<!-- flat:comments -->` section rendered from the
+server's append-only comments. Everything from that sentinel onward is
+read-only; `flat push` rejects changed, deleted, or mangled comment sections.
+The exact sentinel line is reserved and cannot appear in a ticket description.
+Use `flat comment KEY TEXT` or `flat comment KEY --stdin` instead. Comment
+bodies preserve Markdown, must contain non-whitespace content, and are limited
+to 1 MiB of UTF-8. Comment creates are journaled before sending. If a mutation
+is already pending, `flat comment` requires `flat sync` to replay it before a
+new comment can be added. A comments-only sync replaces the suffix while
+preserving local edits above it. CRLF conversion and final newlines do not
+count as edits to rendered comments.
+
 Notes:
 
-- `flat sync` never overwrites a file with local edits: without `--merge` it
-  reports the file and withholds that ticket's delta (last_seq doesn't
-  advance, so the next sync re-delivers it); with `--merge` it three-way
-  merges the server's changes in, leaving `<<<<<<< local` / `>>>>>>> server`
-  conflict markers where both sides changed the same thing. `flat push`
-  refuses files with unresolved markers, and `flat sync` exits non-zero as
-  long as any mirror file still contains them.
+- `flat sync` applies comments-only suffix updates without touching local
+  editable fields. When editable server fields also changed, sync without
+  `--merge` reports the file and withholds that ticket's delta (last_seq
+  doesn't advance, so the next sync re-delivers it); with `--merge` it
+  three-way merges the server's changes in, leaving `<<<<<<< local` /
+  `>>>>>>> server` conflict markers where both sides changed the same thing.
+  `flat push` refuses files with unresolved markers, and `flat sync` exits
+  non-zero as long as any mirror file still contains them.
 - Deleting a mirror file discards its local edits: `flat sync` restores the
   last synced server state from the base copy.
 - A ticket deleted on the server arrives as a tombstone. Sync removes its

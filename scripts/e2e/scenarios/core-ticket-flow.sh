@@ -82,11 +82,24 @@ sed 's/^status: todo$/status: in_progress/' "$member_ticket" >"$member_ticket.up
 mv "$member_ticket.updated" "$member_ticket"
 e2e_assert_line "$member_ticket" "status: in_progress"
 FLAT_DIR="$member_root" "$FLAT_E2E_BIN" push
-
-e2e_log "Syncing as the admin and verifying the member update"
 FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" sync
-e2e_assert_line "$admin_ticket" "title: Core E2E ticket"
 e2e_assert_line "$admin_ticket" "status: in_progress"
+
+e2e_log "Commenting from the admin's dirty checkout"
+sed 's/^title: Core E2E ticket$/title: Admin local title/' "$admin_ticket" >"$admin_ticket.updated"
+mv "$admin_ticket.updated" "$admin_ticket"
+printf 'Found the cause.\n\n- Added a regression test.\n' |
+  FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" comment "$ticket_key" --stdin
+e2e_assert_line "$admin_ticket" "title: Admin local title"
+e2e_assert_line "$admin_ticket" "status: in_progress"
+e2e_assert_line "$admin_ticket" "<!-- flat:comments -->"
+grep -Fq "### $ADMIN_EMAIL — " "$admin_ticket" ||
+  e2e_fail "comment did not render admin attribution"
+e2e_assert_line "$admin_ticket" "Found the cause."
+
+e2e_log "Pushing the preserved local edit and converging mirrors"
+FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" push
+FLAT_DIR="$member_root" "$FLAT_E2E_BIN" sync
 if ! cmp -s "$member_ticket" "$admin_ticket"; then
   e2e_fail "admin and member mirrors did not converge"
 fi
