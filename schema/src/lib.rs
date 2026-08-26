@@ -9,7 +9,33 @@
 use serde::{Deserialize, Serialize};
 use typeshare::typeshare;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Validates the immutable, human-facing project key used in ticket aliases
+/// and mirror directory names.
+pub fn validate_project_key(key: &str) -> Result<(), String> {
+    let bytes = key.as_bytes();
+    if !(2..=8).contains(&bytes.len()) || !bytes[0].is_ascii_uppercase() {
+        return Err("invalid_project_key".into());
+    }
+    if bytes[1..]
+        .iter()
+        .any(|byte| !byte.is_ascii_uppercase() && !byte.is_ascii_digit())
+    {
+        return Err("invalid_project_key".into());
+    }
+    Ok(())
+}
+
+/// Project display names use the same compact, Unicode-friendly rule as
+/// tenant display names.
+pub fn validate_project_name(name: &str) -> Result<(), String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
+        return Err("invalid_project_name".into());
+    }
+    Ok(())
+}
 
 /// The one rule for ticket titles, enforced by both the CLI and the server
 /// (mirrored in `server/src/validate.ts`): non-empty, single line, no control
@@ -212,6 +238,8 @@ pub struct Ticket {
     pub id: String,
     /// Human-facing key alias, e.g. `DEMO-1`. Assigned by the server.
     pub key: String,
+    /// Immutable project ULID. The mirror renders the corresponding key.
+    pub project: String,
     pub title: String,
     pub body: String,
     pub status: Status,
@@ -226,6 +254,22 @@ pub struct Ticket {
     pub seq: u32,
 }
 
+/// A project as stored by the server and cached by the CLI.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Project {
+    pub id: String,
+    /// Immutable human-facing key and mirror directory name.
+    pub key: String,
+    pub display_name: String,
+    pub description: String,
+    /// Active member ULIDs. An empty owner list is valid.
+    pub owner_ids: Vec<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub seq: u32,
+}
+
 /// A server deletion that removes the corresponding local mirror state.
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -233,6 +277,14 @@ pub struct TicketTombstone {
     pub id: String,
     pub key: String,
     /// Seq assigned to the delete mutation.
+    pub seq: u32,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectTombstone {
+    pub id: String,
+    pub key: String,
     pub seq: u32,
 }
 
@@ -250,12 +302,17 @@ pub enum MutationOp {
 #[serde(rename_all = "snake_case")]
 pub enum Entity {
     Ticket,
+    Project,
 }
 
-/// Scalar fields a mutation may set. Absent fields are left untouched.
+/// Scalar fields a mutation may set. Server validation restricts fields by
+/// entity and operation; absent fields are left untouched.
 #[typeshare]
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TicketSet {
+pub struct MutationSet {
+    /// Required on ticket create and immutable afterward.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -271,7 +328,18 @@ pub struct TicketSet {
     pub assignee: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub body: Option<String>,
+    /// Required on project create and immutable afterward.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
+
+/// Ticket editing code can keep the narrower domain name even though the wire
+/// set is shared by both mutation entities.
+pub type TicketSet = MutationSet;
 
 fn deserialize_optional_nullable_string<'de, D>(
     deserializer: D,
@@ -282,8 +350,8 @@ where
     Option::<String>::deserialize(deserializer).map(Some)
 }
 
-/// One atomic change to one entity. All edits to a ticket travel in a single
-/// mutation; if any part is rejected, none of it applies.
+/// One atomic change to one entity. If any part is rejected, none of the
+/// mutation applies.
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mutation {
@@ -293,7 +361,7 @@ pub struct Mutation {
     pub mutation_id: String,
     pub op: MutationOp,
     pub entity: Entity,
-    /// Client-generated ULID of the ticket (also on create).
+    /// Client-generated entity ULID (also on create).
     pub entity_id: String,
     /// Seq the client last saw for this entity. Required on update; absent on
     /// create. A stale base_seq is not by itself a conflict: the mutation
@@ -301,7 +369,13 @@ pub struct Mutation {
     /// since. A field both sides changed rejects the whole mutation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_seq: Option<u32>,
-    pub set: TicketSet,
+    pub set: MutationSet,
+    /// Project owner membership uses add/remove deltas so concurrent changes
+    /// to different owners do not replace the whole list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owners_add: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owners_remove: Vec<String>,
 }
 
 /// Canonical JSON used when binding an idempotency key to a mutation. Object
@@ -345,7 +419,7 @@ pub struct SyncRequest {
 pub struct AppliedMutation {
     pub mutation_id: String,
     pub entity_id: String,
-    /// Ticket key — tells the client the server-assigned key on create.
+    /// Human-facing entity key assigned or confirmed by the server.
     pub key: String,
     pub seq: u32,
 }
@@ -366,9 +440,14 @@ pub struct SyncResponse {
     pub conflicts: Vec<MutationConflict>,
     /// Full rows for every ticket changed since the request's `last_seq`.
     pub deltas: Vec<Ticket>,
+    /// Projects changed since the request's `last_seq`.
+    #[serde(default)]
+    pub project_deltas: Vec<Project>,
     /// Tickets deleted since `last_seq`.
     #[serde(default)]
     pub tombstones: Vec<TicketTombstone>,
+    #[serde(default)]
+    pub project_tombstones: Vec<ProjectTombstone>,
     /// Current safe profiles. Administrative sequence gaps may occur without
     /// exposing their private records.
     #[serde(default)]
@@ -380,6 +459,7 @@ pub struct SyncResponse {
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
+    pub projects: Vec<Project>,
     pub tickets: Vec<Ticket>,
     #[serde(default)]
     pub members: Vec<MemberProfile>,

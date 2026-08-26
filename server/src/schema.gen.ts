@@ -6,7 +6,7 @@
 export interface AppliedMutation {
 	mutation_id: string;
 	entity_id: string;
-	/** Ticket key — tells the client the server-assigned key on create. */
+	/** Human-facing entity key assigned or confirmed by the server. */
 	key: string;
 	seq: number;
 }
@@ -41,6 +41,7 @@ export enum MutationOp {
 
 export enum Entity {
 	Ticket = "ticket",
+	Project = "project",
 }
 
 /** Ticket workflow state. */
@@ -62,19 +63,28 @@ export enum Priority {
 	Urgent = "urgent",
 }
 
-/** Scalar fields a mutation may set. Absent fields are left untouched. */
-export interface TicketSet {
+/**
+ * Scalar fields a mutation may set. Server validation restricts fields by
+ * entity and operation; absent fields are left untouched.
+ */
+export interface MutationSet {
+	/** Required on ticket create and immutable afterward. */
+	project?: string;
 	title?: string;
 	status?: Status;
 	priority?: Priority;
 	/** Outer `None` omits the field; `Some(None)` explicitly clears it. */
 	assignee?: string | null;
 	body?: string;
+	/** Required on project create and immutable afterward. */
+	key?: string;
+	display_name?: string;
+	description?: string;
 }
 
 /**
- * One atomic change to one entity. All edits to a ticket travel in a single
- * mutation; if any part is rejected, none of it applies.
+ * One atomic change to one entity. If any part is rejected, none of the
+ * mutation applies.
  */
 export interface Mutation {
 	/**
@@ -85,7 +95,7 @@ export interface Mutation {
 	mutation_id: string;
 	op: MutationOp;
 	entity: Entity;
-	/** Client-generated ULID of the ticket (also on create). */
+	/** Client-generated entity ULID (also on create). */
 	entity_id: string;
 	/**
 	 * Seq the client last saw for this entity. Required on update; absent on
@@ -94,7 +104,13 @@ export interface Mutation {
 	 * since. A field both sides changed rejects the whole mutation.
 	 */
 	base_seq?: number;
-	set: TicketSet;
+	set: MutationSet;
+	/**
+	 * Project owner membership uses add/remove deltas so concurrent changes
+	 * to different owners do not replace the whole list.
+	 */
+	owners_add?: string[];
+	owners_remove?: string[];
 }
 
 /** A rejected mutation. Nothing from it was applied. */
@@ -104,12 +120,34 @@ export interface MutationConflict {
 	reason: string;
 }
 
+/** A project as stored by the server and cached by the CLI. */
+export interface Project {
+	id: string;
+	/** Immutable human-facing key and mirror directory name. */
+	key: string;
+	display_name: string;
+	description: string;
+	/** Active member ULIDs. An empty owner list is valid. */
+	owner_ids: string[];
+	created_at: string;
+	updated_at: string;
+	seq: number;
+}
+
+export interface ProjectTombstone {
+	id: string;
+	key: string;
+	seq: number;
+}
+
 /** A ticket as stored by the server and mirrored to markdown. */
 export interface Ticket {
 	/** Immutable ULID; the protocol speaks ULIDs. */
 	id: string;
 	/** Human-facing key alias, e.g. `DEMO-1`. Assigned by the server. */
 	key: string;
+	/** Immutable project ULID. The mirror renders the corresponding key. */
+	project: string;
 	title: string;
 	body: string;
 	status: Status;
@@ -125,6 +163,7 @@ export interface Ticket {
 
 /** Bootstrap payload from `GET /snapshot`. */
 export interface Snapshot {
+	projects: Project[];
 	tickets: Ticket[];
 	members?: MemberProfile[];
 	/** The seq watermark this snapshot represents. */
@@ -151,8 +190,11 @@ export interface SyncResponse {
 	conflicts: MutationConflict[];
 	/** Full rows for every ticket changed since the request's `last_seq`. */
 	deltas: Ticket[];
+	/** Projects changed since the request's `last_seq`. */
+	project_deltas?: Project[];
 	/** Tickets deleted since `last_seq`. */
 	tombstones?: TicketTombstone[];
+	project_tombstones?: ProjectTombstone[];
 	/**
 	 * Current safe profiles. Administrative sequence gaps may occur without
 	 * exposing their private records.

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const LATEST_SCHEMA_VERSION = 4
+export const LATEST_SCHEMA_VERSION = 5
 
 const storedSchemaVersionSchema = z.union([z.string(), z.number()])
 const schemaVersionSchema = storedSchemaVersionSchema
@@ -132,6 +132,63 @@ const MIGRATIONS = [
   FROM tickets;
   DROP TABLE tickets;
   ALTER TABLE tickets_v4 RENAME TO tickets`,
+  `CREATE TABLE projects (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    display_name TEXT NOT NULL,
+    description TEXT NOT NULL,
+    next_ticket_num INTEGER NOT NULL CHECK (next_ticket_num > 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    seq INTEGER NOT NULL CHECK (seq >= 0)
+  );
+  CREATE TABLE project_tombstones (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    seq INTEGER NOT NULL UNIQUE CHECK (seq >= 0)
+  );
+  UPDATE meta SET value = CAST(value AS INTEGER) + 1 WHERE key = 'latest_seq';
+  INSERT INTO projects
+    (id, key, display_name, description, next_ticket_num, created_at, updated_at, seq)
+  SELECT '00000000000000000000000000', 'DEMO', 'Demo', '',
+    CAST((SELECT value FROM meta WHERE key = 'next_ticket_num') AS INTEGER),
+    COALESCE((SELECT initialized_at FROM tenant_metadata WHERE singleton = 1),
+      strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+    CAST((SELECT value FROM meta WHERE key = 'latest_seq') AS INTEGER);
+  CREATE TABLE tickets_v5 (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL UNIQUE,
+    project TEXT NOT NULL REFERENCES projects(id),
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('backlog', 'todo', 'in_progress', 'in_review', 'done', 'canceled')),
+    priority TEXT NOT NULL CHECK (priority IN ('none', 'low', 'medium', 'high', 'urgent')),
+    assignee TEXT REFERENCES members(id),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    seq INTEGER NOT NULL CHECK (seq >= 0)
+  );
+  INSERT INTO tickets_v5
+    (id, key, project, title, body, status, priority, assignee, created_at, updated_at, seq)
+  SELECT id, key, '00000000000000000000000000', title, body, status, priority, assignee,
+    created_at, updated_at, seq FROM tickets;
+  DROP TABLE tickets;
+  ALTER TABLE tickets_v5 RENAME TO tickets;
+  CREATE INDEX tickets_project ON tickets (project);
+  DROP TABLE project_owners;
+  CREATE TABLE project_owners (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL REFERENCES members(id),
+    PRIMARY KEY (project_id, member_id)
+  );
+  INSERT INTO project_owners (project_id, member_id, created_at, created_by)
+  SELECT '00000000000000000000000000', id,
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), id
+  FROM members WHERE status = 'active' AND role = 'admin';
+  DELETE FROM meta WHERE key IN ('project_key', 'next_ticket_num')`,
 ] as const
 
 type MigrationValue = ArrayBuffer | string | number | null

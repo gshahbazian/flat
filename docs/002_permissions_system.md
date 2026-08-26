@@ -4,8 +4,8 @@ Status: accepted design. This document extends `001_initial_system.md` and
 supersedes its bootstrap and member-enrollment details.
 
 Implementation note: the current milestone covers tenant setup, enrollment,
-token/member administration, audit, and authorization for the HTTP ticket-sync
-surface. WebSocket/watch, search, remote MCP, comments, labels, projects,
+token/member administration, audit, projects, and authorization for the HTTP
+ticket-sync surface. WebSocket/watch, search, remote MCP, comments, labels,
 force push, native keychain storage, and the operator-recovery deployment
 procedure remain deferred slices of this accepted design.
 
@@ -1020,6 +1020,12 @@ flat token revoke TOKEN_ID
 flat token upgrade
 
 flat delete KEY                        # delete a ticket
+flat project ls
+flat project show KEY
+flat project create KEY --name NAME [--description TEXT]
+flat project update KEY [--name NAME] [--description TEXT]
+flat project owner add KEY EMAIL
+flat project owner remove KEY EMAIL
 flat project delete KEY
 flat label delete NAME
 

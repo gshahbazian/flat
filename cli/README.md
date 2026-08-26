@@ -7,7 +7,7 @@ flat init URL --setup                  # claim a new tenant
 flat init URL --invite                 # redeem an invitation
 flat init URL --recover                # redeem a recovery enrollment
 flat init URL --token                  # configure an existing FLAT_TOKEN
-flat new TITLE [--priority PRIORITY] [--assignee EMAIL]
+flat new TITLE --project KEY [--priority PRIORITY] [--assignee EMAIL]
 flat sync [--merge]                    # pull server changes into the mirror
 flat push                              # send locally edited files back
 flat path                              # print the mirror location
@@ -15,16 +15,30 @@ flat member ...                        # invitations, roles, suspension, recover
 flat token ...                         # per-installation and agent credentials
 flat audit ls                          # admin-only audit log
 flat github [--rotate]                 # GitHub webhook settings
+flat project ls
+flat project show KEY
+flat project create KEY --name NAME [--description TEXT]
+flat project update KEY [--name NAME] [--description TEXT]
+flat project owner add KEY EMAIL
+flat project owner remove KEY EMAIL
+flat project delete KEY                # admin human token; project must be empty
 ```
 
-The mirror lives at `~/.flat/<host>/DEMO/DEMO-N.md` (`FLAT_DIR` overrides the
-root). Base copies and sync state sit next to it under `~/.flat/<host>/.flat/`;
+Project keys contain 2-8 uppercase letters or digits and start with a letter.
+They are immutable and cannot be reused. The creator becomes the first owner.
+Owners and admins may update metadata and owner membership; only an admin
+using a human token can delete an empty project.
+
+The mirror lives at `~/.flat/<host>/<PROJECT>/<PROJECT-N>.md` (`FLAT_DIR`
+overrides the root). Base copies and sync state sit next to it under
+`~/.flat/<host>/.flat/`;
 `flat push` diffs each file against its base copy and sends one atomic update
 mutation per dirty ticket.
 
-Ticket frontmatter includes `id`, `title`, `status`, `priority`, `assignee`,
-`created`, and `updated`. Edit `title`, `status`, `priority`, `assignee`, and
-the description body. `id`, `created`, and `updated` are read-only. Priority
+Ticket frontmatter includes `id`, `project`, `title`, `status`, `priority`,
+`assignee`, `created`, and `updated`. Edit `title`, `status`, `priority`,
+`assignee`, and the description body. `id`, `project`, `created`, and `updated`
+are read-only. Priority
 is one of `none`, `low`, `medium`, `high`, or `urgent`; unassigned tickets use
 `assignee: null`. Assignment emails use the shared normalization rules and are
 resolved through synced member profiles. If an email is missing from the

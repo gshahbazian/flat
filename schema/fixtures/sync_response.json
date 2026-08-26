@@ -18,6 +18,7 @@
     {
       "id": "01JG4C5E2MZYXWVTSRQPNMKJHG",
       "key": "DEMO-2",
+      "project": "01JG4BX8QXK6P2M7XKQJH4V8T1",
       "title": "hello",
       "body": "",
       "status": "todo",
@@ -28,6 +29,18 @@
       "seq": 43
     }
   ],
+  "project_deltas": [
+    {
+      "id": "01JG4BX8QXK6P2M7XKQJH4V8T1",
+      "key": "DEMO",
+      "display_name": "Demo",
+      "description": "The migrated default project.",
+      "owner_ids": ["01JG4BZ4M6PQRSTVWXYZ012345"],
+      "created_at": "2026-08-01T10:00:00.000Z",
+      "updated_at": "2026-08-25T13:45:00.000Z",
+      "seq": 41
+    }
+  ],
   "tombstones": [
     {
       "id": "01JG4C1N8KZYXWVTSRQPNMKJHG",
@@ -35,6 +48,7 @@
       "seq": 42
     }
   ],
+  "project_tombstones": [],
   "members": [
     {
       "id": "01JG4BZ4M6PQRSTVWXYZ012345",

@@ -54,6 +54,19 @@ export const tenantNameSchema = z
   .transform((value) => value.trim())
   .refine((name) => name.length > 0 && Array.from(name).length <= 80)
 
+export const projectKeySchema = z.string().regex(/^[A-Z][A-Z0-9]{1,7}$/)
+
+export const projectNameSchema = z
+  .string()
+  .transform((value) => value.trim())
+  .refine(
+    (name) =>
+      name.length > 0 &&
+      Array.from(name).length <= 80 &&
+      // oxlint-disable-next-line eslint/no-control-regex -- Project names cannot contain wire-hostile control characters.
+      !Array.from(name).some((character) => /[\u0000-\u001f\u007f-\u009f]/.test(character))
+  )
+
 export function invalidTenantName(value: unknown): string | null {
   const result = tenantNameSchema.safeParse(value)
   if (!result.success) return null

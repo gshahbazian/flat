@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vitest'
 
 import { conflictingFields, fieldsSet } from '../src/conflict'
-import { Priority, Status, type TicketSet } from '../src/schema.gen'
+import { Priority, Status, type MutationSet } from '../src/schema.gen'
 
 describe('fieldsSet', () => {
   test('lists only the fields present', () => {
@@ -20,7 +20,7 @@ describe('fieldsSet', () => {
   test('tolerates missing or null sets from old log entries', () => {
     expect(fieldsSet(null)).toEqual([])
     expect(fieldsSet(undefined)).toEqual([])
-    expect(fieldsSet({ title: null } as unknown as TicketSet)).toEqual([])
+    expect(fieldsSet({ title: null } as unknown as MutationSet)).toEqual([])
   })
 })
 

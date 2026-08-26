@@ -35,7 +35,7 @@ working copy. The skill explains how to:
    ticket files beneath it with tools such as `rg` and `cat`.
 3. Edit a ticket's `title`, `status`, and description. The `id` stays
    read-only.
-4. Create a ticket with `flat new TITLE`.
+4. Create a ticket with `flat new TITLE --project KEY`.
 5. Publish local edits with `flat push`.
 6. Use `flat sync --merge` and resolve conflict markers when local and server
    edits overlap.

@@ -112,7 +112,7 @@ describe.sequential('TenantDO integration', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: setup.body.snapshot.latest_seq,
         mutations: [
           {
@@ -120,14 +120,14 @@ describe.sequential('TenantDO integration', () => {
             op: 'create',
             entity: 'ticket',
             entity_id: '01JG4C2Q4V8XKZ3W5D9E7F2H6M',
-            set: { title: 'First ticket' },
+            set: { project: '00000000000000000000000000', title: 'First ticket' },
           },
           {
             mutation_id: 'create-two',
             op: 'create',
             entity: 'ticket',
             entity_id: '01JG4C5E2MZYXWVTSRQPNMKJHG',
-            set: { title: 'Second ticket' },
+            set: { project: '00000000000000000000000000', title: 'Second ticket' },
           },
         ],
       })
@@ -160,7 +160,7 @@ describe.sequential('TenantDO integration', () => {
       worker,
       '/sync',
       authenticated(enrollment.body.token, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: secondCheckoutSeq,
         mutations: [
           {
@@ -197,7 +197,7 @@ describe.sequential('TenantDO integration', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: secondCheckoutSeq,
         mutations: [
           {
@@ -225,7 +225,7 @@ describe.sequential('TenantDO integration', () => {
           worker,
           '/sync',
           authenticated(adminToken, {
-            protocol_version: 1,
+            protocol_version: 2,
             last_seq: lastSeq,
             mutations: [],
           })
@@ -244,7 +244,7 @@ describe.sequential('TenantDO integration', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: 0,
         mutations: [
           null,
@@ -451,7 +451,7 @@ describe.sequential('TenantDO integration', () => {
       worker,
       '/sync',
       authenticated(adminToken, {
-        protocol_version: 1,
+        protocol_version: 2,
         last_seq: afterReplay.body.latest_seq,
         mutations: [
           {
@@ -459,14 +459,20 @@ describe.sequential('TenantDO integration', () => {
             op: 'create',
             entity: 'ticket',
             entity_id: '01JG4C8F3NZYXWVTSRQPNMKJHG',
-            set: { title: 'First use of the ID' },
+            set: {
+              project: '00000000000000000000000000',
+              title: 'First use of the ID',
+            },
           },
           {
             mutation_id: 'reused-in-one-request',
             op: 'create',
             entity: 'ticket',
             entity_id: '01JG4CBG4PZYXWVTSRQPNMKJHG',
-            set: { title: 'Different use of the ID' },
+            set: {
+              project: '00000000000000000000000000',
+              title: 'Different use of the ID',
+            },
           },
         ],
       })

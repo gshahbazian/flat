@@ -4,6 +4,7 @@
 //! ```markdown
 //! ---
 //! id: DEMO-1
+//! project: DEMO
 //! title: Fix OAuth token refresh race
 //! status: todo
 //! priority: high
@@ -15,8 +16,8 @@
 //! Description body.
 //! ```
 //!
-//! Editable: title, status, priority, assignee, body. Read-only: id, created,
-//! updated.
+//! Editable: title, status, priority, assignee, body. Read-only: id, project,
+//! created, updated.
 
 use std::collections::BTreeMap;
 
@@ -27,6 +28,7 @@ use flat_schema::{MemberProfile, Priority, Status, Ticket};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TicketFile {
     pub key: String,
+    pub project: String,
     pub title: String,
     pub status: Status,
     pub priority: Priority,
@@ -59,9 +61,15 @@ pub(crate) fn assignee_email(
 pub fn render(ticket: &Ticket, members: &BTreeMap<String, MemberProfile>) -> Result<String> {
     let assignee = assignee_email(ticket, members)?;
     let assignee = assignee.as_deref().unwrap_or("null");
+    let project = ticket
+        .key
+        .rsplit_once('-')
+        .map(|(project, _)| project)
+        .context("ticket key has no project prefix")?;
     let mut out = format!(
-        "---\nid: {}\ntitle: {}\nstatus: {}\npriority: {}\nassignee: {}\ncreated: {}\nupdated: {}\n---\n",
+        "---\nid: {}\nproject: {}\ntitle: {}\nstatus: {}\npriority: {}\nassignee: {}\ncreated: {}\nupdated: {}\n---\n",
         ticket.key,
+        project,
         ticket.title,
         ticket.status.as_str(),
         ticket.priority.as_str(),
@@ -85,6 +93,7 @@ pub fn parse(content: &str) -> Result<TicketFile> {
     }
 
     let mut id = None;
+    let mut project = None;
     let mut title = None;
     let mut status = None;
     let mut priority = None;
@@ -104,6 +113,7 @@ pub fn parse(content: &str) -> Result<TicketFile> {
         let value = value.trim();
         match field.trim() {
             "id" => id = Some(value.to_string()),
+            "project" => project = Some(value.to_string()),
             "title" => title = Some(value.to_string()),
             "status" => status = Some(value.parse::<Status>().map_err(anyhow::Error::msg)?),
             "priority" => {
@@ -119,7 +129,7 @@ pub fn parse(content: &str) -> Result<TicketFile> {
             "created" => created = Some(value.to_string()),
             "updated" => updated = Some(value.to_string()),
             other => bail!(
-                "unknown frontmatter field {other:?} (fields: id, title, status, priority, assignee, created, updated)"
+                "unknown frontmatter field {other:?} (fields: id, project, title, status, priority, assignee, created, updated)"
             ),
         }
     }
@@ -131,6 +141,7 @@ pub fn parse(content: &str) -> Result<TicketFile> {
     let body = body.join("\n");
     Ok(TicketFile {
         key: id.context("frontmatter is missing `id`")?,
+        project: project.context("frontmatter is missing `project`")?,
         title,
         status: status.context("frontmatter is missing `status`")?,
         priority: priority.unwrap_or(Priority::None),
@@ -149,6 +160,7 @@ mod tests {
         Ticket {
             id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M".into(),
             key: "DEMO-1".into(),
+            project: "00000000000000000000000000".into(),
             title: title.into(),
             body: body.into(),
             status,
@@ -187,6 +199,7 @@ mod tests {
         ] {
             let parsed = parse(&render(&t, &members()).unwrap()).unwrap();
             assert_eq!(parsed.key, t.key);
+            assert_eq!(parsed.project, "DEMO");
             assert_eq!(parsed.title, t.title);
             assert_eq!(parsed.status, t.status);
             assert_eq!(parsed.priority, t.priority);
@@ -215,32 +228,37 @@ mod tests {
 
     #[test]
     fn rejects_unknown_fields() {
-        let err = parse("---\nid: DEMO-1\ntitle: x\nstatus: todo\nwat: high\n---\n").unwrap_err();
+        let err = parse("---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: todo\nwat: high\n---\n")
+            .unwrap_err();
         assert!(err.to_string().contains("unknown frontmatter field"));
     }
 
     #[test]
     fn rejects_empty_title() {
-        let err = parse("---\nid: DEMO-1\ntitle:\nstatus: todo\n---\n").unwrap_err();
+        let err = parse("---\nid: DEMO-1\nproject: DEMO\ntitle:\nstatus: todo\n---\n").unwrap_err();
         assert!(err.to_string().contains("title must not be empty"));
     }
 
     #[test]
     fn rejects_unknown_status() {
-        let err = parse("---\nid: DEMO-1\ntitle: x\nstatus: shipped\n---\n").unwrap_err();
+        let err =
+            parse("---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: shipped\n---\n").unwrap_err();
         assert!(err.to_string().contains("unknown status"));
     }
 
     #[test]
     fn rejects_unknown_priority() {
-        let err = parse("---\nid: DEMO-1\ntitle: x\nstatus: todo\npriority: critical\n---\n")
-            .unwrap_err();
+        let err = parse(
+            "---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: todo\npriority: critical\n---\n",
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("unknown priority"));
     }
 
     #[test]
-    fn accepts_legacy_frontmatter_without_new_fields() {
-        let parsed = parse("---\nid: DEMO-1\ntitle: x\nstatus: todo\n---\nbody\n").unwrap();
+    fn accepts_frontmatter_without_optional_fields() {
+        let parsed =
+            parse("---\nid: DEMO-1\nproject: DEMO\ntitle: x\nstatus: todo\n---\nbody\n").unwrap();
         assert_eq!(parsed.priority, Priority::None);
         assert_eq!(parsed.assignee, None);
         assert_eq!(parsed.created, None);
