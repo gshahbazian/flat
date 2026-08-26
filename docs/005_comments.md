@@ -68,12 +68,11 @@ Admin-delegated agent comment.
 ```
 
 Everything from the sentinel onward is read-only. Push compares that suffix
-with the base copy byte-for-byte and rejects edits, deletion, duplication, or
-a mangled sentinel with a direction to use `flat comment KEY`. The sentinel is
-required in every mirror file. To discard a file with a missing sentinel,
-delete it and run `flat sync` so Flat restores the base copy.
-Suffix comparisons normalize CRLF and ignore final newline characters, but
-any change to rendered comment content remains a read-only violation.
+with the base copy after normalizing CRLF and final newline characters. It
+rejects changes to rendered content, deletion, duplication, or a mangled
+sentinel with a direction to use `flat comment KEY`. The sentinel is required
+in every mirror file. To discard a file with a missing sentinel, delete it and
+run `flat sync` so Flat restores the base copy.
 
 `flat comment KEY TEXT` adds a single-line or shell-quoted comment.
 `flat comment KEY --stdin` reads multiline Markdown. One form is required and

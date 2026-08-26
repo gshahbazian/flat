@@ -325,12 +325,16 @@ impl Checkout {
                 .tickets
                 .get(&ticket.key)
                 .is_some_and(|state| state.id == ticket.id && state.seq == ticket.seq);
-            if keep_local.contains(&ticket.key) && !comments_only {
+            let keep_local = keep_local.contains(&ticket.key);
+            if keep_local && !comments_only {
                 continue;
             }
             let rendered =
                 markdown::render(ticket, &self.state.members, &self.comments_for(&ticket.id))?;
             let current = match fs::read_to_string(self.mirror_path(&ticket.key)) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound && keep_local => {
+                    continue;
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     self.write_ticket(ticket, &rendered, &rendered)?;
                     continue;
@@ -347,6 +351,17 @@ impl Checkout {
                     return Err(error).context(format!("reading base copy of {}", ticket.key))
                 }
             };
+            if keep_local {
+                let Some(base) = base else {
+                    continue;
+                };
+                if let Some(mirror) =
+                    markdown::replace_unchanged_comment_section(&current, &base, &rendered)
+                {
+                    self.write_ticket(ticket, &mirror, &rendered)?;
+                }
+                continue;
+            }
             let clean = current == rendered
                 || pushed.get(&ticket.key) == Some(&current)
                 || base.as_deref() == Some(current.as_str());
@@ -663,7 +678,8 @@ mod tests {
         let mut clean = checkout("clean-comment");
         let mut dirty = checkout("dirty-comment");
         let mut tampered = checkout("tampered-comment");
-        for checkout in [&mut clean, &mut dirty, &mut tampered] {
+        let mut rejected = checkout("rejected-push-comment");
+        for checkout in [&mut clean, &mut dirty, &mut tampered, &mut rejected] {
             checkout.update_members(std::slice::from_ref(&member));
             checkout
                 .apply_deltas(
@@ -683,8 +699,13 @@ mod tests {
             .unwrap()
             .replace("## Comments\n", "## Comments\nlocally changed\n");
         fs::write(&tampered_path, &tampered_content).unwrap();
+        let rejected_path = rejected.mirror_path(&ticket.key);
+        let rejected_content = fs::read_to_string(&rejected_path)
+            .unwrap()
+            .replace("title: Title", "title: Rejected local title");
+        fs::write(&rejected_path, &rejected_content).unwrap();
 
-        for checkout in [&mut clean, &mut dirty, &mut tampered] {
+        for checkout in [&mut clean, &mut dirty, &mut tampered, &mut rejected] {
             checkout.update_comments(std::slice::from_ref(&comment));
         }
         assert!(clean
@@ -709,9 +730,17 @@ mod tests {
                 &HashMap::new(),
             )
             .unwrap();
+        let rejected_skipped = rejected
+            .apply_deltas(
+                std::slice::from_ref(&ticket),
+                &HashSet::from([ticket.key.clone()]),
+                &HashMap::from([(ticket.key.clone(), rejected_content.clone())]),
+            )
+            .unwrap();
 
         assert!(skipped.is_empty());
         assert_eq!(tampered_skipped.as_slice(), std::slice::from_ref(&ticket));
+        assert!(rejected_skipped.is_empty());
         assert!(fs::read_to_string(clean.mirror_path(&ticket.key))
             .unwrap()
             .contains("### gabe@example.com — 2026-08-25T13:00:00.000Z\nComment body"));
@@ -719,6 +748,12 @@ mod tests {
         assert!(dirty_result.contains("title: Local title"));
         assert!(dirty_result.contains("### gabe@example.com — 2026-08-25T13:00:00.000Z"));
         assert_eq!(fs::read_to_string(tampered_path).unwrap(), tampered_content);
+        let rejected_result = fs::read_to_string(rejected_path).unwrap();
+        assert!(rejected_result.contains("title: Rejected local title"));
+        assert!(rejected_result.contains("### gabe@example.com — 2026-08-25T13:00:00.000Z"));
+        let rejected_base = fs::read_to_string(rejected.base_path(&ticket.key)).unwrap();
+        assert!(rejected_base.contains("title: Title"));
+        assert!(rejected_base.contains("### gabe@example.com — 2026-08-25T13:00:00.000Z"));
 
         let mut changed_ticket = ticket.clone();
         changed_ticket.title = "Server title".into();
@@ -738,6 +773,7 @@ mod tests {
         std::fs::remove_dir_all(clean.host_dir()).unwrap();
         std::fs::remove_dir_all(dirty.host_dir()).unwrap();
         std::fs::remove_dir_all(tampered.host_dir()).unwrap();
+        std::fs::remove_dir_all(rejected.host_dir()).unwrap();
     }
 
     #[test]
