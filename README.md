@@ -24,6 +24,15 @@ explicit follow-up work.
 | `cli/` | The Rust `flat` CLI |
 | `infra/` | Cloudflare infrastructure as code ([Alchemy](https://alchemy.run)) for real deployments |
 
+## Install the agent skill
+
+Install the `flat` skill globally with
+[Vercel's Skills CLI](https://www.skills.sh/):
+
+```sh
+npx skills add gshahbazian/flat --skill flat --global
+```
+
 ## Quickstart (local)
 
 ```sh
