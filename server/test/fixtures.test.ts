@@ -11,9 +11,11 @@ import { canonicalJson } from '../src/crypto'
 import {
   invalidCommentBody,
   invalidEmail,
+  invalidProjectDescription,
   invalidTicketBody,
   invalidTitle,
   MAX_COMMENT_BYTES,
+  MAX_PROJECT_DESCRIPTION_BYTES,
 } from '../src/validate'
 import {
   commentSchema,
@@ -148,5 +150,17 @@ describe('ticket body rule matches the Rust rule', () => {
     expect(invalidTicketBody('ordinary <!-- flat:comments --> text')).toBeNull()
     expect(invalidTicketBody('before\n<!-- flat:comments -->\nafter')).not.toBeNull()
     expect(invalidTicketBody('before\r\n<!-- flat:comments -->\r\nafter')).not.toBeNull()
+  })
+})
+
+describe('project description rule', () => {
+  test('bounds UTF-8 without requiring content', () => {
+    expect(invalidProjectDescription('')).toBeNull()
+    expect(invalidProjectDescription('a'.repeat(MAX_PROJECT_DESCRIPTION_BYTES))).toBeNull()
+    expect(invalidProjectDescription('a'.repeat(MAX_PROJECT_DESCRIPTION_BYTES + 1))).not.toBeNull()
+    expect(invalidProjectDescription('é'.repeat(MAX_PROJECT_DESCRIPTION_BYTES / 2))).toBeNull()
+    expect(
+      invalidProjectDescription('é'.repeat(MAX_PROJECT_DESCRIPTION_BYTES / 2 + 1))
+    ).not.toBeNull()
   })
 })

@@ -23,6 +23,8 @@ Cloudflare Worker and Durable Object that host the ticket backend.
 
 - `POST /sync` — mutations up, ticket/project/comment deltas and deletion
   tombstones down, one round trip.
+- `POST /mcp` — stateless Streamable HTTP MCP with seven authenticated work
+  tools; `GET`, `DELETE`, and `OPTIONS` are not supported.
 - `GET /snapshot` — bootstrap: all work data and the seq
   watermark.
 - `POST /setup` — one-time tenant claim and first admin token.

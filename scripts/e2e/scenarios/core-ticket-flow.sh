@@ -138,6 +138,18 @@ accepted_search="$(
 )"
 grep -Fq "$ticket_key" <<<"$accepted_search" ||
   e2e_fail "search did not read the accepted server title"
+
+e2e_log "Exercising server-side MCP in both protocol eras"
+admin_token="$(jq -er '.token' "$admin_root/config.json")"
+(
+  cd "$FLAT_E2E_REPO_ROOT/server"
+  FLAT_E2E_SERVER_URL="$E2E_SERVER_URL" \
+    FLAT_E2E_ADMIN_TOKEN="$admin_token" \
+    FLAT_E2E_EXPECTED_KEY="$ticket_key" \
+    FLAT_E2E_EXPECTED_TITLE="Core E2E ticket" \
+    node scripts/mcp-e2e.mjs
+)
+
 printf 'Found the cause.\n\n- Added a regression test.\n' |
   FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" comment "$ticket_key" --stdin
 e2e_assert_line "$admin_ticket" "title: Admin local title"

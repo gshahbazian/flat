@@ -1,7 +1,6 @@
 # Server search
 
-Status: implemented for the server, HTTP API, and CLI. The server-side MCP tool
-remains planned in `007_server_mcp.md`.
+Status: implemented for the server, HTTP API, CLI, and server-side MCP.
 
 This document defines server search for Flat. It extends the search outline in
 `001_initial_system.md` and uses the authorization model in
@@ -23,9 +22,8 @@ The complete feature has three callers:
 - The `POST /search` HTTP API.
 - The server-side MCP `search_tickets` tool.
 
-The HTTP contract, result model, and query behavior are shared. The implemented
-phase ships the index, HTTP API, and CLI. Server-side MCP reuses that contract
-when `007_server_mcp.md` is implemented.
+The HTTP contract, result model, and query behavior are shared. Server-side MCP
+reuses that contract as specified by `007_server_mcp.md`.
 
 ## Settled decisions
 
@@ -385,7 +383,7 @@ Results remain summaries, so callers use the separate `get_ticket` tool from
 5. Add `POST /search`, route validation, authentication, and `work.search`
    authorization.
 6. Add `flat search`, human output, JSON output, and the Flat skill update.
-7. Add `search_tickets` when the server-side MCP endpoint ships.
+7. Add `search_tickets` to the server-side MCP endpoint.
 
 ## Acceptance criteria
 
@@ -420,5 +418,5 @@ following:
 - CLI success, empty results, JSON output, cursor output, and server failures
   have stable exit and output behavior.
 
-Server-side MCP acceptance tests reuse the same contract cases when the
-endpoint ships and prove that the tool reads accepted server state.
+Server-side MCP acceptance tests reuse the same contract cases and prove that
+the tool reads accepted server state.

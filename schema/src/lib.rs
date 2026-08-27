@@ -405,8 +405,9 @@ where
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mutation {
     /// Opaque unique idempotency key. CLI-generated values are ULIDs, while
-    /// trusted integrations may use a namespaced string. The server never
-    /// parses or orders mutations by this value.
+    /// trusted integrations may use a namespaced string. The `mcp:` prefix is
+    /// reserved for the server-side MCP adapter and rejected on `/sync`. The
+    /// server never orders mutations by this value.
     pub mutation_id: String,
     pub op: MutationOp,
     pub entity: Entity,

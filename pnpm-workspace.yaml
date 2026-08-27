@@ -2,6 +2,9 @@ packages:
   - server
   - infra
 allowBuilds:
+  core-js-pure: false
   esbuild: true
   sharp: false
   workerd: true
+minimumReleaseAgeExclude:
+  - agents@0.22.0

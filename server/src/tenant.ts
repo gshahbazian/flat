@@ -21,6 +21,27 @@ import {
   verifyGithubSignature,
 } from './github'
 import type { Env } from './index'
+import {
+  mcpGetTicket,
+  mcpListAssignableMembers,
+  mcpListProjects,
+  mcpSearchTickets,
+} from './mcp-read'
+import { mcpError, resolveMcpCorrelationId } from './mcp-response'
+import {
+  MCP_AUTH_PATH,
+  MCP_CORRELATION_HEADER,
+  MCP_TOOLS,
+  addCommentInputSchema,
+  createTicketInputSchema,
+  mcpToolPath,
+  updateTicketInputSchema,
+  type AddCommentInput,
+  type CreateTicketInput,
+  type McpToolName,
+  type UpdateTicketInput,
+  type WriteReceipt,
+} from './mcp-schema'
 import { runMigrations } from './migrations'
 import { may, roleCeiling, validTokenAccess, type Action, type Principal } from './policy'
 import {
@@ -71,6 +92,7 @@ import { SearchQueryError, searchTickets } from './search'
 import {
   emailSchema,
   invalidCommentBody,
+  invalidProjectDescription,
   invalidTicketBody,
   invalidTitle,
   projectKeySchema,
@@ -139,6 +161,26 @@ class PrincipalChangedError extends Error {
 }
 
 class DuplicateTokenNameError extends Error {}
+
+interface ApplyConflict extends MutationConflict {
+  code?: string
+  details?: Record<string, unknown>
+}
+
+const MCP_ACTIONS: Record<McpToolName, Action> = {
+  search_tickets: 'work.search',
+  get_ticket: 'work.read',
+  list_projects: 'work.read',
+  list_assignable_members: 'member.list',
+  create_ticket: 'ticket.create',
+  update_ticket: 'ticket.update',
+  add_comment: 'comment.create',
+}
+
+type McpWriteRequest =
+  | { tool: 'create_ticket'; input: CreateTicketInput }
+  | { tool: 'update_ticket'; input: UpdateTicketInput }
+  | { tool: 'add_comment'; input: AddCommentInput }
 
 interface TokenRow {
   id: string
@@ -310,6 +352,10 @@ function mutationReason(
     if (set.description !== undefined && typeof set.description !== 'string') {
       return 'set.description must be a string'
     }
+    if (typeof set.description === 'string') {
+      const reason = invalidProjectDescription(set.description)
+      if (reason) return reason
+    }
   }
   for (const field of ['owners_add', 'owners_remove'] as const) {
     const value = raw[field]
@@ -406,6 +452,10 @@ export class TenantDO extends DurableObject<Env> {
     const principal = await this.authenticate(request)
     if (principal instanceof Response) return principal
 
+    if (request.method === 'POST' && pathname === MCP_AUTH_PATH) {
+      return new Response(null, { status: 204 })
+    }
+
     try {
       return await this.handleAuthenticated(request, url, principal)
     } catch (error) {
@@ -422,6 +472,10 @@ export class TenantDO extends DurableObject<Env> {
     principal: Principal
   ): Promise<Response> {
     const { pathname } = url
+    const mcpTool = MCP_TOOLS.find((tool) => pathname === mcpToolPath(tool))
+    if (request.method === 'POST' && mcpTool !== undefined) {
+      return this.handleMcpTool(request, principal, mcpTool)
+    }
     if (request.method === 'POST' && pathname === '/sync') {
       return this.handleSync(request, principal)
     }
@@ -723,6 +777,10 @@ export class TenantDO extends DurableObject<Env> {
           reject('mutation_id is required')
           continue
         }
+        if (identity.mutation_id.startsWith('mcp:')) {
+          reject('reserved_mutation_id')
+          continue
+        }
         const authorized = mutationAuthorizationSchema.safeParse(record.data)
         if (!authorized.success) {
           reject('forbidden')
@@ -777,7 +835,11 @@ export class TenantDO extends DurableObject<Env> {
         const mutation = parsed.data
         const outcome = this.apply(mutation, currentPrincipal)
         if ('reason' in outcome) {
-          conflicts.push(outcome)
+          conflicts.push({
+            mutation_id: outcome.mutation_id,
+            entity_id: outcome.entity_id,
+            reason: outcome.reason,
+          })
           continue
         }
         const stored = JSON.stringify(outcome)
@@ -819,6 +881,320 @@ export class TenantDO extends DurableObject<Env> {
       latest_seq: this.latestSeq(),
     }
     return Response.json(response)
+  }
+
+  private async handleMcpTool(
+    request: Request,
+    principal: Principal,
+    tool: McpToolName
+  ): Promise<Response> {
+    const action = MCP_ACTIONS[tool]
+    if (!may(principal, action)) {
+      return mcpError(
+        403,
+        'authorization',
+        'forbidden',
+        `The current credential does not permit ${action}.`
+      )
+    }
+
+    const rawBody = await requestObject(request)
+    const currentPrincipal = this.requireCurrentPrincipal(principal, action)
+    if (!rawBody) {
+      return mcpError(422, 'validation', 'invalid_arguments', 'Tool input must be an object.')
+    }
+
+    if (tool === 'search_tickets') return mcpSearchTickets(this.sql, rawBody, currentPrincipal)
+    if (tool === 'get_ticket') return mcpGetTicket(this.sql, rawBody, this.latestSeq())
+    if (tool === 'list_projects') return mcpListProjects(this.sql, rawBody)
+    if (tool === 'list_assignable_members') return mcpListAssignableMembers(this.sql, rawBody)
+    const correlationId = resolveMcpCorrelationId(request.headers.get(MCP_CORRELATION_HEADER))
+    return this.mcpWrite(rawBody, currentPrincipal, tool, correlationId)
+  }
+
+  private async mcpWrite(
+    rawBody: Record<string, unknown>,
+    principal: Principal,
+    tool: McpToolName,
+    correlationId: string
+  ): Promise<Response> {
+    let write: McpWriteRequest
+    if (tool === 'create_ticket') {
+      const parsed = createTicketInputSchema.safeParse(rawBody)
+      if (!parsed.success) {
+        return mcpError(422, 'validation', 'invalid_arguments', 'Invalid ticket creation request.')
+      }
+      write = { tool, input: parsed.data }
+    } else if (tool === 'update_ticket') {
+      const parsed = updateTicketInputSchema.safeParse(rawBody)
+      if (!parsed.success) {
+        return mcpError(422, 'validation', 'invalid_arguments', 'Invalid ticket update request.')
+      }
+      write = { tool, input: parsed.data }
+    } else if (tool === 'add_comment') {
+      const parsed = addCommentInputSchema.safeParse(rawBody)
+      if (!parsed.success) {
+        return mcpError(422, 'validation', 'invalid_arguments', 'Invalid comment request.')
+      }
+      write = { tool, input: parsed.data }
+    } else {
+      return mcpError(404, 'not_found', 'tool_not_found', 'Tool was not found.')
+    }
+
+    const action = MCP_ACTIONS[write.tool]
+    const mutationId = `mcp:${write.tool}:${write.input.idempotency_key}`
+    if (new TextEncoder().encode(mutationId).byteLength > 192) {
+      return mcpError(422, 'validation', 'invalid_idempotency_key', 'Idempotency key is too long.')
+    }
+    const inputHash = await canonicalSha256({ tool: write.tool, input: write.input })
+    let result: Response | WriteReceipt | null = null
+
+    try {
+      this.ctx.storage.transactionSync(() => {
+        const currentPrincipal = this.requireCurrentPrincipal(principal, action)
+        const prior = this.sql
+          .exec<{
+            actor_member_id: string | null
+            mutation_hash: string | null
+            stored_result: string
+          }>(
+            `SELECT actor_member_id, mutation_hash, COALESCE(stored_result, result) AS stored_result
+             FROM applied_mutations WHERE mutation_id = ?`,
+            mutationId
+          )
+          .toArray()[0]
+        if (prior) {
+          if (
+            prior.actor_member_id !== currentPrincipal.memberId ||
+            prior.mutation_hash !== inputHash
+          ) {
+            result = mcpError(
+              409,
+              'conflict',
+              'idempotency_key_reused',
+              'Idempotency key was already used for another request.'
+            )
+            return
+          }
+          const storedJson = parseJson(prior.stored_result)
+          if (!storedJson.success) {
+            result = this.mcpInternalError(correlationId)
+            return
+          }
+          const stored = appliedMutationSchema.safeParse(storedJson.data)
+          if (!stored.success) {
+            result = this.mcpInternalError(correlationId)
+            return
+          }
+          result = {
+            key: stored.data.key,
+            entity_id: stored.data.entity_id,
+            seq: stored.data.seq,
+            replayed: true,
+          }
+          return
+        }
+
+        let mutation: Mutation | null = null
+        if (write.tool === 'create_ticket') {
+          const created = this.mcpCreateMutation(mutationId, write.input)
+          if (created instanceof Response) {
+            result = created
+            return
+          }
+          mutation = created
+        } else if (write.tool === 'update_ticket') {
+          const update = write.input
+          const ticket = this.sql
+            .exec<{ id: string }>('SELECT id FROM tickets WHERE key = ?', update.key)
+            .toArray()[0]
+          if (!ticket) {
+            result = mcpError(404, 'not_found', 'ticket_not_found', 'Ticket was not found.')
+            return
+          }
+          const set = this.mcpTicketSet(update.set, correlationId)
+          if (set instanceof Response) {
+            result = set
+            return
+          }
+          mutation = {
+            mutation_id: mutationId,
+            entity: Entity.Ticket,
+            op: MutationOp.Update,
+            entity_id: ticket.id,
+            base_seq: update.base_seq,
+            set,
+          }
+        } else {
+          const comment = write.input
+          const ticket = this.sql
+            .exec<{ id: string }>('SELECT id FROM tickets WHERE key = ?', comment.key)
+            .toArray()[0]
+          if (!ticket) {
+            result = mcpError(404, 'not_found', 'ticket_not_found', 'Ticket was not found.')
+            return
+          }
+          mutation = {
+            mutation_id: mutationId,
+            entity: Entity.Comment,
+            op: MutationOp.Create,
+            entity_id: newUlid(),
+            set: { ticket: ticket.id, body: comment.body },
+          }
+        }
+
+        const outcome = this.apply(mutation, currentPrincipal)
+        if ('reason' in outcome) {
+          result = this.mcpApplyError(outcome, correlationId)
+          return
+        }
+        const stored = JSON.stringify(outcome)
+        this.sql.exec(
+          `INSERT INTO applied_mutations
+           (mutation_id, result, actor_member_id, actor_token_id, mutation_hash, stored_result)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          mutationId,
+          stored,
+          currentPrincipal.memberId,
+          currentPrincipal.tokenId,
+          inputHash,
+          stored
+        )
+        this.audit(
+          outcome.seq,
+          action,
+          currentPrincipal,
+          currentPrincipal.tokenKind,
+          mutation.entity,
+          outcome.entity_id,
+          { mutation_id: mutationId, seq: outcome.seq }
+        )
+        result = {
+          key: outcome.key,
+          entity_id: outcome.entity_id,
+          seq: outcome.seq,
+          replayed: false,
+        }
+      })
+    } catch (error) {
+      if (error instanceof PrincipalChangedError) {
+        if (error.code === 'invalid_token') {
+          return mcpError(
+            401,
+            'authentication',
+            'invalid_token',
+            'The current credential is no longer valid.'
+          )
+        }
+        return mcpError(403, 'authorization', 'forbidden', 'The operation is not permitted.')
+      }
+      throw error
+    }
+
+    const finalResult = result as Response | WriteReceipt | null
+    if (finalResult === null) return this.mcpInternalError(correlationId)
+    if (finalResult instanceof Response) return finalResult
+    return Response.json(finalResult)
+  }
+
+  private mcpCreateMutation(mutationId: string, input: CreateTicketInput): Mutation | Response {
+    const project = this.sql
+      .exec<{ id: string }>('SELECT id FROM projects WHERE key = ?', input.project)
+      .toArray()[0]
+    if (!project) {
+      return mcpError(404, 'not_found', 'project_not_found', 'Project was not found.')
+    }
+    let assignee: string | null = null
+    if (input.assignee !== null) {
+      const member = this.memberByEmail(input.assignee)
+      if (!member || member.status !== MemberStatus.Active) {
+        return mcpError(
+          422,
+          'validation',
+          'invalid_assignee',
+          'Assignee must be an active member email.',
+          false,
+          { field: 'assignee' }
+        )
+      }
+      assignee = member.id
+    }
+    return {
+      mutation_id: mutationId,
+      entity: Entity.Ticket,
+      op: MutationOp.Create,
+      entity_id: newUlid(),
+      set: {
+        project: project.id,
+        title: input.title,
+        body: input.body,
+        status: input.status,
+        priority: input.priority,
+        assignee,
+      },
+    }
+  }
+
+  private mcpTicketSet(
+    input: UpdateTicketInput['set'],
+    correlationId: string
+  ): Mutation['set'] | Response {
+    const set: Mutation['set'] = {}
+    if (input.title !== undefined) set.title = input.title
+    if (input.body !== undefined) set.body = input.body
+    if (input.status !== undefined) set.status = input.status
+    if (input.priority !== undefined) set.priority = input.priority
+    if (Object.hasOwn(input, 'assignee')) {
+      if (input.assignee === null) {
+        set.assignee = null
+      } else {
+        if (input.assignee === undefined) return this.mcpInternalError(correlationId)
+        const member = this.memberByEmail(input.assignee)
+        if (!member || member.status !== MemberStatus.Active) {
+          return mcpError(
+            422,
+            'validation',
+            'invalid_assignee',
+            'Assignee must be an active member email.',
+            false,
+            { field: 'assignee' }
+          )
+        }
+        set.assignee = member.id
+      }
+    }
+    return set
+  }
+
+  private mcpApplyError(conflict: ApplyConflict, correlationId: string): Response {
+    if (conflict.code === 'ticket_conflict') {
+      return mcpError(
+        409,
+        'conflict',
+        'ticket_conflict',
+        'Ticket fields changed since the supplied base_seq.',
+        true,
+        conflict.details
+      )
+    }
+    if (conflict.code === 'invalid_base_seq') {
+      return mcpError(
+        422,
+        'validation',
+        'invalid_base_seq',
+        'base_seq is ahead of the current ticket sequence.',
+        false,
+        conflict.details
+      )
+    }
+    console.error(`mcp apply rejected unexpectedly correlation_id=${correlationId}`)
+    return this.mcpInternalError(correlationId)
+  }
+
+  private mcpInternalError(correlationId: string): Response {
+    return mcpError(500, 'internal', 'internal_error', 'The tool failed unexpectedly.', true, {
+      correlation_id: correlationId,
+    })
   }
 
   private handleSnapshot(principal: Principal): Response {
@@ -920,7 +1296,7 @@ export class TenantDO extends DurableObject<Env> {
     return 'project.delete'
   }
 
-  private apply(mutation: Mutation, principal: Principal): AppliedMutation | MutationConflict {
+  private apply(mutation: Mutation, principal: Principal): AppliedMutation | ApplyConflict {
     if (mutation.entity === Entity.Project) return this.applyProject(mutation, principal)
     if (mutation.entity === Entity.Comment) return this.applyComment(mutation, principal)
     return this.applyTicket(mutation)
@@ -989,11 +1365,17 @@ export class TenantDO extends DurableObject<Env> {
     }
   }
 
-  private applyTicket(mutation: Mutation): AppliedMutation | MutationConflict {
-    const reject = (reason: string): MutationConflict => ({
+  private applyTicket(mutation: Mutation): AppliedMutation | ApplyConflict {
+    const reject = (
+      reason: string,
+      code?: string,
+      details?: Record<string, unknown>
+    ): ApplyConflict => ({
       mutation_id: mutation.mutation_id,
       entity_id: mutation.entity_id,
       reason,
+      ...(code !== undefined && { code }),
+      ...(details !== undefined && { details }),
     })
     const parsedSet = mutation.set
     const setsAssignee = Object.hasOwn(parsedSet, 'assignee')
@@ -1083,7 +1465,11 @@ export class TenantDO extends DurableObject<Env> {
     const { key, seq: currentSeq, updated_at: currentUpdatedAt } = rows[0]
     if (mutation.base_seq === undefined) return reject(`${mutation.op} requires a valid base_seq`)
     if (mutation.base_seq > currentSeq) {
-      return reject(`base_seq ${mutation.base_seq} is ahead of the ticket (seq ${currentSeq})`)
+      return reject(
+        `base_seq ${mutation.base_seq} is ahead of the ticket (seq ${currentSeq})`,
+        'invalid_base_seq',
+        { current_seq: currentSeq }
+      )
     }
     if (mutation.op === MutationOp.Delete) {
       const seq = this.nextSeq()
@@ -1132,7 +1518,9 @@ export class TenantDO extends DurableObject<Env> {
       const conflicting = conflictingFields(parsedSet, serverSets)
       if (conflicting.length > 0) {
         return reject(
-          `conflicting edits to ${conflicting.join(', ')} (ticket is at seq ${currentSeq}): run \`flat sync --merge\``
+          `conflicting edits to ${conflicting.join(', ')} (ticket is at seq ${currentSeq}): run \`flat sync --merge\``,
+          'ticket_conflict',
+          { fields: conflicting, current_seq: currentSeq }
         )
       }
     }

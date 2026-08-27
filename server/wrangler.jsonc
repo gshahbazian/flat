@@ -3,7 +3,8 @@
 {
   "name": "flat-server",
   "main": "src/index.ts",
-  "compatibility_date": "2025-10-01",
+  "compatibility_date": "2026-01-28",
+  "compatibility_flags": ["nodejs_compat"],
   "durable_objects": {
     "bindings": [{ "name": "TENANT", "class_name": "TenantDO" }]
   },

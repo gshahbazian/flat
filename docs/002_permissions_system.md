@@ -5,8 +5,8 @@ supersedes its bootstrap and member-enrollment details.
 
 Implementation note: the current milestone covers tenant setup, enrollment,
 token/member administration, audit, projects, authorization for the HTTP
-ticket-sync surface, comments, and server-side search. WebSocket/watch,
-server-side MCP, labels, force push, native keychain storage, and the
+ticket-sync surface, comments, server-side search, and server-side MCP.
+WebSocket/watch, labels, force push, native keychain storage, and the
 operator-recovery deployment procedure remain deferred slices of this accepted
 design.
 
@@ -120,8 +120,8 @@ audit records retain valid attribution.
 The effective member who creates a project becomes its first project owner.
 This rule also applies when an agent token creates the project. Project owners
 may change the project's display name, description, and owner list. Project
-keys remain immutable. Project owners cannot delete projects unless they are
-also tenant admins.
+descriptions may contain at most 256 KiB of UTF-8. Project keys remain immutable.
+Project owners cannot delete projects unless they are also tenant admins.
 
 Setup creates the default `DEMO` project and makes the claiming admin its
 first owner.
@@ -1090,8 +1090,8 @@ agent tokens away from tenant administration.
 5. Implement invitation, cancellation, recovery, access upgrade, token
    lifecycle, and their CLI commands.
 6. Add server-derived attribution and audit records to every mutation path.
-7. Keep the implemented policy enforcement on search and add it to WebSockets
-   and server-side MCP. Add expiry, revocation, and key-removal handling for
+7. Keep the implemented policy enforcement on search and server-side MCP, and
+   add it to WebSockets. Add expiry, revocation, and key-removal handling for
    every continued-use path.
 8. Add bulk invitation import and the operator recovery procedure.
 

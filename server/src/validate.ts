@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
 export const MAX_COMMENT_BYTES = 1024 * 1024
+export const MAX_PROJECT_DESCRIPTION_BYTES = 256 * 1024
 export const COMMENT_SENTINEL = '<!-- flat:comments -->'
 
 // Mirrors `flat_schema::validate_title` (schema/src/lib.rs): non-empty,
@@ -53,6 +54,18 @@ export function invalidTicketBody(body: string): string | null {
   }
   return null
 }
+
+export function invalidProjectDescription(description: string): string | null {
+  if (new TextEncoder().encode(description).byteLength > MAX_PROJECT_DESCRIPTION_BYTES) {
+    return `project description exceeds the ${MAX_PROJECT_DESCRIPTION_BYTES}-byte limit`
+  }
+  return null
+}
+
+export const projectDescriptionSchema = z.string().superRefine((description, context) => {
+  const reason = invalidProjectDescription(description)
+  if (reason) context.addIssue({ code: 'custom', message: reason })
+})
 
 const ASCII_TRIM = /^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g
 
