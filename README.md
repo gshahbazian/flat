@@ -152,8 +152,8 @@ ALCHEMY_PASSWORD='<state-passphrase>' pnpm recover -- --stage prod
 
 Omit `--stage prod` if the deployment uses Alchemy's default stage. Add
 `--profile <profile>` when the normal deployment uses one. The command prompts
-for the Flat server URL and active admin email. It generates and prints a
-one-time operator code, deploys only its HMAC verifier, calls the recovery
+for the Flat server URL and active admin email. It generates a one-time
+operator credential, deploys only its HMAC verifier, calls the recovery
 endpoint, prints the 15-minute recovery code once, and deploys again with the
 operator verifier removed. Neither credential is accepted as a command-line
 argument.

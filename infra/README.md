@@ -30,7 +30,7 @@ ALCHEMY_PASSWORD='<state-passphrase>' pnpm recover -- --stage prod
 ```
 
 The command prompts for the deployed HTTPS URL and an existing active admin
-email. It prints a generated one-time operator code, installs only its HMAC
+email. It generates a one-time operator credential, installs only its HMAC
 verifier, creates a 15-minute recovery enrollment, prints that recovery code
 once, and removes the verifier in a second deployment. It always attempts the
 cleanup deployment, including when installation or the recovery request fails.

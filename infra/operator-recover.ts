@@ -152,7 +152,6 @@ async function main(): Promise<void> {
   const { server, email } = await recoveryInputs()
   const credential = `flat_oprec_${randomBytes(32).toString('base64url')}`
 
-  process.stdout.write(`One-time operator code: ${credential}\n`)
   process.stdout.write('Installing the one-time operator verifier...\n')
 
   let operationError: unknown
