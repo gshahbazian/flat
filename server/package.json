@@ -9,12 +9,15 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260823.1",
+    "@modelcontextprotocol/client": "2.0.0",
     "@types/node": "^24",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
     "wrangler": "^4.48.0"
   },
   "dependencies": {
+    "@modelcontextprotocol/server": "2.0.0",
+    "agents": "0.22.0",
     "zod": "^4.4.3"
   }
 }

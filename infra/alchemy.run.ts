@@ -39,7 +39,8 @@ const tenant = DurableObjectNamespace('tenant', {
 export const server = await Worker('server', {
   name: 'flat-server',
   entrypoint: '../server/src/index.ts',
-  compatibilityDate: '2025-10-01',
+  compatibilityDate: '2026-01-28',
+  compatibilityFlags: ['nodejs_compat'],
   url: true,
   bindings: {
     TENANT: tenant,

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest'
 
-import { isRoute } from '../src/routing'
+import { isMcpPath, isRoute } from '../src/routing'
 
 describe('Worker route matching', () => {
   test('exposes only the exact GitHub delivery path', () => {
@@ -18,5 +18,11 @@ describe('Worker route matching', () => {
     expect(isRoute('POST', '/search')).toBe(true)
     expect(isRoute('GET', '/search')).toBe(false)
     expect(isRoute('POST', '/search/extra')).toBe(false)
+  })
+
+  test('matches only the exact MCP pathname outside the ordinary allowlist', () => {
+    expect(isMcpPath('/mcp')).toBe(true)
+    expect(isMcpPath('/mcp/extra')).toBe(false)
+    expect(isRoute('POST', '/mcp')).toBe(false)
   })
 })

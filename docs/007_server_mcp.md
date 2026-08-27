@@ -1,6 +1,6 @@
 # Server-side MCP
 
-Status: accepted design, planned and not implemented.
+Status: implemented.
 
 This document defines Flat's only Model Context Protocol implementation. It
 extends the system design in `001_initial_system.md`, the authorization model

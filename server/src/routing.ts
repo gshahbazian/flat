@@ -23,6 +23,10 @@ const ROUTES = new Set([
   'GET /audit',
 ])
 
+export function isMcpPath(pathname: string): boolean {
+  return pathname === '/mcp'
+}
+
 export function isRoute(method: string, pathname: string): boolean {
   return ROUTES.has(`${method} ${pathname}`)
 }

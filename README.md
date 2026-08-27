@@ -6,15 +6,23 @@ markdown files that agents grep, edit, and push back. See
 
 Current implemented slice: projects and ownership, multi-project mirrors,
 ticket fields, append-only comments, server-side search with a CLI client,
-per-member permissions for the HTTP ticket-sync and administration surfaces,
-and GitHub PR webhooks. Comments retain server-derived human or agent
-attribution and render directly in ticket files. A deployment is claimed once,
-admins invite members, and each installation or agent has a distinct
-credential.
+server-side MCP, per-member permissions for the HTTP ticket-sync and
+administration surfaces, and GitHub PR webhooks. Comments retain server-derived
+human or agent attribution and render directly in ticket files. A deployment
+is claimed once, admins invite members, and each installation or agent has a
+distinct credential.
 
 The broader accepted design is not complete yet. WebSocket/watch sessions,
-server-side MCP, labels, force pushes, native OS-keychain storage, and the
-operator-recovery deployment runbook remain explicit follow-up work.
+labels, force pushes, native OS-keychain storage, and the operator-recovery
+deployment runbook remain explicit follow-up work.
+
+## MCP
+
+Process MCP clients connect to `https://<flat-host>/mcp` with a Flat human or
+agent bearer token in the `Authorization` header. The stateless endpoint
+exposes ticket search and reads, project and assignee discovery, ticket create
+and update, and comment creation. It always reads accepted server state, so
+unpushed Markdown mirror edits are intentionally absent.
 
 ## Layout
 
