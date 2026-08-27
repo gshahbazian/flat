@@ -95,6 +95,10 @@ The default localhost and `workers.dev` Host allowlists are sufficient for the
 initial deployment. A custom hostname must set exact `allowedHostnames` in
 both `server/wrangler.jsonc` and `infra/alchemy.run.ts`. Host validation is
 not authentication.
+The Worker applies the same default Host and Origin checks before reading the
+body or probing authentication, and the SDK handler repeats them during
+protocol dispatch. A rejected browser-origin request therefore cannot update a
+token's `last_used_at` timestamp.
 
 All production traffic requires HTTPS. Bearer values are supplied as an
 `Authorization` header, never in a URL. Operators issue Flat human or agent
@@ -116,7 +120,7 @@ idempotency, and audit attribution.
 MCP client
   |  POST /mcp + Authorization: Bearer flat_pat_...
   v
-Worker exact route + bounded protocol parser
+Worker exact route + Host/Origin checks + bounded protocol parser
   |  bearer-only authentication preflight
   v
 Tenant Durable Object
@@ -131,13 +135,14 @@ Tenant Durable Object tool executor
 Worker MCP result adapter -> client
 ```
 
-For every `POST /mcp` request, before the SDK handles `initialize`,
-`tools/list`, or `tools/call`, the Worker sends a bearer-only authentication
-probe to the tenant Durable Object. `GET` and `DELETE` return 405 first and
-never probe. The probe returns only success or the existing Flat error; it
-does not return a principal that the Worker may trust later. This ensures
-setup state, expiry, revocation, suspension, and verifier-key removal also
-govern protocol discovery.
+For every `POST /mcp` request, the Worker rejects an invalid Host or Origin
+before reading the body or authenticating. Before the SDK then handles
+`initialize`, `tools/list`, or `tools/call`, the Worker sends a bearer-only
+authentication probe to the tenant Durable Object. `GET` and `DELETE` return
+405 first and never probe. The probe returns only success or the existing Flat
+error; it does not return a principal that the Worker may trust later. This
+ensures setup state, expiry, revocation, suspension, and verifier-key removal
+also govern protocol discovery.
 
 Each tool callback sends its validated input and the original, unchanged
 `Authorization` value to a private, exact tenant-DO executor path. Those paths

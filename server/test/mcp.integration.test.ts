@@ -71,8 +71,40 @@ async function connectClient(
   return client
 }
 
+async function enroll(
+  worker: Unstable_DevWorker,
+  adminToken: string,
+  email: string,
+  role: 'member' | 'viewer'
+): Promise<{ id: string; token: string }> {
+  const invitation = await json<{ invitation_code: string }>(worker, '/members/invite', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${adminToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ email, role }),
+  })
+  const enrollment = await json<{ member: { id: string }; token: string }>(
+    worker,
+    '/enroll/invite',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        credential: invitation.body.invitation_code,
+        token_name: `${role}-cli`,
+      }),
+    }
+  )
+  return { id: enrollment.body.member.id, token: enrollment.body.token }
+}
+
 describe.sequential('server-side MCP', () => {
   let worker: Unstable_DevWorker
+  let adminToken: string
+  let primaryTicketKey: string
+  let primaryCreatedReceipt: Record<string, unknown>
 
   beforeAll(async () => {
     worker = await unstable_dev('src/index.ts', {
@@ -116,7 +148,7 @@ describe.sequential('server-side MCP', () => {
     expect(beforeSetup.body).toEqual({ error: 'setup_required' })
   })
 
-  test('serves all seven tools in both pinned protocol eras and applies write semantics', async () => {
+  test('authenticates and validates requests before protocol dispatch', async () => {
     const setup = await json<{ token: string }>(worker, '/setup', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -128,6 +160,16 @@ describe.sequential('server-side MCP', () => {
       }),
     })
     expect(setup.response.status).toBe(200)
+    adminToken = setup.body.token
+
+    const originProbe = await json<{ token: string; metadata: { id: string } }>(worker, '/tokens', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name: 'origin-probe', kind: 'human', access: 'admin' }),
+    })
 
     const missingToken = await json<{ error: string }>(worker, '/mcp', {
       method: 'POST',
@@ -140,14 +182,14 @@ describe.sequential('server-side MCP', () => {
 
     const wrongMediaType = await worker.fetch('http://flat.test/mcp', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${setup.body.token}`, 'Content-Type': 'text/plain' },
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'text/plain' },
       body: '{}',
     })
     expect(wrongMediaType.status).toBe(415)
     const oversized = await worker.fetch('http://flat.test/mcp', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${setup.body.token}`,
+        Authorization: `Bearer ${adminToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify('x'.repeat(2 * 1024 * 1024)),
@@ -156,15 +198,25 @@ describe.sequential('server-side MCP', () => {
     const invalidOrigin = await worker.fetch('http://flat.test/mcp', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${setup.body.token}`,
+        Authorization: `Bearer ${originProbe.body.token}`,
         'Content-Type': 'application/json',
         Origin: 'https://evil.example',
       },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     })
     expect(invalidOrigin.status).toBe(403)
+    const tokens = await json<{
+      tokens: Array<{ id: string; last_used_at: string | null }>
+    }>(worker, '/tokens?all=1', {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    })
+    expect(
+      tokens.body.tokens.find((token) => token.id === originProbe.body.metadata.id)?.last_used_at
+    ).toBeNull()
+  })
 
-    const legacy = await connectClient(worker, setup.body.token, 'legacy')
+  test('executes reads and writes through the legacy protocol era', async () => {
+    const legacy = await connectClient(worker, adminToken, 'legacy')
     const legacyTools = await legacy.listTools()
     expect(legacyTools.tools.map((tool) => tool.name).toSorted()).toEqual(TOOL_NAMES)
 
@@ -184,6 +236,14 @@ describe.sequential('server-side MCP', () => {
     expect(projects.content).toEqual([
       { type: 'text', text: JSON.stringify(projects.structuredContent) },
     ])
+    const members = await legacy.callTool({
+      name: 'list_assignable_members',
+      arguments: { query: 'admin@' },
+    })
+    expect(members.structuredContent).toEqual({
+      members: [expect.objectContaining({ email: 'admin@example.com', role: 'admin' })],
+      next_cursor: null,
+    })
 
     const created = await legacy.callTool({
       name: 'create_ticket',
@@ -198,6 +258,8 @@ describe.sequential('server-side MCP', () => {
       expect.objectContaining({ key: 'DEMO-1', replayed: false })
     )
     const createdReceipt = created.structuredContent as Record<string, unknown>
+    primaryCreatedReceipt = createdReceipt
+    primaryTicketKey = String(createdReceipt.key)
     const replayed = await legacy.callTool({
       name: 'create_ticket',
       arguments: {
@@ -273,6 +335,32 @@ describe.sequential('server-side MCP', () => {
         details: { fields: ['status'], current_seq: expect.any(Number) },
       },
     })
+    const disjoint = await legacy.callTool({
+      name: 'update_ticket',
+      arguments: {
+        idempotency_key: 'integration-disjoint',
+        key: 'DEMO-1',
+        base_seq: ticketSeq,
+        set: { assignee: 'admin@example.com' },
+      },
+    })
+    expect(disjoint.isError).not.toBe(true)
+    const disjointReceipt = disjoint.structuredContent as { seq: number }
+    const cleared = await legacy.callTool({
+      name: 'update_ticket',
+      arguments: {
+        idempotency_key: 'integration-clear-assignee',
+        key: 'DEMO-1',
+        base_seq: disjointReceipt.seq,
+        set: { assignee: null },
+      },
+    })
+    expect(cleared.isError).not.toBe(true)
+    await legacy.close()
+  })
+
+  test('paginates comments at a stable watermark and supports filters-only search', async () => {
+    const legacy = await connectClient(worker, adminToken, 'legacy')
     const commented = await legacy.callTool({
       name: 'add_comment',
       arguments: {
@@ -343,27 +431,257 @@ describe.sequential('server-side MCP', () => {
     expect(search.structuredContent).toEqual(
       expect.objectContaining({ results: [expect.objectContaining({ key: 'DEMO-1' })] })
     )
+    const filtersOnly = await legacy.callTool({
+      name: 'search_tickets',
+      arguments: { query: 'status:in_progress' },
+    })
+    expect(filtersOnly.structuredContent).toEqual(
+      expect.objectContaining({ results: [expect.objectContaining({ key: 'DEMO-1' })] })
+    )
     await legacy.close()
+  })
 
-    const modern = await connectClient(worker, setup.body.token, 'modern')
+  test('allows an authorized replacement token to replay the original receipt', async () => {
+    const replacement = await json<{ token: string; metadata: { id: string } }>(worker, '/tokens', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name: 'replacement', kind: 'human', access: 'admin' }),
+    })
+    const replacementClient = await connectClient(worker, replacement.body.token, 'legacy')
+    const replacementReplay = await replacementClient.callTool({
+      name: 'create_ticket',
+      arguments: {
+        idempotency_key: 'integration-create',
+        project: 'DEMO',
+        title: 'Created through MCP',
+      },
+    })
+    expect(replacementReplay.structuredContent).toEqual({
+      ...primaryCreatedReceipt,
+      replayed: true,
+    })
+    await json(worker, '/tokens/revoke', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ token_id: replacement.body.metadata.id }),
+    })
+    await expect(
+      replacementClient.callTool({
+        name: 'create_ticket',
+        arguments: {
+          idempotency_key: 'integration-create',
+          project: 'DEMO',
+          title: 'Created through MCP',
+        },
+      })
+    ).rejects.toThrow(/invalid_token/)
+    await replacementClient.close()
+  })
+
+  test('calls all seven tools through the modern protocol era', async () => {
+    const modern = await connectClient(worker, adminToken, 'modern')
     const modernTools = await modern.listTools()
     expect(modernTools.tools.map((tool) => tool.name).toSorted()).toEqual(TOOL_NAMES)
-    const read = await modern.callTool({ name: 'get_ticket', arguments: { key: 'DEMO-1' } })
-    expect(read.structuredContent).toEqual(
-      expect.objectContaining({
-        ticket: expect.objectContaining({ status: 'in_progress' }),
-        comments: expect.arrayContaining([
-          expect.objectContaining({ body: 'Comment through MCP' }),
-          expect.objectContaining({ body: 'Concurrent comment' }),
-        ]),
-      })
+    await modern.callTool({ name: 'list_projects', arguments: {} })
+    await modern.callTool({ name: 'list_assignable_members', arguments: {} })
+    const modernCreated = await modern.callTool({
+      name: 'create_ticket',
+      arguments: {
+        idempotency_key: 'modern-create',
+        project: 'DEMO',
+        title: 'Modern protocol ticket',
+      },
+    })
+    const modernKey = (modernCreated.structuredContent as { key: string }).key
+    const modernRead = await modern.callTool({ name: 'get_ticket', arguments: { key: modernKey } })
+    const modernSeq = (modernRead.structuredContent as { ticket: { seq: number } }).ticket.seq
+    await modern.callTool({
+      name: 'update_ticket',
+      arguments: {
+        idempotency_key: 'modern-update',
+        key: modernKey,
+        base_seq: modernSeq,
+        set: { priority: 'high' },
+      },
+    })
+    await modern.callTool({
+      name: 'add_comment',
+      arguments: {
+        idempotency_key: 'modern-comment',
+        key: modernKey,
+        body: 'Modern protocol comment',
+      },
+    })
+    const modernSearch = await modern.callTool({
+      name: 'search_tickets',
+      arguments: { query: 'modern protocol ticket' },
+    })
+    expect(modernSearch.structuredContent).toEqual(
+      expect.objectContaining({ results: [expect.objectContaining({ key: modernKey })] })
     )
     await modern.close()
+  })
+
+  test('returns a bounded error when one complete result cannot fit', async () => {
+    const snapshot = await json<{ latest_seq: number }>(worker, '/snapshot', {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    })
+    const oversizedBody = 'x'.repeat(2 * 1024 * 1024 + 1)
+    const created = await json<{ applied: Array<{ key: string }> }>(worker, '/sync', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        protocol_version: 2,
+        last_seq: snapshot.body.latest_seq,
+        mutations: [
+          {
+            mutation_id: 'oversized-result-ticket',
+            entity: 'ticket',
+            op: 'create',
+            entity_id: '01KMRESULTTOOLARGETICKET01',
+            set: {
+              project: '00000000000000000000000000',
+              title: 'Oversized result',
+              body: oversizedBody,
+            },
+          },
+        ],
+      }),
+    })
+    const client = await connectClient(worker, adminToken, 'legacy')
+    const result = await client.callTool({
+      name: 'get_ticket',
+      arguments: { key: created.body.applied[0].key },
+    })
+    expect(result.isError).toBe(true)
+    expect(result.structuredContent).toEqual(
+      expect.objectContaining({ error: expect.objectContaining({ code: 'result_too_large' }) })
+    )
+    expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(
+      16 * 1024
+    )
+    await client.close()
+  })
+
+  test('enforces permissions and reserves the MCP mutation namespace', async () => {
+    const member = await enroll(worker, adminToken, 'member@example.com', 'member')
+    const selfAgent = await json<{ token: string }>(worker, '/tokens', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${member.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name: 'self-agent', kind: 'agent', access: 'write' }),
+    })
+    const delegatedAgent = await json<{ token: string }>(worker, '/tokens', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'delegated-agent',
+        kind: 'agent',
+        access: 'write',
+        for_email: 'member@example.com',
+      }),
+    })
+
+    const memberClient = await connectClient(worker, member.token, 'legacy')
+    const selfAgentClient = await connectClient(worker, selfAgent.body.token, 'legacy')
+    const delegatedAgentClient = await connectClient(worker, delegatedAgent.body.token, 'legacy')
+    await memberClient.callTool({
+      name: 'add_comment',
+      arguments: {
+        idempotency_key: 'member-human-comment',
+        key: primaryTicketKey,
+        body: 'Member human comment',
+      },
+    })
+    await selfAgentClient.callTool({
+      name: 'add_comment',
+      arguments: {
+        idempotency_key: 'self-agent-comment',
+        key: primaryTicketKey,
+        body: 'Self agent comment',
+      },
+    })
+    await delegatedAgentClient.callTool({
+      name: 'add_comment',
+      arguments: {
+        idempotency_key: 'delegated-agent-comment',
+        key: primaryTicketKey,
+        body: 'Delegated agent comment',
+      },
+    })
+    await memberClient.close()
+    await selfAgentClient.close()
+    await delegatedAgentClient.close()
+
+    const admin = await connectClient(worker, adminToken, 'legacy')
+    const attributed = await admin.callTool({
+      name: 'get_ticket',
+      arguments: { key: primaryTicketKey },
+    })
+    const comments = (
+      attributed.structuredContent as {
+        comments: Array<{
+          body: string
+          author: {
+            kind: string
+            member: { email: string }
+            agent_name: string | null
+            delegated_by: { email: string } | null
+          }
+        }>
+      }
+    ).comments
+    expect(comments).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          body: 'Member human comment',
+          author: expect.objectContaining({
+            kind: 'human',
+            member: expect.objectContaining({ email: 'member@example.com' }),
+            agent_name: null,
+            delegated_by: null,
+          }),
+        }),
+        expect.objectContaining({
+          body: 'Self agent comment',
+          author: expect.objectContaining({
+            kind: 'agent',
+            member: expect.objectContaining({ email: 'member@example.com' }),
+            agent_name: 'self-agent',
+            delegated_by: null,
+          }),
+        }),
+        expect.objectContaining({
+          body: 'Delegated agent comment',
+          author: expect.objectContaining({
+            kind: 'agent',
+            member: expect.objectContaining({ email: 'member@example.com' }),
+            agent_name: 'delegated-agent',
+            delegated_by: expect.objectContaining({ email: 'admin@example.com' }),
+          }),
+        }),
+      ])
+    )
+    await admin.close()
 
     const invitation = await json<{ invitation_code: string }>(worker, '/members/invite', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${setup.body.token}`,
+        Authorization: `Bearer ${adminToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ email: 'viewer@example.com', role: 'viewer' }),
@@ -398,7 +716,7 @@ describe.sequential('server-side MCP', () => {
     }>(worker, '/sync', {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${setup.body.token}`,
+        Authorization: `Bearer ${adminToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({

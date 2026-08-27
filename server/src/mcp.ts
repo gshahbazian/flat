@@ -1,9 +1,18 @@
-import { McpServer, type CallToolResult } from '@modelcontextprotocol/server'
+import {
+  McpServer,
+  hostHeaderValidationResponse,
+  localhostAllowedHostnames,
+  localhostAllowedOrigins,
+  originValidationResponse,
+  type CallToolResult,
+} from '@modelcontextprotocol/server'
 import { createMcpHandler } from 'agents/mcp/server'
 
 import type { Env } from './index'
+import { mcpLogLine } from './mcp-log'
 import {
   MCP_AUTH_PATH,
+  MCP_CORRELATION_HEADER,
   MCP_MAX_REQUEST_BYTES,
   MCP_PATH,
   addCommentInputSchema,
@@ -14,6 +23,7 @@ import {
   listAssignableMembersOutputSchema,
   listProjectsInputSchema,
   listProjectsOutputSchema,
+  mcpErrorResultFits,
   mcpErrorBodySchema,
   mcpResultFits,
   mcpToolPath,
@@ -71,22 +81,6 @@ function requestWithBody(request: Request, body: ArrayBuffer): Request {
   })
 }
 
-function mcpOperation(body: ArrayBuffer): string {
-  try {
-    const value: unknown = JSON.parse(new TextDecoder().decode(body))
-    if (!value || typeof value !== 'object') return 'unknown'
-    const message = value as { method?: unknown; params?: unknown }
-    if (typeof message.method !== 'string') return 'unknown'
-    if (message.method !== 'tools/call') return message.method
-    if (!message.params || typeof message.params !== 'object') return message.method
-    const name = (message.params as { name?: unknown }).name
-    if (typeof name !== 'string') return message.method
-    return name
-  } catch {
-    return 'malformed'
-  }
-}
-
 async function jsonBody(response: Response): Promise<unknown> {
   try {
     return await response.json()
@@ -95,7 +89,7 @@ async function jsonBody(response: Response): Promise<unknown> {
   }
 }
 
-function errorResult(error: McpErrorBody): CallToolResult {
+function rawErrorResult(error: McpErrorBody): CallToolResult {
   return {
     isError: true,
     content: [{ type: 'text', text: JSON.stringify(error) }],
@@ -103,8 +97,11 @@ function errorResult(error: McpErrorBody): CallToolResult {
   }
 }
 
-function internalError(correlationId: string): CallToolResult {
-  return errorResult({
+function errorResult(error: McpErrorBody, correlationId: string): CallToolResult {
+  if (mcpErrorResultFits(error)) return rawErrorResult(error)
+
+  console.error('mcp error result exceeded size limit')
+  return rawErrorResult({
     error: {
       category: 'internal',
       code: 'internal_error',
@@ -113,6 +110,21 @@ function internalError(correlationId: string): CallToolResult {
       details: { correlation_id: correlationId },
     },
   })
+}
+
+function internalError(correlationId: string): CallToolResult {
+  return errorResult(
+    {
+      error: {
+        category: 'internal',
+        code: 'internal_error',
+        message: 'The tool failed unexpectedly.',
+        retryable: true,
+        details: { correlation_id: correlationId },
+      },
+    },
+    correlationId
+  )
 }
 
 async function executeTool(
@@ -128,59 +140,71 @@ async function executeTool(
       headers: {
         Authorization: authorization,
         'Content-Type': JSON_CONTENT_TYPE,
-        'X-Flat-Correlation-Id': correlationId,
+        [MCP_CORRELATION_HEADER]: correlationId,
       },
       body: JSON.stringify(input),
     })
     const body = await jsonBody(response)
     if (!response.ok) {
       const parsedError = mcpErrorBodySchema.safeParse(body)
-      if (parsedError.success) return errorResult(parsedError.data)
+      if (parsedError.success) return errorResult(parsedError.data, correlationId)
       if (response.status === 401) {
-        return errorResult({
-          error: {
-            category: 'authentication',
-            code: 'invalid_token',
-            message: 'The current credential is no longer valid.',
-            retryable: false,
+        return errorResult(
+          {
+            error: {
+              category: 'authentication',
+              code: 'invalid_token',
+              message: 'The current credential is no longer valid.',
+              retryable: false,
+            },
           },
-        })
+          correlationId
+        )
       }
       if (response.status === 403) {
-        return errorResult({
-          error: {
-            category: 'authorization',
-            code: 'forbidden',
-            message: 'The operation is not permitted.',
-            retryable: false,
+        return errorResult(
+          {
+            error: {
+              category: 'authorization',
+              code: 'forbidden',
+              message: 'The operation is not permitted.',
+              retryable: false,
+            },
           },
-        })
+          correlationId
+        )
       }
       return internalError(correlationId)
     }
     if (!mcpResultFits(body)) {
-      return errorResult({
-        error: {
-          category: 'validation',
-          code: 'result_too_large',
-          message: 'The complete result is too large to return.',
-          retryable: false,
+      return errorResult(
+        {
+          error: {
+            category: 'validation',
+            code: 'result_too_large',
+            message: 'The complete result is too large to return.',
+            retryable: false,
+          },
         },
-      })
+        correlationId
+      )
     }
 
-    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    if (!isJsonObject(body)) {
       return internalError(correlationId)
     }
-    const structuredContent = Object.fromEntries(Object.entries(body))
     return {
-      content: [{ type: 'text', text: JSON.stringify(structuredContent) }],
-      structuredContent,
+      content: [{ type: 'text', text: JSON.stringify(body) }],
+      structuredContent: body,
     }
   } catch {
     console.error(`mcp executor failed correlation_id=${correlationId}`)
     return internalError(correlationId)
   }
+}
+
+function isJsonObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 function createServer(
@@ -206,7 +230,7 @@ function createServer(
     'search_tickets',
     {
       description:
-        'Search accepted server ticket state with work.search permission. Local mirror edits are excluded; results are summaries, so use get_ticket for full content.',
+        'Search accepted server ticket state with work.search permission. Local mirror edits are excluded. To list without full text, pass a filters-only query such as status:todo,in_progress or project:AUTH; an empty query is invalid. Results are summaries, so use get_ticket for full content.',
       inputSchema: searchTicketsInputSchema,
       outputSchema: searchTicketsOutputSchema,
       annotations: readAnnotations,
@@ -313,6 +337,9 @@ export async function handleMcpRequest(
   env: Env,
   ctx: ExecutionContext
 ): Promise<Response> {
+  const headerRejection = mcpHeaderRejection(request)
+  if (headerRejection) return headerRejection
+
   const contentType = request.headers.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase()
   if (contentType !== JSON_CONTENT_TYPE) return httpError(415, 'unsupported_media_type')
 
@@ -321,14 +348,13 @@ export async function handleMcpRequest(
 
   const stub = env.TENANT.get(env.TENANT.idFromName('tenant'))
   const authorization = request.headers.get('Authorization') ?? ''
+  const correlationId = crypto.randomUUID()
   const preflight = await stub.fetch(`https://tenant.invalid${MCP_AUTH_PATH}`, {
     method: 'POST',
-    headers: { Authorization: authorization },
+    headers: { Authorization: authorization, [MCP_CORRELATION_HEADER]: correlationId },
   })
   if (!preflight.ok) return authenticationResponse(preflight)
 
-  const correlationId = crypto.randomUUID()
-  const operation = mcpOperation(body)
   const startedAt = performance.now()
   const handler = createMcpHandler(() => createServer(stub, authorization, correlationId), {
     route: MCP_PATH,
@@ -341,7 +367,27 @@ export async function handleMcpRequest(
   response.headers.delete('Mcp-Session-Id')
   const responseBytes = (await response.clone().arrayBuffer()).byteLength
   console.log(
-    `mcp correlation_id=${correlationId} operation=${operation} status=${response.status} duration_ms=${Math.round(performance.now() - startedAt)} request_bytes=${body.byteLength} response_bytes=${responseBytes}`
+    mcpLogLine(correlationId, body, response.status, performance.now() - startedAt, responseBytes)
   )
   return response
+}
+
+function mcpHeaderRejection(request: Request): Response | undefined {
+  const requestUrl = new URL(request.url)
+  const localHostnames = localhostAllowedHostnames()
+  const localEndpoint = localHostnames.includes(requestUrl.hostname)
+  const workersDevEndpoint = requestUrl.hostname.endsWith('.workers.dev')
+
+  let allowedHostnames: string[] | undefined
+  if (localEndpoint) allowedHostnames = localHostnames
+  if (workersDevEndpoint) allowedHostnames = [requestUrl.hostname]
+
+  if (allowedHostnames !== undefined) {
+    const hostRejection = hostHeaderValidationResponse(request, allowedHostnames)
+    if (hostRejection) return hostRejection
+  }
+
+  const allowedOriginHostnames = new Set(localhostAllowedOrigins())
+  if (workersDevEndpoint) allowedOriginHostnames.add(requestUrl.hostname)
+  return originValidationResponse(request, [...allowedOriginHostnames])
 }

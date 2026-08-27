@@ -7,6 +7,7 @@ import {
   encodeMcpCursor,
   getTicketInputSchema,
   listAssignableMembersInputSchema,
+  mcpErrorResultFits,
   updateTicketInputSchema,
 } from '../src/mcp-schema'
 
@@ -75,5 +76,28 @@ describe('MCP tool schemas', () => {
     const value = { kind: 'members', query: 'gábe', last_email: 'gabe@example.com' }
     expect(decodeMcpCursor(encodeMcpCursor(value))).toEqual(value)
     expect(decodeMcpCursor('%%%')).toBeNull()
+  })
+
+  test('enforces the serialized error-result limit', () => {
+    expect(
+      mcpErrorResultFits({
+        error: {
+          category: 'validation',
+          code: 'invalid_arguments',
+          message: 'Invalid request.',
+          retryable: false,
+        },
+      })
+    ).toBe(true)
+    expect(
+      mcpErrorResultFits({
+        error: {
+          category: 'validation',
+          code: 'invalid_arguments',
+          message: 'x'.repeat(16 * 1024),
+          retryable: false,
+        },
+      })
+    ).toBe(false)
   })
 })

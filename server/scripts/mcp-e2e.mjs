@@ -125,6 +125,18 @@ const updated = receipt(
   })
 )
 assert(updated.replayed === false, 'MCP update unexpectedly replayed')
+const updateReplay = receipt(
+  await legacy.callTool({
+    name: 'update_ticket',
+    arguments: {
+      idempotency_key: 'black-box-update',
+      key: created.key,
+      base_seq: read.ticket.seq,
+      set: { status: 'in_review' },
+    },
+  })
+)
+assert(updateReplay.replayed === true && updateReplay.seq === updated.seq, 'MCP update replay changed receipt')
 const commented = receipt(
   await legacy.callTool({
     name: 'add_comment',
@@ -136,6 +148,20 @@ const commented = receipt(
   })
 )
 assert(commented.key === created.key, 'MCP comment receipt used the wrong parent key')
+const commentReplay = receipt(
+  await legacy.callTool({
+    name: 'add_comment',
+    arguments: {
+      idempotency_key: 'black-box-comment',
+      key: created.key,
+      body: 'Black-box MCP comment',
+    },
+  })
+)
+assert(
+  commentReplay.replayed === true && commentReplay.seq === commented.seq,
+  'MCP comment replay changed receipt'
+)
 const searched = receipt(
   await legacy.callTool({ name: 'search_tickets', arguments: { query: 'black-box mcp comment' } })
 )
@@ -148,10 +174,52 @@ await legacy.close()
 const modern = await connect(adminToken, 'modern')
 const modernTools = await modern.listTools()
 assert(modernTools.tools.length === 7, 'modern tool discovery did not return seven tools')
-const modernRead = receipt(
-  await modern.callTool({ name: 'get_ticket', arguments: { key: created.key } })
+receipt(await modern.callTool({ name: 'list_projects', arguments: {} }))
+receipt(await modern.callTool({ name: 'list_assignable_members', arguments: {} }))
+const modernCreated = receipt(
+  await modern.callTool({
+    name: 'create_ticket',
+    arguments: {
+      idempotency_key: 'black-box-modern-create',
+      project: 'DEMO',
+      title: 'Modern MCP black-box ticket',
+    },
+  })
 )
-assert(modernRead.comments[0].body === 'Black-box MCP comment', 'modern MCP read missed comment')
+const modernRead = receipt(
+  await modern.callTool({ name: 'get_ticket', arguments: { key: modernCreated.key } })
+)
+receipt(
+  await modern.callTool({
+    name: 'update_ticket',
+    arguments: {
+      idempotency_key: 'black-box-modern-update',
+      key: modernCreated.key,
+      base_seq: modernRead.ticket.seq,
+      set: { priority: 'high' },
+    },
+  })
+)
+receipt(
+  await modern.callTool({
+    name: 'add_comment',
+    arguments: {
+      idempotency_key: 'black-box-modern-comment',
+      key: modernCreated.key,
+      body: 'Modern MCP black-box comment',
+    },
+  })
+)
+const modernSearch = receipt(
+  await modern.callTool({
+    name: 'search_tickets',
+    arguments: { query: 'modern mcp black-box ticket' },
+  })
+)
+assert(
+  modernSearch.results.some((ticket) => ticket.key === modernCreated.key),
+  'modern MCP search missed its ticket'
+)
 await modern.close()
 
 const invitation = await api('/members/invite', adminToken, {

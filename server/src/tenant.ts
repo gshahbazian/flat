@@ -22,26 +22,22 @@ import {
 } from './github'
 import type { Env } from './index'
 import {
+  mcpGetTicket,
+  mcpListAssignableMembers,
+  mcpListProjects,
+  mcpSearchTickets,
+} from './mcp-read'
+import { mcpError, resolveMcpCorrelationId } from './mcp-response'
+import {
   MCP_AUTH_PATH,
+  MCP_CORRELATION_HEADER,
   MCP_TOOLS,
   addCommentInputSchema,
   createTicketInputSchema,
-  decodeMcpCursor,
-  encodeMcpCursor,
-  getTicketInputSchema,
-  listAssignableMembersInputSchema,
-  listProjectsInputSchema,
-  mcpResultFits,
   mcpToolPath,
-  searchTicketsInputSchema,
   updateTicketInputSchema,
   type AddCommentInput,
   type CreateTicketInput,
-  type GetTicketOutput,
-  type ListAssignableMembersOutput,
-  type ListProjectsOutput,
-  type McpErrorCategory,
-  type McpErrorDetail,
   type McpToolName,
   type UpdateTicketInput,
   type WriteReceipt,
@@ -170,6 +166,16 @@ interface ApplyConflict extends MutationConflict {
   details?: Record<string, unknown>
 }
 
+const MCP_ACTIONS: Record<McpToolName, Action> = {
+  search_tickets: 'work.search',
+  get_ticket: 'work.read',
+  list_projects: 'work.read',
+  list_assignable_members: 'member.list',
+  create_ticket: 'ticket.create',
+  update_ticket: 'ticket.update',
+  add_comment: 'comment.create',
+}
+
 type McpWriteRequest =
   | { tool: 'create_ticket'; input: CreateTicketInput }
   | { tool: 'update_ticket'; input: UpdateTicketInput }
@@ -229,19 +235,6 @@ interface PreparedCredential {
 
 function jsonError(status: number, code: string): Response {
   return Response.json({ error: code }, { status })
-}
-
-function mcpError(
-  status: number,
-  category: McpErrorCategory,
-  code: string,
-  message: string,
-  retryable = false,
-  details?: Record<string, unknown>
-): Response {
-  const error: McpErrorDetail = { category, code, message, retryable }
-  if (details !== undefined) error.details = details
-  return Response.json({ error }, { status })
 }
 
 function searchError(error: SearchQueryError): Response {
@@ -890,310 +883,35 @@ export class TenantDO extends DurableObject<Env> {
     principal: Principal,
     tool: McpToolName
   ): Promise<Response> {
-    const actions: Record<McpToolName, Action> = {
-      search_tickets: 'work.search',
-      get_ticket: 'work.read',
-      list_projects: 'work.read',
-      list_assignable_members: 'member.list',
-      create_ticket: 'ticket.create',
-      update_ticket: 'ticket.update',
-      add_comment: 'comment.create',
-    }
-    if (!may(principal, actions[tool])) {
+    const action = MCP_ACTIONS[tool]
+    if (!may(principal, action)) {
       return mcpError(
         403,
         'authorization',
         'forbidden',
-        `The current credential does not permit ${actions[tool]}.`
+        `The current credential does not permit ${action}.`
       )
     }
 
     const rawBody = await requestObject(request)
+    const currentPrincipal = this.requireCurrentPrincipal(principal, action)
     if (!rawBody) {
       return mcpError(422, 'validation', 'invalid_arguments', 'Tool input must be an object.')
     }
 
-    if (tool === 'search_tickets') return this.mcpSearchTickets(rawBody, principal)
-    if (tool === 'get_ticket') return this.mcpGetTicket(rawBody)
-    if (tool === 'list_projects') return this.mcpListProjects(rawBody)
-    if (tool === 'list_assignable_members') return this.mcpListAssignableMembers(rawBody)
-    return this.mcpWrite(rawBody, principal, tool)
-  }
-
-  private mcpSearchTickets(rawBody: Record<string, unknown>, principal: Principal): Response {
-    const parsed = searchTicketsInputSchema.safeParse(rawBody)
-    if (!parsed.success) {
-      return mcpError(422, 'validation', 'invalid_search_query', 'Invalid search request.')
-    }
-    try {
-      return Response.json(searchTickets(this.sql, parsed.data, principal.memberId))
-    } catch (error) {
-      if (error instanceof SearchQueryError) {
-        return mcpError(422, 'validation', error.code, error.message, false, {
-          offset: error.offset,
-        })
-      }
-      throw error
-    }
-  }
-
-  private mcpGetTicket(rawBody: Record<string, unknown>): Response {
-    const parsed = getTicketInputSchema.safeParse(rawBody)
-    if (!parsed.success) {
-      return mcpError(422, 'validation', 'invalid_arguments', 'Invalid ticket read request.')
-    }
-    const input = parsed.data
-    const ticket = this.sql
-      .exec<{
-        id: string
-        key: string
-        project_id: string
-        project_key: string
-        title: string
-        body: string
-        status: Status
-        priority: Priority
-        assignee_id: string | null
-        assignee_email: string | null
-        created_at: string
-        updated_at: string
-        seq: number
-      }>(
-        `SELECT t.id, t.key, p.id AS project_id, p.key AS project_key, t.title, t.body,
-                t.status, t.priority, m.id AS assignee_id, m.email AS assignee_email,
-                t.created_at, t.updated_at, t.seq
-         FROM tickets t JOIN projects p ON p.id = t.project
-         LEFT JOIN members m ON m.id = t.assignee WHERE t.key = ?`,
-        input.key
-      )
-      .toArray()[0]
-    if (!ticket) {
-      return mcpError(404, 'not_found', 'ticket_not_found', 'Ticket was not found.')
-    }
-
-    let watermark = this.latestSeq()
-    let lastSeq = -1
-    let lastId = ''
-    if (input.comment_cursor !== null) {
-      const cursor = this.mcpCursor(input.comment_cursor)
-      if (
-        cursor === null ||
-        cursor.kind !== 'comments' ||
-        cursor.ticket_id !== ticket.id ||
-        typeof cursor.watermark !== 'number' ||
-        !Number.isInteger(cursor.watermark) ||
-        cursor.watermark < 0 ||
-        typeof cursor.last_seq !== 'number' ||
-        !Number.isInteger(cursor.last_seq) ||
-        cursor.last_seq < 0 ||
-        typeof cursor.last_id !== 'string'
-      ) {
-        return mcpError(422, 'validation', 'invalid_cursor', 'Comment cursor is invalid.')
-      }
-      watermark = cursor.watermark
-      lastSeq = cursor.last_seq
-      lastId = cursor.last_id
-    }
-
-    const rows = this.sql
-      .exec<{
-        id: string
-        body: string
-        token_kind: TokenKind
-        agent_name: string | null
-        member_id: string
-        member_email: string
-        delegated_id: string | null
-        delegated_email: string | null
-        created_at: string
-        seq: number
-      }>(
-        `SELECT c.id, c.body, c.token_kind, c.agent_name, m.id AS member_id,
-                m.email AS member_email, d.id AS delegated_id, d.email AS delegated_email,
-                c.created_at, c.seq
-         FROM comments c JOIN members m ON m.id = c.member_id
-         LEFT JOIN members d ON d.id = c.delegating_member_id
-         WHERE c.ticket_id = ? AND c.seq <= ? AND (c.seq > ? OR (c.seq = ? AND c.id > ?))
-         ORDER BY c.seq, c.id LIMIT ?`,
-        ticket.id,
-        watermark,
-        lastSeq,
-        lastSeq,
-        lastId,
-        input.comment_limit + 1
-      )
-      .toArray()
-
-    const ticketOutput: GetTicketOutput['ticket'] = {
-      id: ticket.id,
-      key: ticket.key,
-      project: { id: ticket.project_id, key: ticket.project_key },
-      title: ticket.title,
-      body: ticket.body,
-      status: ticket.status,
-      priority: ticket.priority,
-      assignee:
-        ticket.assignee_id === null || ticket.assignee_email === null
-          ? null
-          : { id: ticket.assignee_id, email: ticket.assignee_email },
-      created_at: ticket.created_at,
-      updated_at: ticket.updated_at,
-      seq: ticket.seq,
-    }
-    const comments: GetTicketOutput['comments'] = []
-    const available = rows.slice(0, input.comment_limit)
-    for (const row of available) {
-      const comment: GetTicketOutput['comments'][number] = {
-        id: row.id,
-        body: row.body,
-        author: {
-          kind: row.token_kind,
-          member: { id: row.member_id, email: row.member_email },
-          agent_name: row.agent_name,
-          delegated_by:
-            row.delegated_id === null || row.delegated_email === null
-              ? null
-              : { id: row.delegated_id, email: row.delegated_email },
-        },
-        created_at: row.created_at,
-        seq: row.seq,
-      }
-      const hasMore = comments.length + 1 < rows.length
-      const nextCursor = hasMore
-        ? encodeMcpCursor({
-            kind: 'comments',
-            ticket_id: ticket.id,
-            watermark,
-            last_seq: row.seq,
-            last_id: row.id,
-          })
-        : null
-      const candidate: GetTicketOutput = {
-        ticket: ticketOutput,
-        comments: [...comments, comment],
-        comment_watermark: watermark,
-        next_comment_cursor: nextCursor,
-      }
-      if (!mcpResultFits(candidate)) {
-        if (comments.length === 0) {
-          return mcpError(
-            422,
-            'validation',
-            'result_too_large',
-            'The ticket or one complete comment is too large to return.'
-          )
-        }
-        break
-      }
-      comments.push(comment)
-    }
-
-    const hasMore = comments.length < rows.length
-    const finalComment = comments[comments.length - 1]
-    const nextCommentCursor =
-      hasMore && finalComment !== undefined
-        ? encodeMcpCursor({
-            kind: 'comments',
-            ticket_id: ticket.id,
-            watermark,
-            last_seq: finalComment.seq,
-            last_id: finalComment.id,
-          })
-        : null
-    const output: GetTicketOutput = {
-      ticket: ticketOutput,
-      comments,
-      comment_watermark: watermark,
-      next_comment_cursor: nextCommentCursor,
-    }
-    if (!mcpResultFits(output)) {
-      return mcpError(422, 'validation', 'result_too_large', 'The ticket is too large to return.')
-    }
-    return Response.json(output)
-  }
-
-  private mcpListProjects(rawBody: Record<string, unknown>): Response {
-    const parsed = listProjectsInputSchema.safeParse(rawBody)
-    if (!parsed.success) {
-      return mcpError(422, 'validation', 'invalid_arguments', 'Invalid project list request.')
-    }
-    let lastKey = ''
-    if (parsed.data.cursor !== null) {
-      const cursor = this.mcpCursor(parsed.data.cursor)
-      if (cursor === null || cursor.kind !== 'projects' || typeof cursor.last_key !== 'string') {
-        return mcpError(422, 'validation', 'invalid_cursor', 'Project cursor is invalid.')
-      }
-      lastKey = cursor.last_key
-    }
-    const rows = this.sql
-      .exec<{ id: string; key: string; display_name: string; description: string }>(
-        `SELECT id, key, display_name, description FROM projects
-         WHERE key > ? ORDER BY key LIMIT ?`,
-        lastKey,
-        parsed.data.limit + 1
-      )
-      .toArray()
-    const hasMore = rows.length > parsed.data.limit
-    if (hasMore) rows.pop()
-    const output: ListProjectsOutput = {
-      projects: rows,
-      next_cursor: hasMore
-        ? encodeMcpCursor({ kind: 'projects', last_key: rows[rows.length - 1].key })
-        : null,
-    }
-    return Response.json(output)
-  }
-
-  private mcpListAssignableMembers(rawBody: Record<string, unknown>): Response {
-    const parsed = listAssignableMembersInputSchema.safeParse(rawBody)
-    if (!parsed.success) {
-      return mcpError(422, 'validation', 'invalid_arguments', 'Invalid member list request.')
-    }
-    const { query } = parsed.data
-    let lastEmail = ''
-    if (parsed.data.cursor !== null) {
-      const cursor = this.mcpCursor(parsed.data.cursor)
-      if (
-        cursor === null ||
-        cursor.kind !== 'members' ||
-        cursor.query !== query ||
-        typeof cursor.last_email !== 'string'
-      ) {
-        return mcpError(422, 'validation', 'invalid_cursor', 'Member cursor is invalid.')
-      }
-      lastEmail = cursor.last_email
-    }
-    const rows = this.sql
-      .exec<{ id: string; email: string; role: Role }>(
-        `SELECT id, email, role FROM members
-         WHERE status = 'active' AND email > ? AND instr(lower(email), ?) > 0
-         ORDER BY email LIMIT ?`,
-        lastEmail,
-        query,
-        parsed.data.limit + 1
-      )
-      .toArray()
-    const hasMore = rows.length > parsed.data.limit
-    if (hasMore) rows.pop()
-    const output: ListAssignableMembersOutput = {
-      members: rows,
-      next_cursor: hasMore
-        ? encodeMcpCursor({ kind: 'members', query, last_email: rows[rows.length - 1].email })
-        : null,
-    }
-    return Response.json(output)
-  }
-
-  private mcpCursor(value: string): Record<string, unknown> | null {
-    const decoded = decodeMcpCursor(value)
-    const parsed = jsonObjectSchema.safeParse(decoded)
-    return parsed.success ? parsed.data : null
+    if (tool === 'search_tickets') return mcpSearchTickets(this.sql, rawBody, currentPrincipal)
+    if (tool === 'get_ticket') return mcpGetTicket(this.sql, rawBody, this.latestSeq())
+    if (tool === 'list_projects') return mcpListProjects(this.sql, rawBody)
+    if (tool === 'list_assignable_members') return mcpListAssignableMembers(this.sql, rawBody)
+    const correlationId = resolveMcpCorrelationId(request.headers.get(MCP_CORRELATION_HEADER))
+    return this.mcpWrite(rawBody, currentPrincipal, tool, correlationId)
   }
 
   private async mcpWrite(
     rawBody: Record<string, unknown>,
     principal: Principal,
-    tool: McpToolName
+    tool: McpToolName,
+    correlationId: string
   ): Promise<Response> {
     let write: McpWriteRequest
     if (tool === 'create_ticket') {
@@ -1218,9 +936,7 @@ export class TenantDO extends DurableObject<Env> {
       return mcpError(404, 'not_found', 'tool_not_found', 'Tool was not found.')
     }
 
-    let action: Action = 'comment.create'
-    if (write.tool === 'create_ticket') action = 'ticket.create'
-    if (write.tool === 'update_ticket') action = 'ticket.update'
+    const action = MCP_ACTIONS[write.tool]
     const mutationId = `mcp:${write.tool}:${write.input.idempotency_key}`
     if (new TextEncoder().encode(mutationId).byteLength > 192) {
       return mcpError(422, 'validation', 'invalid_idempotency_key', 'Idempotency key is too long.')
@@ -1257,12 +973,12 @@ export class TenantDO extends DurableObject<Env> {
           }
           const storedJson = parseJson(prior.stored_result)
           if (!storedJson.success) {
-            result = this.mcpInternalError()
+            result = this.mcpInternalError(correlationId)
             return
           }
           const stored = appliedMutationSchema.safeParse(storedJson.data)
           if (!stored.success) {
-            result = this.mcpInternalError()
+            result = this.mcpInternalError(correlationId)
             return
           }
           result = {
@@ -1291,7 +1007,7 @@ export class TenantDO extends DurableObject<Env> {
             result = mcpError(404, 'not_found', 'ticket_not_found', 'Ticket was not found.')
             return
           }
-          const set = this.mcpTicketSet(update.set)
+          const set = this.mcpTicketSet(update.set, correlationId)
           if (set instanceof Response) {
             result = set
             return
@@ -1324,7 +1040,7 @@ export class TenantDO extends DurableObject<Env> {
 
         const outcome = this.apply(mutation, currentPrincipal)
         if ('reason' in outcome) {
-          result = this.mcpApplyError(outcome)
+          result = this.mcpApplyError(outcome, correlationId)
           return
         }
         const stored = JSON.stringify(outcome)
@@ -1371,7 +1087,7 @@ export class TenantDO extends DurableObject<Env> {
     }
 
     const finalResult = result as Response | WriteReceipt | null
-    if (finalResult === null) return this.mcpInternalError()
+    if (finalResult === null) return this.mcpInternalError(correlationId)
     if (finalResult instanceof Response) return finalResult
     return Response.json(finalResult)
   }
@@ -1414,7 +1130,10 @@ export class TenantDO extends DurableObject<Env> {
     }
   }
 
-  private mcpTicketSet(input: UpdateTicketInput['set']): Mutation['set'] | Response {
+  private mcpTicketSet(
+    input: UpdateTicketInput['set'],
+    correlationId: string
+  ): Mutation['set'] | Response {
     const set: Mutation['set'] = {}
     if (input.title !== undefined) set.title = input.title
     if (input.body !== undefined) set.body = input.body
@@ -1424,7 +1143,7 @@ export class TenantDO extends DurableObject<Env> {
       if (input.assignee === null) {
         set.assignee = null
       } else {
-        if (input.assignee === undefined) return this.mcpInternalError()
+        if (input.assignee === undefined) return this.mcpInternalError(correlationId)
         const member = this.memberByEmail(input.assignee)
         if (!member || member.status !== MemberStatus.Active) {
           return mcpError(
@@ -1442,7 +1161,7 @@ export class TenantDO extends DurableObject<Env> {
     return set
   }
 
-  private mcpApplyError(conflict: ApplyConflict): Response {
+  private mcpApplyError(conflict: ApplyConflict, correlationId: string): Response {
     if (conflict.code === 'ticket_conflict') {
       return mcpError(
         409,
@@ -1463,12 +1182,13 @@ export class TenantDO extends DurableObject<Env> {
         conflict.details
       )
     }
-    return mcpError(422, 'validation', 'invalid_request', 'The write could not be applied.')
+    console.error(`mcp apply rejected unexpectedly correlation_id=${correlationId}`)
+    return this.mcpInternalError(correlationId)
   }
 
-  private mcpInternalError(): Response {
+  private mcpInternalError(correlationId: string): Response {
     return mcpError(500, 'internal', 'internal_error', 'The tool failed unexpectedly.', true, {
-      correlation_id: crypto.randomUUID(),
+      correlation_id: correlationId,
     })
   }
 
