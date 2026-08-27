@@ -778,10 +778,12 @@ discovers that one row still cannot safely distinguish those inputs, extend
 that table in the next numbered SQLite migration rather than creating a
 second idempotency system.
 
-The Rust CLI, `schema/src/lib.rs`, mirror store, and
-`skills/flat/SKILL.md` gain no MCP command or behavior. The skill already
-documents the CLI that exists today and therefore does not change for this
-documentation-only decision.
+The Rust CLI, mirror store, and `skills/flat/SKILL.md` gain no MCP command or
+behavior. The skill already documents the CLI that exists today and therefore
+does not change for this documentation-only decision. `schema/src/lib.rs` does
+not grow MCP request or result types. It does update the `mutation_id` comment
+for the reserved `mcp:` prefix, and `/sync` rejects that prefix with
+`reserved_mutation_id`.
 
 ## Tests
 
@@ -804,8 +806,10 @@ documentation-only decision.
 
 - Only exact allowed methods on `/mcp` reach the handler; suffixes and other
   methods fail as documented.
-- `POST` initializes, lists exactly seven tools, and calls each tool through
-  Streamable HTTP JSON responses.
+- Protocol tests pin both supported wire eras instead of using the client's
+  default. The 2025 era uses `initialize` / `tools/list` / `tools/call`.
+  `2026-07-28` uses that era's discovery and call flow. Each era lists exactly
+  seven tools and calls each tool through Streamable HTTP JSON responses.
 - `GET` and `DELETE` return 405 with `Allow: POST` without requiring a bearer
   token, including before setup. No session ID is ever returned.
 - `OPTIONS` returns 405. Responses include no CORS headers.
@@ -863,8 +867,9 @@ documentation-only decision.
 ### Black-box E2E
 
 Extend the real Wrangler scenario to connect the SDK v2 client to `/mcp` in
-both supported wire eras: once with its default 2025 initialization flow and
-once pinned to `2026-07-28`. Across those runs, use an admin token and a viewer
+both supported wire eras, pinning the protocol version on each run: the 2025
+initialize / `tools/list` / `tools/call` flow and `2026-07-28`. Do not rely on
+the client's default era. Across those runs, use an admin token and a viewer
 token; discover the seven tools, create a ticket after project/member
 discovery, search it, read it, update it with `base_seq`, add and read a
 comment, replay each write, and prove viewer writes fail. Edit the CLI mirror
@@ -880,8 +885,8 @@ adapter.
 1. Pin the compatible Agents SDK and MCP SDK v2 packages; add a protocol-only
    `/mcp` handler with `legacy: 'stateless'`, `corsOptions: false`, Host/Origin
    checks, body limits, path-first method handling, and non-POST 405 before
-   authentication. Prove both the default 2025 initialization flow and the
-   `2026-07-28` wire era with the SDK v2 client.
+   authentication. Prove both supported wire eras with the SDK v2 client by
+   pinning the protocol version on each run, not by using the client default.
 2. Add the tenant-DO authentication preflight and private executor routing,
    with authentication and lifecycle tests before registering tools.
 3. Add shared MCP result/error adapters, correlation IDs, safe logging, and
@@ -928,8 +933,8 @@ Server-side MCP is complete when:
 - Every tool enforces its documented action and viewers cannot write.
 - Administrative tools are absent.
 - Request, result, pagination, logging, and error behavior meet this document.
-- Unit, routing, permission, tenant integration, and real-Worker E2E tests pass
-  in both supported wire eras.
+- Unit, permission, and tenant integration tests pass. Routing/protocol tests
+  and real-Worker E2E pass in both supported wire eras.
 
 ## Explicitly out of scope
 
