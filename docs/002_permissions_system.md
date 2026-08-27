@@ -5,9 +5,10 @@ supersedes its bootstrap and member-enrollment details.
 
 Implementation note: the current milestone covers tenant setup, enrollment,
 token/member administration, audit, projects, authorization for the HTTP
-ticket-sync surface, and comments. WebSocket/watch, search, remote MCP, labels,
-force push, native keychain storage, and the operator-recovery deployment
-procedure remain deferred slices of this accepted design.
+ticket-sync surface, comments, and server-side search. WebSocket/watch,
+server-side MCP, labels, force push, native keychain storage, and the
+operator-recovery deployment procedure remain deferred slices of this accepted
+design.
 
 In particular:
 
@@ -754,7 +755,7 @@ The server checks permissions for:
 - Snapshot and delta reads.
 - WebSocket connection establishment and continued use.
 - Server-side search.
-- Remote MCP tool calls.
+- Server-side MCP tool calls.
 - Token and member administration.
 
 Local filesystem editing is not an authorization boundary. An unauthorized
@@ -780,8 +781,9 @@ matches. Reuse by another member or with a different mutation returns `409
 mutation_id_reused` without the original result. The server does not store
 rejected authorization attempts as applied mutations.
 
-The local stdio MCP may prepare writes offline, but the authenticated push is
-the final authorization check.
+Server-side MCP operations read and write the tenant Durable Object directly.
+The Durable Object authenticates and authorizes each operation before reading
+or changing accepted state; no local mirror or later push participates.
 
 Long-lived WebSocket sessions must not outlive token revocation or member
 suspension. The tenant DO closes affected sessions when membership or token
@@ -1084,8 +1086,9 @@ agent tokens away from tenant administration.
 5. Implement invitation, cancellation, recovery, access upgrade, token
    lifecycle, and their CLI commands.
 6. Add server-derived attribution and audit records to every mutation path.
-7. Enforce the same policy on search, WebSockets, and remote MCP. Add expiry,
-   revocation, and key-removal handling for live sessions.
+7. Keep the implemented policy enforcement on search and add it to WebSockets
+   and server-side MCP. Add expiry, revocation, and key-removal handling for
+   every continued-use path.
 8. Add bulk invitation import and the operator recovery procedure.
 
 ## Acceptance criteria
