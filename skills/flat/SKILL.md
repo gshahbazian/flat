@@ -21,6 +21,15 @@ checkout root; mirrored ticket files are grouped into project directories
 below it. Search and read the Markdown files there with ordinary filesystem
 tools such as `rg` and `cat`.
 
+Use `flat search 'QUERY'` when the user wants accepted server state rather than
+the local working copy. It searches ticket titles, descriptions, and comments,
+with filters such as `project:AUTH`, `status:todo,in_progress`,
+`priority:high`, `assignee:me`, and `updated:>=2026-08-01`. Add `--json` for the
+wire response, or `--sort updated|created`, `--limit N`, and `--cursor TOKEN`
+for explicit ordering and pagination. Server search does not sync first and
+does not include unpushed edits, manually created files, or conflict markers.
+Continue to use `rg` when local working-copy state is what matters.
+
 Each ticket is a Markdown file:
 
 ```markdown

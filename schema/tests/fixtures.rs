@@ -3,7 +3,8 @@
 //! renamed fields, wrong enum casing, and dropped fields on either side.
 
 use flat_schema::{
-    Comment, Mutation, Project, Snapshot, SyncRequest, SyncResponse, Ticket, TicketSet,
+    Comment, Mutation, Project, SearchErrorDetail, SearchRequest, SearchResponse, Snapshot,
+    SyncRequest, SyncResponse, Ticket, TicketSet,
 };
 use serde::{de::DeserializeOwned, Serialize};
 
@@ -64,6 +65,21 @@ fn sync_response() {
 #[test]
 fn snapshot() {
     roundtrip::<Snapshot>("snapshot");
+}
+
+#[test]
+fn search_request() {
+    roundtrip::<SearchRequest>("search_request");
+}
+
+#[test]
+fn search_response() {
+    roundtrip::<SearchResponse>("search_response");
+}
+
+#[test]
+fn search_error_detail() {
+    roundtrip::<SearchErrorDetail>("search_error_detail");
 }
 
 /// The title rule is implemented twice (Rust and server/src/validate.ts);

@@ -519,6 +519,77 @@ pub struct Snapshot {
     pub latest_seq: u32,
 }
 
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchSort {
+    Relevance,
+    Updated,
+    Created,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchRequest {
+    pub query: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort: Option<SearchSort>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[typeshare(serialized_as = "NullableString")]
+    pub cursor: Option<String>,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchMatchSource {
+    Key,
+    Ticket,
+    Comment,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchMatch {
+    pub source: SearchMatchSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment_id: Option<String>,
+    #[typeshare(serialized_as = "NullableString")]
+    pub excerpt: Option<String>,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchResult {
+    pub key: String,
+    pub title: String,
+    pub project: String,
+    pub status: Status,
+    pub priority: Priority,
+    #[typeshare(serialized_as = "NullableString")]
+    pub assignee: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub r#match: SearchMatch,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchResponse {
+    pub results: Vec<SearchResult>,
+    #[typeshare(serialized_as = "NullableString")]
+    pub next_cursor: Option<String>,
+}
+
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchErrorDetail {
+    pub error: String,
+    pub message: String,
+    pub offset: u32,
+}
+
 /// Token names are portable ASCII identifiers used in CLI and audit output.
 pub fn validate_token_name(name: &str) -> Result<(), String> {
     let bytes = name.as_bytes();

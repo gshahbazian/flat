@@ -1,0 +1,20 @@
+{
+  "results": [
+    {
+      "key": "AUTH-142",
+      "title": "Fix OAuth token refresh race",
+      "project": "AUTH",
+      "status": "in_progress",
+      "priority": "high",
+      "assignee": "gabe@acme.com",
+      "created_at": "2026-08-24T18:04:11.000Z",
+      "updated_at": "2026-08-26T09:22:41.000Z",
+      "match": {
+        "source": "comment",
+        "comment_id": "01K3ABCDEFGHJKMNPQRSTVWXYZ",
+        "excerpt": "...the refresh lock is per-process..."
+      }
+    }
+  ],
+  "next_cursor": "eyJ2IjoxfQ"
+}

@@ -6,6 +6,8 @@ import {
   MutationOp,
   Priority,
   Role,
+  SearchMatchSource,
+  SearchSort,
   Status,
   TokenKind,
   type AppliedMutation,
@@ -15,6 +17,9 @@ import {
   type MutationConflict,
   type Project,
   type ProjectTombstone,
+  type SearchErrorDetail,
+  type SearchRequest,
+  type SearchResponse,
   type Snapshot,
   type SyncRequest,
   type SyncResponse,
@@ -31,6 +36,8 @@ export const memberStatusSchema = z.enum(MemberStatus)
 export const mutationOpSchema = z.enum(MutationOp)
 export const statusSchema = z.enum(Status)
 export const prioritySchema = z.enum(Priority)
+export const searchSortSchema = z.enum(SearchSort)
+export const searchMatchSourceSchema = z.enum(SearchMatchSource)
 
 const optionalStringSchema = z.preprocess(
   (value) => (value === null ? undefined : value),
@@ -218,6 +225,52 @@ export const syncEnvelopeSchema = z.object({
   last_seq: sequenceSchema,
   mutations: z.array(z.unknown()),
 })
+
+export const searchRequestSchema = z
+  .object({
+    query: z.string(),
+    sort: searchSortSchema.optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    cursor: z.string().nullable().optional().default(null),
+  })
+  .strict() satisfies z.ZodType<SearchRequest>
+
+const searchMatchSchema = z
+  .object({
+    source: searchMatchSourceSchema,
+    comment_id: z.string().optional(),
+    excerpt: z.string().nullable(),
+  })
+  .strict()
+
+const searchResultSchema = z
+  .object({
+    key: z.string(),
+    title: z.string(),
+    project: z.string(),
+    status: statusSchema,
+    priority: prioritySchema,
+    assignee: z.string().nullable(),
+    created_at: z.string(),
+    updated_at: z.string(),
+    match: searchMatchSchema,
+  })
+  .strict()
+
+export const searchResponseSchema = z
+  .object({
+    results: z.array(searchResultSchema),
+    next_cursor: z.string().nullable(),
+  })
+  .strict() satisfies z.ZodType<SearchResponse>
+
+export const searchErrorDetailSchema = z
+  .object({
+    error: z.string(),
+    message: z.string(),
+    offset: z.number().int().nonnegative(),
+  })
+  .strict() satisfies z.ZodType<SearchErrorDetail>
 
 export const syncRequestSchema = z.object({
   protocol_version: z.literal(2),

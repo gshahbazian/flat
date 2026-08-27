@@ -170,6 +170,17 @@ describe.sequential('comments', () => {
     expect(created.status).toBe(200)
     const ticket = created.body.deltas.find((candidate) => candidate.id === TICKET_ID)!
 
+    const titleSearch = await json<{
+      results: Array<{ key: string; match: { source: string } }>
+    }>(worker, '/search', authenticated(adminToken, { query: 'comment target' }))
+    expect(titleSearch.status).toBe(200)
+    expect(titleSearch.body.results).toEqual([
+      expect.objectContaining({
+        key: 'DEMO-1',
+        match: expect.objectContaining({ source: 'ticket' }),
+      }),
+    ])
+
     const selfAgent = await json<{ token: string }>(
       worker,
       '/tokens',
@@ -188,6 +199,28 @@ describe.sequential('comments', () => {
     )
     expect(delegatedAgent.status).toBe(200)
 
+    const authorizedSearches = await Promise.all(
+      [member.token, selfAgent.body.token, delegatedAgent.body.token].map((token) =>
+        json<{ results: Array<{ key: string }> }>(
+          worker,
+          '/search',
+          authenticated(token, { query: 'demo-1' })
+        )
+      )
+    )
+    for (const authorizedSearch of authorizedSearches) {
+      expect(authorizedSearch.status).toBe(200)
+      expect(authorizedSearch.body.results.map((result) => result.key)).toEqual(['DEMO-1'])
+    }
+
+    const invalidSearch = await json<{ error: string; offset: number }>(
+      worker,
+      '/search',
+      authenticated(adminToken, { query: 'é status:working' })
+    )
+    expect(invalidSearch.status).toBe(422)
+    expect(invalidSearch.body).toMatchObject({ error: 'invalid_search_query', offset: 10 })
+
     const humanMutation = commentMutation('comment-human', 'Human **Markdown**')
     const human = await sync(worker, member.token, created.body.latest_seq, [humanMutation])
     expect(human.status).toBe(200)
@@ -202,6 +235,20 @@ describe.sequential('comments', () => {
         token_kind: 'human',
         agent_name: null,
         delegating_member_id: null,
+      }),
+    ])
+
+    const commentSearch = await json<{
+      results: Array<{
+        key: string
+        match: { source: string; comment_id: string; excerpt: string }
+      }>
+    }>(worker, '/search', authenticated(viewer.token, { query: 'human markdown' }))
+    expect(commentSearch.status).toBe(200)
+    expect(commentSearch.body.results).toEqual([
+      expect.objectContaining({
+        key: 'DEMO-1',
+        match: expect.objectContaining({ source: 'comment', comment_id: 'comment-human' }),
       }),
     ])
 
@@ -317,5 +364,11 @@ describe.sequential('comments', () => {
       authenticated(adminToken)
     )
     expect(afterDelete.body.comments).toEqual([])
-  })
+    const afterDeleteSearch = await json<{ results: unknown[] }>(
+      worker,
+      '/search',
+      authenticated(adminToken, { query: 'human markdown' })
+    )
+    expect(afterDeleteSearch.body.results).toEqual([])
+  }, 30_000)
 })

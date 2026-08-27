@@ -1,7 +1,7 @@
-//! HTTP client for the two server endpoints.
+//! HTTP client for Flat server endpoints.
 
 use anyhow::{anyhow, Context, Result};
-use flat_schema::{Snapshot, SyncRequest, SyncResponse};
+use flat_schema::{SearchRequest, SearchResponse, Snapshot, SyncRequest, SyncResponse};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -37,6 +37,16 @@ impl Client {
             .set("Authorization", &format!("Bearer {}", self.token))
             .call();
         parse_response(response, "GET /snapshot")
+    }
+
+    pub fn search(&self, request: &SearchRequest) -> Result<SearchResponse> {
+        let response = self
+            .agent
+            .post(&format!("{}/search", self.server))
+            .set("Authorization", &format!("Bearer {}", self.token))
+            .set("Content-Type", "application/json")
+            .send_string(&serde_json::to_string(request)?);
+        parse_response(response, "POST /search")
     }
 
     pub fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T> {

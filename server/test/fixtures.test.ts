@@ -19,6 +19,9 @@ import {
   commentSchema,
   mutationSchema,
   projectSchema,
+  searchErrorDetailSchema,
+  searchRequestSchema,
+  searchResponseSchema,
   snapshotSchema,
   syncRequestSchema,
   syncResponseSchema,
@@ -66,6 +69,22 @@ describe('schema fixtures round-trip through the generated types', () => {
 
   test('snapshot', () => {
     expect(snapshotSchema.parse(fixture('snapshot'))).toEqual(fixture('snapshot'))
+  })
+
+  test('search request', () => {
+    expect(searchRequestSchema.parse(fixture('search_request'))).toEqual(fixture('search_request'))
+  })
+
+  test('search response', () => {
+    expect(searchResponseSchema.parse(fixture('search_response'))).toEqual(
+      fixture('search_response')
+    )
+  })
+
+  test('search error detail', () => {
+    expect(searchErrorDetailSchema.parse(fixture('search_error_detail'))).toEqual(
+      fixture('search_error_detail')
+    )
   })
 
   test('canonical mutation encoding', () => {

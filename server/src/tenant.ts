@@ -59,11 +59,14 @@ import {
   type MutationConflict,
   type Project,
   type ProjectTombstone,
+  type SearchErrorDetail,
+  type SearchRequest,
   type Snapshot,
   type SyncResponse,
   type Ticket,
   type TicketTombstone,
 } from './schema.gen'
+import { SearchQueryError, searchTickets } from './search'
 import {
   emailSchema,
   invalidCommentBody,
@@ -79,6 +82,7 @@ import {
   mutationIdentitySchema,
   mutationInputSchema,
   mutationRecordSchema,
+  searchRequestSchema,
   syncEnvelopeSchema,
 } from './wire-schema'
 
@@ -189,6 +193,15 @@ interface PreparedCredential {
 
 function jsonError(status: number, code: string): Response {
   return Response.json({ error: code }, { status })
+}
+
+function searchError(error: SearchQueryError): Response {
+  const body: SearchErrorDetail = {
+    error: error.code,
+    message: error.message,
+    offset: error.offset,
+  }
+  return Response.json(body, { status: 422 })
 }
 
 function emptyOk(): Response {
@@ -393,6 +406,9 @@ export class TenantDO extends DurableObject<Env> {
     }
     if (request.method === 'GET' && pathname === '/snapshot') {
       return this.handleSnapshot(principal)
+    }
+    if (request.method === 'POST' && pathname === '/search') {
+      return this.handleSearch(request, principal)
     }
     if (request.method === 'POST' && pathname === '/hooks/github/setup') {
       return this.handleGithubSetup(request, url, principal)
@@ -787,6 +803,38 @@ export class TenantDO extends DurableObject<Env> {
   private handleSnapshot(principal: Principal): Response {
     if (!may(principal, 'work.read')) return jsonError(403, 'forbidden')
     return Response.json(this.snapshot())
+  }
+
+  private async handleSearch(request: Request, principal: Principal): Promise<Response> {
+    if (!may(principal, 'work.search')) return jsonError(403, 'forbidden')
+    const rawBody = await requestObject(request)
+    if (!rawBody) return jsonError(400, 'invalid_json')
+    const parsed = searchRequestSchema.safeParse(rawBody)
+    if (!parsed.success) {
+      if (
+        Object.hasOwn(rawBody, 'cursor') &&
+        typeof rawBody.cursor !== 'string' &&
+        rawBody.cursor !== null
+      ) {
+        return searchError(
+          new SearchQueryError('invalid_search_cursor', 'cursor must be a string or null', 0)
+        )
+      }
+      return searchError(new SearchQueryError('invalid_search_query', 'invalid search request', 0))
+    }
+    const body: SearchRequest = {
+      query: parsed.data.query,
+      sort: parsed.data.sort,
+      limit: parsed.data.limit,
+      cursor: parsed.data.cursor ?? null,
+    }
+    try {
+      return Response.json(searchTickets(this.sql, body, principal.memberId))
+    } catch (error) {
+      if (error instanceof SearchQueryError) return searchError(error)
+      console.error('search unavailable', error instanceof Error ? error.name : 'unknown error')
+      return jsonError(500, 'search_unavailable')
+    }
   }
 
   private snapshot(): Snapshot {
