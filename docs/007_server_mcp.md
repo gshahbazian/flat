@@ -44,8 +44,8 @@ server-enforced.
 
 The exact public path is `/mcp`. The Worker owns that path and does not
 forward the MCP request body to the tenant Durable Object as a public HTTP
-route. The Worker allowlist recognizes `POST`, `GET`, and `DELETE` on that
-exact path. A suffix such as `/mcp/extra` is a 404.
+route. It matches the exact pathname before the ordinary method-plus-path
+route allowlist. A suffix such as `/mcp/extra` is a 404.
 
 `POST` carries protocol messages. Flat does not support server-pushed messages
 or transport sessions, so `GET` and `DELETE` return 405 with `Allow: POST`
@@ -67,10 +67,13 @@ keeping durable application data behind a Durable Object. Configure it with:
 }
 ```
 
-`legacy: 'stateless'` keeps the Streamable HTTP `initialize` / `tools/list` /
-`tools/call` flow that current process MCP clients use. It still issues no
-session ID and still returns 405 for `GET` and `DELETE`. `legacy: 'reject'`
-would speak only the 2026-07-28 dialect and would break those clients.
+`createMcpHandler()` is the modern SDK v2 stateless handler. Its
+`legacy: 'stateless'` option also accepts the established Streamable HTTP
+`initialize` / `tools/list` / `tools/call` flow that current process MCP
+clients use. This is a wire codec in the modern handler, not the SDK v1
+`createLegacyMcpHandler()` server: every request still gets a fresh server and
+transport, no session ID, and 405 for `GET` and `DELETE`. `legacy: 'reject'`
+would accept only the 2026-07-28 wire era.
 `responseMode: 'json'` is still the Streamable HTTP protocol path, but it
 avoids holding an event stream open when every v1 tool finishes in one
 request. `corsOptions: false` disables CORS headers. Flat issues no MCP
@@ -227,8 +230,8 @@ model must still see search hits, ticket bodies, comments, and discovery
 lists. Write receipts are small enough that the duplicated JSON is the receipt
 itself.
 
-The official MCP schema requires tool-originated failures to use
-`isError: true`; see the
+Flat reports every tool-originated failure with `isError: true`, following the
+MCP recommendation; see the
 [MCP tool-result schema](https://modelcontextprotocol.io/specification/2025-11-25/schema#calltoolresult).
 Failures return that flag, one safe text block, and the structured error
 object below. They do not have to match `outputSchema`.
@@ -250,8 +253,9 @@ Write results are receipts rather than mutable snapshots:
 
 `replayed` is `true` only when the server returned the stored result of the
 same accepted write. A caller that needs the resulting ticket body calls
-`get_ticket`. This keeps idempotent retries byte-for-byte stable even if the
-entity changed after the original write.
+`get_ticket`. The receipt's `key`, `entity_id`, and `seq` remain stable even if
+the entity changed after the original write; a successful replay differs only
+by setting `replayed` to `true`.
 
 ### `search_tickets`
 
@@ -579,8 +583,11 @@ mcp:<tool-name>:<idempotency_key>
 ```
 
 The complete namespaced value is limited to 192 ASCII bytes. The server
-reserves the `mcp:` mutation-ID namespace for this adapter. `/sync` and any
-other client mutation path reject a `mutation_id` that starts with `mcp:`.
+reserves the `mcp:` mutation-ID namespace for this adapter. `/sync` rejects a
+mutation whose `mutation_id` starts with `mcp:` as the per-mutation conflict
+`reserved_mutation_id`; other mutations in the same batch continue normally.
+No client mutation path may create an `applied_mutations` row in that
+namespace.
 
 Before applying a write, normalize defaulted values, uppercase keys, and
 normalize email; hash the canonical object `{tool, input}`. MCP
@@ -739,13 +746,16 @@ must not capture bodies or sensitive headers.
 Implementation changes remain inside the existing `server` Worker and tenant
 Durable Object:
 
-1. Add exact `POST`, `GET`, and `DELETE` `/mcp` methods to
-   `server/src/routing.ts`. Handle them in the Worker; do not `stub.fetch` the
-   MCP request into `TenantDO` the way other public routes are forwarded.
+1. Add an exact `/mcp` pathname matcher to `server/src/routing.ts`. In the
+   Worker, check it before the ordinary method-plus-path allowlist: dispatch
+   `POST` to the MCP handler and return 405 with `Allow: POST` for every other
+   method. Do not `stub.fetch` the MCP request into `TenantDO` the way other
+   public routes are forwarded.
 2. Add a TypeScript MCP transport/adapter module and private tenant-DO
    executors.
 3. Add `agents` and the compatible exact
-   `@modelcontextprotocol/server` v2 release to `server/package.json`; pin the
+   `@modelcontextprotocol/server` v2 release to `server/package.json`; add the
+   matching `@modelcontextprotocol/client` v2 package for tests. Pin the
    versions selected together and commit the lockfile. Keep the existing Zod
    dependency.
 4. Keep the existing `TENANT` binding and one `TenantDO`. Do not add another
@@ -762,10 +772,11 @@ Durable Object:
 
 The current `applied_mutations` columns are sufficient for MCP write receipts;
 no new persistence service is required. `/sync` must reject `mcp:` mutation
-IDs so MCP `{tool, input}` hashes cannot collide with sync envelope hashes. If
-implementation discovers that one row still cannot safely distinguish those
-inputs, extend that table in the next numbered SQLite migration rather than
-creating a second idempotency system.
+IDs with the per-mutation `reserved_mutation_id` conflict so MCP `{tool,
+input}` hashes cannot collide with sync envelope hashes. If implementation
+discovers that one row still cannot safely distinguish those inputs, extend
+that table in the next numbered SQLite migration rather than creating a
+second idempotency system.
 
 The Rust CLI, `schema/src/lib.rs`, mirror store, and
 `skills/flat/SKILL.md` gain no MCP command or behavior. The skill already
@@ -804,7 +815,8 @@ documentation-only decision.
   administrative tools.
 - Successful read and discovery results put the same JSON in `content` and
   `structuredContent`. `outputSchema` is the success payload only.
-- `/sync` rejects a `mutation_id` that starts with `mcp:`.
+- `/sync` reports `reserved_mutation_id` for a mutation ID that starts with
+  `mcp:` while applying other valid mutations in the batch.
 
 ### Authentication and permission tests
 
@@ -841,21 +853,23 @@ documentation-only decision.
   human/agent/delegated attribution.
 - Every accepted write records one mutation, sequence, idempotency receipt,
   and content-free audit event in one transaction.
-- Same-member identical retry returns the original receipt; changed input or a
-  different member returns `idempotency_key_reused`; replacement-token replay
-  succeeds only while still authorized.
+- Same-member identical retry returns the original `key`, `entity_id`, and
+  `seq` with `replayed: true`; changed input or a different member returns
+  `idempotency_key_reused`; replacement-token replay succeeds only while still
+  authorized.
 - Simulated failure rolls back entity, mutation log, receipt, and audit
   together.
 
 ### Black-box E2E
 
-Extend the real Wrangler scenario to connect an SDK v2 test client to `/mcp`
-with an admin token and a viewer token. It must discover the seven tools,
-create a ticket after project/member discovery, search it, read it, update it
-with `base_seq`, add and read a comment, replay each write, and prove viewer
-writes fail. Edit the CLI mirror without pushing and prove MCP continues to
-return accepted server state. Revoke the agent token and prove the next MCP
-request fails.
+Extend the real Wrangler scenario to connect the SDK v2 client to `/mcp` in
+both supported wire eras: once with its default 2025 initialization flow and
+once pinned to `2026-07-28`. Across those runs, use an admin token and a viewer
+token; discover the seven tools, create a ticket after project/member
+discovery, search it, read it, update it with `base_seq`, add and read a
+comment, replay each write, and prove viewer writes fail. Edit the CLI mirror
+without pushing and prove MCP continues to return accepted server state.
+Revoke the agent token and prove the next MCP request fails.
 
 The E2E test must use the deployed Worker URL and bearer header. It must not
 invoke a client-side MCP process, a browser client, or the Rust CLI as an MCP
@@ -865,7 +879,9 @@ adapter.
 
 1. Pin the compatible Agents SDK and MCP SDK v2 packages; add a protocol-only
    `/mcp` handler with `legacy: 'stateless'`, `corsOptions: false`, Host/Origin
-   checks, body limits, and `GET`/`DELETE` 405 before authentication.
+   checks, body limits, path-first method handling, and non-POST 405 before
+   authentication. Prove both the default 2025 initialization flow and the
+   `2026-07-28` wire era with the SDK v2 client.
 2. Add the tenant-DO authentication preflight and private executor routing,
    with authentication and lifecycle tests before registering tools.
 3. Add shared MCP result/error adapters, correlation IDs, safe logging, and
@@ -893,7 +909,8 @@ Server-side MCP is complete when:
 - Responses include no CORS headers.
 - Every `POST /mcp` request is authenticated by the tenant Durable Object and
   every tool is reauthenticated and policy-checked at execution.
-- `/sync` rejects `mcp:` mutation IDs.
+- `/sync` rejects `mcp:` mutation IDs per mutation with
+  `reserved_mutation_id` and continues the rest of the batch.
 - Token expiry, revocation, suspension, demotion, and HMAC-key removal take
   effect without cached-session delay.
 - Reads and search return accepted server state only; unpushed mirror edits are
@@ -911,7 +928,8 @@ Server-side MCP is complete when:
 - Every tool enforces its documented action and viewers cannot write.
 - Administrative tools are absent.
 - Request, result, pagination, logging, and error behavior meet this document.
-- Unit, routing, permission, tenant integration, and real-Worker E2E tests pass.
+- Unit, routing, permission, tenant integration, and real-Worker E2E tests pass
+  in both supported wire eras.
 
 ## Explicitly out of scope
 

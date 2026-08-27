@@ -771,12 +771,13 @@ Authorization also runs before an idempotent replay returns its stored result.
 The `applied_mutations` row stores the effective member, a SHA-256 hash, and
 the original result. Sync mutations hash the canonical mutation envelope.
 Server-side MCP writes use a `mcp:`-prefixed mutation ID and hash the
-canonical `{tool, input}` object instead; `/sync` rejects that prefix so the
-two hash meanings cannot collide. The hash excludes the authorization header,
-bearer token, batch `last_seq`, connection data, and other transport metadata.
-The shared schema defines canonical JSON encoding, including object-key
-ordering and omitted optional fields, with matching Rust and TypeScript
-fixtures.
+canonical `{tool, input}` object instead. `/sync` reports the per-mutation
+conflict `reserved_mutation_id` for that prefix and continues other valid
+mutations in the batch, so the two hash meanings cannot collide. The hash
+excludes the authorization header, bearer token, batch `last_seq`, connection
+data, and other transport metadata. The shared schema defines canonical JSON
+encoding, including object-key ordering and omitted optional fields, with
+matching Rust and TypeScript fixtures.
 
 A replay returns the stored result only when the current principal may still
 perform the action, the effective member matches, and the mutation hash

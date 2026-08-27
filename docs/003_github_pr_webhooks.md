@@ -212,12 +212,13 @@ ticket. One delivery can close several tickets, so the delivery GUID alone is
 not a valid mutation ID. The existing `applied_mutations` table remains for
 client mutation replay. Webhook writes do not add rows to it.
 
-These are the first mutation IDs that are not ULIDs. The server already treats
-`mutation_id` as an opaque unique string, and webhook mutation IDs never
-travel to clients, but the `schema/` doc comment promises a client-generated
-ULID and the CLI orders its own pending mutation files by ULID name. Update
-that doc comment to say the server accepts any opaque unique string, and never
-add code that parses or sorts by the contents of a mutation ID.
+These are the first mutation IDs that are not ULIDs. Mutation IDs are opaque
+unique strings. When server-side MCP ships, the public `/sync` endpoint will
+reserve the `mcp:` prefix for the MCP adapter. Webhook mutation IDs never
+travel to clients, but the CLI orders its own pending mutation files by ULID
+name. The schema comment must describe opaque unique strings and the reserved
+prefix in that implementation change. Never parse or sort by the remainder of
+a mutation ID.
 
 For each key, the handler reads `id`, `status`, and `seq` from `tickets`. An
 unknown key becomes an `unknown` result. For a ticket that should close, the

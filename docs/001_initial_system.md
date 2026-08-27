@@ -111,6 +111,9 @@ round-trip every message shape in CI.
   `mutation_id` returns the original result instead of double-applying.
   Kept forever in v1. (Agents retry on every timeout — this is day-one
   behavior, not hardening.)
+- Mutation IDs are otherwise opaque, but public `/sync` reserves the `mcp:`
+  prefix for the server-side MCP adapter. A prefixed mutation is rejected on
+  its own without blocking other valid mutations in the batch.
 
 ### Sync endpoint
 
