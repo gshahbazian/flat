@@ -13,6 +13,7 @@ import { searchRequestSchema, searchResponseSchema, sequenceSchema } from './wir
 export const MCP_PATH = '/mcp'
 export const MCP_AUTH_PATH = '/_private/mcp/auth'
 export const MCP_MAX_REQUEST_BYTES = 2 * 1024 * 1024
+export const MCP_MAX_REQUEST_ID_BYTES = 256
 export const MCP_MAX_RESULT_BYTES = 4 * 1024 * 1024
 export const MCP_MAX_ERROR_BYTES = 16 * 1024
 export const MCP_CORRELATION_HEADER = 'X-Flat-Correlation-Id'

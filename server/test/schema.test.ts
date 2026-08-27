@@ -15,6 +15,7 @@ import {
   tokenCreateBodySchema,
 } from '../src/request-schema'
 import { Entity, MutationOp, Priority, Role, TokenKind } from '../src/schema.gen'
+import { MAX_PROJECT_DESCRIPTION_BYTES } from '../src/validate'
 import {
   mutationInputSchema,
   mutationSchema,
@@ -78,6 +79,22 @@ describe('wire schemas', () => {
         set: { updated_at: '2026-08-25T12:34:56.000Z' },
       }).success
     ).toBe(false)
+  })
+
+  test('rejects oversized project descriptions', () => {
+    const mutation = {
+      mutation_id: 'mutation-1',
+      op: MutationOp.Create,
+      entity: Entity.Project,
+      entity_id: 'project-1',
+      set: {
+        key: 'AUTH',
+        display_name: 'Authentication',
+        description: 'x'.repeat(MAX_PROJECT_DESCRIPTION_BYTES + 1),
+      },
+    }
+
+    expect(mutationInputSchema.safeParse(mutation).success).toBe(false)
   })
 })
 

@@ -4,6 +4,9 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { unstable_dev, type Unstable_DevWorker } from 'wrangler'
 
+import { encodeMcpCursor, MCP_MAX_REQUEST_ID_BYTES } from '../src/mcp-schema'
+import { MAX_PROJECT_DESCRIPTION_BYTES } from '../src/validate'
+
 const HMAC_KEY = Buffer.alloc(32, 47)
 const SETUP_CREDENTIAL = `flat_setup_${Buffer.alloc(32, 49).toString('base64url')}`
 const SETUP_VERIFIER = createHmac('sha256', HMAC_KEY).update(SETUP_CREDENTIAL).digest('hex')
@@ -195,6 +198,43 @@ describe.sequential('server-side MCP', () => {
       body: JSON.stringify('x'.repeat(2 * 1024 * 1024)),
     })
     expect(oversized.status).toBe(413)
+    const oversizedId = await json<{
+      jsonrpc: string
+      error: { code: number; message: string }
+      id: null
+    }>(worker, '/mcp', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'x'.repeat(MCP_MAX_REQUEST_ID_BYTES + 1),
+        method: 'tools/list',
+      }),
+    })
+    expect(oversizedId.response.status).toBe(400)
+    expect(oversizedId.body).toEqual({
+      jsonrpc: '2.0',
+      error: { code: -32600, message: 'JSON-RPC request ID is too large.' },
+      id: null,
+    })
+    expect(new TextEncoder().encode(JSON.stringify(oversizedId.body)).byteLength).toBeLessThan(
+      16 * 1024
+    )
+    const batch = await json<{ error: { code: number }; id: null }>(worker, '/mcp', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify([{ jsonrpc: '2.0', id: 1, method: 'tools/list' }]),
+    })
+    expect(batch.response.status).toBe(400)
+    expect(batch.body).toEqual(
+      expect.objectContaining({ error: expect.objectContaining({ code: -32600 }), id: null })
+    )
     const invalidOrigin = await worker.fetch('http://flat.test/mcp', {
       method: 'POST',
       headers: {
@@ -397,6 +437,7 @@ describe.sequential('server-side MCP', () => {
       arguments: { key: 'DEMO-1', comment_limit: 1 },
     })
     const firstPage = firstCommentPage.structuredContent as {
+      ticket: { id: string }
       comments: Array<{ body: string }>
       next_comment_cursor: string
     }
@@ -424,6 +465,23 @@ describe.sequential('server-side MCP', () => {
         next_comment_cursor: null,
       })
     )
+    const invalidCursor = await legacy.callTool({
+      name: 'get_ticket',
+      arguments: {
+        key: 'DEMO-1',
+        comment_cursor: encodeMcpCursor({
+          kind: 'comments',
+          ticket_id: firstPage.ticket.id,
+          watermark: 0x1_0000_0000,
+          last_seq: 0,
+          last_id: 'comment-id',
+        }),
+      },
+    })
+    expect(invalidCursor.isError).toBe(true)
+    expect(invalidCursor.structuredContent).toEqual(
+      expect.objectContaining({ error: expect.objectContaining({ code: 'invalid_cursor' }) })
+    )
     const search = await legacy.callTool({
       name: 'search_tickets',
       arguments: { query: 'comment through mcp' },
@@ -438,6 +496,61 @@ describe.sequential('server-side MCP', () => {
     expect(filtersOnly.structuredContent).toEqual(
       expect.objectContaining({ results: [expect.objectContaining({ key: 'DEMO-1' })] })
     )
+    await legacy.close()
+  })
+
+  test('paginates projects within the serialized result limit', async () => {
+    const snapshot = await json<{ latest_seq: number }>(worker, '/snapshot', {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    })
+    const description = '\\'.repeat(MAX_PROJECT_DESCRIPTION_BYTES)
+    const keys = ['BIGA', 'BIGB', 'BIGC']
+    const created = await json<{ conflicts: unknown[] }>(worker, '/sync', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${adminToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        protocol_version: 2,
+        last_seq: snapshot.body.latest_seq,
+        mutations: keys.map((key, index) => ({
+          mutation_id: `large-project-${index}`,
+          entity: 'project',
+          op: 'create',
+          entity_id: `large-project-id-${index}`,
+          set: { key, display_name: `Large project ${index}`, description },
+        })),
+      }),
+    })
+    expect(created.body.conflicts).toEqual([])
+
+    const legacy = await connectClient(worker, adminToken, 'legacy')
+    const returnedKeys: string[] = []
+    let cursor: string | null = null
+    let pages = 0
+    do {
+      // Project pages depend on the cursor returned by the previous call.
+      // oxlint-disable-next-line eslint/no-await-in-loop
+      const result = await legacy.callTool({
+        name: 'list_projects',
+        arguments: { limit: 100, cursor },
+      })
+      expect(result.isError).not.toBe(true)
+      expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(
+        4 * 1024 * 1024
+      )
+      const page = result.structuredContent as {
+        projects: Array<{ key: string }>
+        next_cursor: string | null
+      }
+      returnedKeys.push(...page.projects.map((project) => project.key))
+      cursor = page.next_cursor
+      pages += 1
+    } while (cursor !== null)
+
+    expect(pages).toBeGreaterThan(1)
+    expect(returnedKeys).toEqual([...keys, 'DEMO'])
     await legacy.close()
   })
 

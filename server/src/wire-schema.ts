@@ -26,7 +26,7 @@ import {
   type Ticket,
   type TicketTombstone,
 } from './schema.gen'
-import { projectKeySchema, projectNameSchema } from './validate'
+import { projectDescriptionSchema, projectKeySchema, projectNameSchema } from './validate'
 
 export const MAX_SEQUENCE = 0xffff_ffff
 
@@ -95,7 +95,7 @@ const projectCreateSetSchema = z
   .object({
     key: projectKeySchema.optional(),
     display_name: projectNameSchema.optional(),
-    description: z.string().optional(),
+    description: projectDescriptionSchema.optional(),
   })
   .strict()
 
@@ -322,7 +322,7 @@ export const projectSchema = z.object({
   id: z.string(),
   key: z.string(),
   display_name: z.string(),
-  description: z.string(),
+  description: projectDescriptionSchema,
   owner_ids: z.array(z.string()),
   created_at: z.string(),
   updated_at: z.string(),

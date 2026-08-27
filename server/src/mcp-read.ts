@@ -15,6 +15,7 @@ import type { Principal } from './policy'
 import { jsonObjectSchema } from './request-schema'
 import type { Priority, Role, Status, TokenKind } from './schema.gen'
 import { SearchQueryError, searchTickets } from './search'
+import { sequenceSchema } from './wire-schema'
 
 export function mcpSearchTickets(
   sql: SqlStorage,
@@ -84,18 +85,22 @@ export function mcpGetTicket(
       cursor === null ||
       cursor.kind !== 'comments' ||
       cursor.ticket_id !== ticket.id ||
-      typeof cursor.watermark !== 'number' ||
-      !Number.isInteger(cursor.watermark) ||
-      cursor.watermark < 0 ||
-      typeof cursor.last_seq !== 'number' ||
-      !Number.isInteger(cursor.last_seq) ||
-      cursor.last_seq < 0 ||
-      typeof cursor.last_id !== 'string'
+      typeof cursor.last_id !== 'string' ||
+      cursor.last_id.length === 0
     ) {
       return mcpError(422, 'validation', 'invalid_cursor', 'Comment cursor is invalid.')
     }
-    watermark = cursor.watermark
-    lastSeq = cursor.last_seq
+    const cursorWatermark = sequenceSchema.safeParse(cursor.watermark)
+    const cursorLastSeq = sequenceSchema.safeParse(cursor.last_seq)
+    if (
+      !cursorWatermark.success ||
+      !cursorLastSeq.success ||
+      cursorLastSeq.data > cursorWatermark.data
+    ) {
+      return mcpError(422, 'validation', 'invalid_cursor', 'Comment cursor is invalid.')
+    }
+    watermark = cursorWatermark.data
+    lastSeq = cursorLastSeq.data
     lastId = cursor.last_id
   }
 
@@ -228,21 +233,44 @@ export function mcpListProjects(sql: SqlStorage, rawBody: Record<string, unknown
     }
     lastKey = cursor.last_key
   }
-  const rows = sql
-    .exec<{ id: string; key: string; display_name: string; description: string }>(
-      `SELECT id, key, display_name, description FROM projects
-       WHERE key > ? ORDER BY key LIMIT ?`,
-      lastKey,
-      parsed.data.limit + 1
-    )
-    .toArray()
-  const hasMore = rows.length > parsed.data.limit
-  if (hasMore) rows.pop()
+  const rows = sql.exec<{ id: string; key: string; display_name: string; description: string }>(
+    `SELECT id, key, display_name, description FROM projects
+     WHERE key > ? ORDER BY key LIMIT ?`,
+    lastKey,
+    parsed.data.limit + 1
+  )
+  const projects: ListProjectsOutput['projects'] = []
+  let hasMore = false
+  for (const row of rows) {
+    if (projects.length === parsed.data.limit) {
+      hasMore = true
+      break
+    }
+    const candidate: ListProjectsOutput = {
+      projects: [...projects, row],
+      next_cursor: encodeMcpCursor({ kind: 'projects', last_key: row.key }),
+    }
+    if (!mcpResultFits(candidate)) {
+      if (projects.length === 0) {
+        return mcpError(
+          422,
+          'validation',
+          'result_too_large',
+          'One complete project is too large to return.'
+        )
+      }
+      hasMore = true
+      break
+    }
+    projects.push(row)
+  }
+  const finalProject = projects[projects.length - 1]
   const output: ListProjectsOutput = {
-    projects: rows,
-    next_cursor: hasMore
-      ? encodeMcpCursor({ kind: 'projects', last_key: rows[rows.length - 1].key })
-      : null,
+    projects,
+    next_cursor:
+      hasMore && finalProject !== undefined
+        ? encodeMcpCursor({ kind: 'projects', last_key: finalProject.key })
+        : null,
   }
   return Response.json(output)
 }

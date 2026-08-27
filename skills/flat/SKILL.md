@@ -98,7 +98,8 @@ Run `flat sync` before relying on project state. `flat project ls` lists all
 projects and `flat project show KEY` shows one. Create a project with
 `flat project create KEY --name NAME [--description TEXT]`. Project keys use
 2-8 uppercase letters or digits, must start with a letter, and cannot be
-changed or reused. The creator becomes the first owner.
+changed or reused. Project descriptions may contain at most 256 KiB of UTF-8.
+The creator becomes the first owner.
 
 Every tenant starts with a `DEMO` project owned by the claiming admin.
 

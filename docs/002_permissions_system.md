@@ -120,8 +120,8 @@ audit records retain valid attribution.
 The effective member who creates a project becomes its first project owner.
 This rule also applies when an agent token creates the project. Project owners
 may change the project's display name, description, and owner list. Project
-keys remain immutable. Project owners cannot delete projects unless they are
-also tenant admins.
+descriptions may contain at most 256 KiB of UTF-8. Project keys remain immutable.
+Project owners cannot delete projects unless they are also tenant admins.
 
 Setup creates the default `DEMO` project and makes the claiming admin its
 first owner.

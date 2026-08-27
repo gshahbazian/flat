@@ -8,8 +8,10 @@ import {
   getTicketInputSchema,
   listAssignableMembersInputSchema,
   mcpErrorResultFits,
+  mcpResultFits,
   updateTicketInputSchema,
 } from '../src/mcp-schema'
+import { MAX_PROJECT_DESCRIPTION_BYTES } from '../src/validate'
 
 describe('MCP tool schemas', () => {
   test('normalizes defaults, keys, titles, and emails before writes are hashed', () => {
@@ -99,5 +101,21 @@ describe('MCP tool schemas', () => {
         },
       })
     ).toBe(false)
+  })
+
+  test('fits one maximum-size project even with worst-case JSON escaping', () => {
+    expect(
+      mcpResultFits({
+        projects: [
+          {
+            id: '0'.repeat(26),
+            key: 'DEMO',
+            display_name: 'Demo',
+            description: '\0'.repeat(MAX_PROJECT_DESCRIPTION_BYTES),
+          },
+        ],
+        next_cursor: encodeMcpCursor({ kind: 'projects', last_key: 'DEMO' }),
+      })
+    ).toBe(true)
   })
 })

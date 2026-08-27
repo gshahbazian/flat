@@ -92,6 +92,7 @@ import { SearchQueryError, searchTickets } from './search'
 import {
   emailSchema,
   invalidCommentBody,
+  invalidProjectDescription,
   invalidTicketBody,
   invalidTitle,
   projectKeySchema,
@@ -350,6 +351,10 @@ function mutationReason(
     }
     if (set.description !== undefined && typeof set.description !== 'string') {
       return 'set.description must be a string'
+    }
+    if (typeof set.description === 'string') {
+      const reason = invalidProjectDescription(set.description)
+      if (reason) return reason
     }
   }
   for (const field of ['owners_add', 'owners_remove'] as const) {

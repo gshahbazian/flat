@@ -9,11 +9,12 @@ import {
 import { createMcpHandler } from 'agents/mcp/server'
 
 import type { Env } from './index'
+import { readBoundedMcpBody } from './mcp-body'
 import { mcpLogLine } from './mcp-log'
 import {
   MCP_AUTH_PATH,
   MCP_CORRELATION_HEADER,
-  MCP_MAX_REQUEST_BYTES,
+  MCP_MAX_REQUEST_ID_BYTES,
   MCP_PATH,
   addCommentInputSchema,
   createTicketInputSchema,
@@ -41,36 +42,28 @@ function httpError(status: number, code: string, headers?: HeadersInit): Respons
   return Response.json({ error: code }, { status, headers })
 }
 
-async function boundedBody(request: Request): Promise<ArrayBuffer | null> {
-  const declaredLength = Number(request.headers.get('Content-Length'))
-  if (Number.isFinite(declaredLength) && declaredLength > MCP_MAX_REQUEST_BYTES) return null
-  if (request.body === null) return new ArrayBuffer(0)
+function jsonRpcError(status: number, code: number, message: string): Response {
+  return Response.json({ jsonrpc: '2.0', error: { code, message }, id: null }, { status })
+}
 
-  const reader = request.body.getReader()
-  const chunks: Uint8Array[] = []
-  let length = 0
-  let tooLarge = false
-  while (true) {
-    // ReadableStream chunks have to be pulled in order.
-    // oxlint-disable-next-line eslint/no-await-in-loop
-    const { done, value } = await reader.read()
-    if (done) break
-    length += value.byteLength
-    if (length > MCP_MAX_REQUEST_BYTES) {
-      tooLarge = true
-      continue
-    }
-    chunks.push(value)
+function mcpEnvelopeRejection(body: ArrayBuffer): Response | undefined {
+  let value: unknown
+  try {
+    value = JSON.parse(new TextDecoder().decode(body))
+  } catch {
+    return undefined
   }
-  if (tooLarge) return null
 
-  const body = new Uint8Array(length)
-  let offset = 0
-  for (const chunk of chunks) {
-    body.set(chunk, offset)
-    offset += chunk.byteLength
+  if (Array.isArray(value)) {
+    return jsonRpcError(400, -32600, 'JSON-RPC batches are not supported.')
   }
-  return body.buffer
+  if (!isJsonObject(value)) return undefined
+
+  const { id } = value
+  if (typeof id !== 'string' && typeof id !== 'number') return undefined
+  const idBytes = new TextEncoder().encode(JSON.stringify(id)).byteLength
+  if (idBytes <= MCP_MAX_REQUEST_ID_BYTES) return undefined
+  return jsonRpcError(400, -32600, 'JSON-RPC request ID is too large.')
 }
 
 function requestWithBody(request: Request, body: ArrayBuffer): Request {
@@ -343,7 +336,7 @@ export async function handleMcpRequest(
   const contentType = request.headers.get('Content-Type')?.split(';', 1)[0].trim().toLowerCase()
   if (contentType !== JSON_CONTENT_TYPE) return httpError(415, 'unsupported_media_type')
 
-  const body = await boundedBody(request)
+  const body = await readBoundedMcpBody(request)
   if (body === null) return httpError(413, 'mcp_payload_too_large')
 
   const stub = env.TENANT.get(env.TENANT.idFromName('tenant'))
@@ -356,6 +349,20 @@ export async function handleMcpRequest(
   if (!preflight.ok) return authenticationResponse(preflight)
 
   const startedAt = performance.now()
+  const envelopeRejection = mcpEnvelopeRejection(body)
+  if (envelopeRejection) {
+    const responseBytes = (await envelopeRejection.clone().arrayBuffer()).byteLength
+    console.log(
+      mcpLogLine(
+        correlationId,
+        body,
+        envelopeRejection.status,
+        performance.now() - startedAt,
+        responseBytes
+      )
+    )
+    return envelopeRejection
+  }
   const handler = createMcpHandler(() => createServer(stub, authorization, correlationId), {
     route: MCP_PATH,
     legacy: 'stateless',

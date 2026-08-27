@@ -84,6 +84,8 @@ capability. See Cloudflare's current
 
 The endpoint exposes tools only. V1 has no MCP resources, prompts, sampling,
 elicitation, roots, subscriptions, tasks, or server-originated notifications.
+JSON-RPC batches are rejected; every HTTP request contains one protocol
+message so the endpoint can enforce one bounded response envelope.
 
 ### Host and Origin handling
 
@@ -396,7 +398,9 @@ Input:
 ```
 
 `limit` defaults to 50 and is limited to 1 through 100. `cursor` is an opaque
-keyset cursor. Projects sort by key.
+keyset cursor. Projects sort by key. Complete projects are packed up to both
+the row limit and the serialized result limit; descriptions are never
+truncated.
 
 Output:
 
@@ -415,6 +419,8 @@ Output:
 ```
 
 Owner lists are omitted because they are unnecessary for ticket creation.
+Project descriptions may contain at most 256 KiB of UTF-8, which guarantees one
+complete project can fit in a result by itself.
 
 ### `list_assignable_members`
 
@@ -685,8 +691,10 @@ possible:
 | Item | Limit |
 |---|---:|
 | MCP HTTP request body | 2 MiB |
+| Serialized JSON-RPC request ID | 256 bytes |
 | Search query | 4 KiB and 50 clauses (existing contract) |
 | Comment body | 1 MiB UTF-8 (existing contract) |
+| Project description | 256 KiB UTF-8 |
 | Project/member/search page size | 100 rows |
 | Comment page size | 100 comments |
 | Serialized successful tool result | 4 MiB |
@@ -694,7 +702,8 @@ possible:
 
 The request limit leaves JSON framing room around the largest accepted
 comment. Tool inputs that include ticket descriptions are also bounded by the
-2 MiB envelope. Search, project, member, and comment cursors are opaque and
+2 MiB envelope. The request-ID limit leaves bounded room for the JSON-RPC
+response envelope. Search, project, member, and comment cursors are opaque and
 parsed as untrusted data.
 
 `get_ticket` never truncates a ticket body or comment. It packs complete
@@ -704,6 +713,10 @@ cannot fit by itself, the call returns `result_too_large`; it does not emit
 partial UTF-8 or partial Markdown. The serialized `text` JSON and
 `structuredContent` both count toward the result limit, so packing must leave
 room for that duplication.
+
+`list_projects` applies the same complete-row packing rule. A page stops before
+the next project would cross the result limit and returns a cursor after the
+last included key.
 
 V1 adds no application-level rate limiter. The single tenant Durable Object,
 Cloudflare platform limits, strict body/result limits, bounded pages, and
@@ -818,8 +831,9 @@ for the reserved `mcp:` prefix, and `/sync` rejects that prefix with
 - `GET` and `DELETE` return 405 with `Allow: POST` without requiring a bearer
   token, including before setup. No session ID is ever returned.
 - `OPTIONS` returns 405. Responses include no CORS headers.
-- Oversized bodies, wrong content types, malformed JSON-RPC, invalid Host, and
-  invalid Origin fail without invoking a tool.
+- Oversized bodies and request IDs, JSON-RPC batches, wrong content types,
+  malformed JSON-RPC, invalid Host, and invalid Origin fail without invoking a
+  tool.
 - The endpoint never registers resources, prompts, tasks, subscriptions, or
   administrative tools.
 - Successful read and discovery results put the same JSON in `content` and
