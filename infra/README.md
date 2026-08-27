@@ -9,12 +9,13 @@ the Worker.
 
 ```sh
 pnpm install
-ALCHEMY_PASSWORD='<state-passphrase>' pnpm deploy
+pnpm exec alchemy configure   # first time: OAuth + account
+ALCHEMY_PASSWORD='<state-passphrase>' pnpm run deploy
 pnpm destroy   # tear it back down
 ```
 
 - `ALCHEMY_PASSWORD` encrypts secrets in Alchemy's state (`.alchemy/`, gitignored).
-- Cloudflare credentials come from `wrangler login` or `CLOUDFLARE_API_TOKEN`.
+- Cloudflare credentials come from `alchemy configure` (once per machine) or `CLOUDFLARE_API_TOKEN`.
 - The deploy output prints the `flat_setup_...` credential. Use it once with
   `flat init HOST --setup`; later deploys cannot reopen an initialized tenant.
 - Keep the encrypted Alchemy state. Losing the HMAC key intentionally revokes

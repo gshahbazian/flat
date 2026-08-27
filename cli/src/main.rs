@@ -661,10 +661,10 @@ fn new_token_name(explicit: Option<String>) -> Result<String> {
 
     let hostname = default_token_name();
     let name = if flat_schema::validate_token_name(&hostname).is_ok() {
-        prompt_default("CLI name", &hostname)?
+        prompt_default("Token name", &hostname)?
     } else {
-        eprintln!("local hostname {hostname:?} is not a valid CLI name");
-        prompt("CLI name")?
+        eprintln!("local hostname {hostname:?} is not a valid token name");
+        prompt("Token name")?
     };
     flat_schema::validate_token_name(&name).map_err(anyhow::Error::msg)?;
     Ok(name)

@@ -221,7 +221,7 @@ sequenceDiagram
     Deploy-->>Admin: Print setup secret once
 
     Admin->>CLI: flat init https://flat.acme.com --setup
-    CLI->>Admin: Prompt for setup secret, tenant name, admin email, and CLI name
+    CLI->>Admin: Prompt for setup secret, tenant name, admin email, and token name
     CLI->>Worker: POST /setup
     Worker->>DO: Forward setup request
     DO->>DO: Verify secret and uninitialized state
@@ -254,7 +254,7 @@ $ flat init https://flat.acme.com --setup
 Setup code: ********
 Tenant name: Acme
 Admin email: gabe@acme.com
-CLI name: gabe-macbook
+Token name: gabe-macbook
 
 Initialized tenant "Acme"
 Authenticated as gabe@acme.com (admin)
@@ -345,7 +345,7 @@ sequenceDiagram
     Admin->>Member: Send code through a trusted channel
 
     Member->>MemberCLI: flat init https://flat.acme.com --invite
-    MemberCLI->>Member: Prompt for invitation code and CLI name
+    MemberCLI->>Member: Prompt for invitation code and token name
     MemberCLI->>Server: Redeem invitation
     Server->>DB: Verify code, expiry, and pending member
     Server->>DB: Activate member and consume invitation

@@ -133,7 +133,8 @@ the last synced server state.
 
 ```sh
 cd infra && pnpm install
-ALCHEMY_PASSWORD='<state-passphrase>' pnpm deploy
+pnpm exec alchemy configure   # first time: OAuth + account
+ALCHEMY_PASSWORD='<state-passphrase>' pnpm run deploy
 ```
 
 Deployment generates and prints the one-time `flat_setup_...` credential. The
