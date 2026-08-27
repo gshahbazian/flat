@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const LATEST_SCHEMA_VERSION = 6
+export const LATEST_SCHEMA_VERSION = 7
 
 const storedSchemaVersionSchema = z.union([z.string(), z.number()])
 const schemaVersionSchema = storedSchemaVersionSchema
@@ -205,6 +205,41 @@ const MIGRATIONS = [
     CHECK (token_kind = 'agent' OR delegating_member_id IS NULL)
   );
   CREATE INDEX comments_ticket_seq ON comments (ticket_id, seq)`,
+  `CREATE VIRTUAL TABLE ticket_search USING fts5(
+    ticket_id UNINDEXED,
+    source_kind UNINDEXED,
+    source_id UNINDEXED,
+    title,
+    description,
+    comment,
+    tokenize = 'unicode61 remove_diacritics 2'
+  );
+  CREATE TRIGGER ticket_search_ticket_insert AFTER INSERT ON tickets BEGIN
+    INSERT INTO ticket_search
+      (ticket_id, source_kind, source_id, title, description, comment)
+    VALUES (new.id, 'ticket', new.id, new.title, new.body, '');
+  END;
+  CREATE TRIGGER ticket_search_ticket_update AFTER UPDATE OF title, body ON tickets
+  WHEN old.title IS NOT new.title OR old.body IS NOT new.body BEGIN
+    DELETE FROM ticket_search WHERE ticket_id = old.id AND source_kind = 'ticket';
+    INSERT INTO ticket_search
+      (ticket_id, source_kind, source_id, title, description, comment)
+    VALUES (new.id, 'ticket', new.id, new.title, new.body, '');
+  END;
+  CREATE TRIGGER ticket_search_comment_insert AFTER INSERT ON comments BEGIN
+    INSERT INTO ticket_search
+      (ticket_id, source_kind, source_id, title, description, comment)
+    VALUES (new.ticket_id, 'comment', new.id, '', '', new.body);
+  END;
+  CREATE TRIGGER ticket_search_ticket_delete BEFORE DELETE ON tickets BEGIN
+    DELETE FROM ticket_search WHERE ticket_id = old.id;
+  END;
+  INSERT INTO ticket_search
+    (ticket_id, source_kind, source_id, title, description, comment)
+  SELECT id, 'ticket', id, title, body, '' FROM tickets;
+  INSERT INTO ticket_search
+    (ticket_id, source_kind, source_id, title, description, comment)
+  SELECT ticket_id, 'comment', id, '', '', body FROM comments`,
 ] as const
 
 type MigrationValue = ArrayBuffer | string | number | null
@@ -214,6 +249,20 @@ export interface MigrationSql {
     query: string,
     ...bindings: Array<string | number | null>
   ): { one(): T; toArray(): T[] }
+}
+
+export function rebuildTicketSearch(sql: MigrationSql): void {
+  sql.exec('DELETE FROM ticket_search')
+  sql.exec(
+    `INSERT INTO ticket_search
+     (ticket_id, source_kind, source_id, title, description, comment)
+     SELECT id, 'ticket', id, title, body, '' FROM tickets`
+  )
+  sql.exec(
+    `INSERT INTO ticket_search
+     (ticket_id, source_kind, source_id, title, description, comment)
+     SELECT ticket_id, 'comment', id, '', '', body FROM comments`
+  )
 }
 
 export function runMigrations(

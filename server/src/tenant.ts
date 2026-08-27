@@ -49,6 +49,7 @@ import {
   MutationOp,
   Priority,
   Role,
+  SearchSort,
   Status,
   TokenAccess,
   TokenKind,
@@ -59,11 +60,14 @@ import {
   type MutationConflict,
   type Project,
   type ProjectTombstone,
+  type SearchErrorDetail,
+  type SearchRequest,
   type Snapshot,
   type SyncResponse,
   type Ticket,
   type TicketTombstone,
 } from './schema.gen'
+import { SearchQueryError, searchTickets } from './search'
 import {
   emailSchema,
   invalidCommentBody,
@@ -79,6 +83,7 @@ import {
   mutationIdentitySchema,
   mutationInputSchema,
   mutationRecordSchema,
+  searchRequestSchema,
   syncEnvelopeSchema,
 } from './wire-schema'
 
@@ -191,6 +196,15 @@ function jsonError(status: number, code: string): Response {
   return Response.json({ error: code }, { status })
 }
 
+function searchError(error: SearchQueryError): Response {
+  const body: SearchErrorDetail = {
+    error: error.code,
+    message: error.message,
+    offset: error.offset,
+  }
+  return Response.json(body, { status: 422 })
+}
+
 function emptyOk(): Response {
   return new Response(null, { status: 200 })
 }
@@ -219,6 +233,17 @@ async function requestObject(request: Request): Promise<Record<string, unknown> 
     return result.data
   } catch {
     return null
+  }
+}
+
+async function discardRequestBody(request: Request): Promise<void> {
+  if (request.body === null) return
+  const reader = request.body.getReader()
+  while (true) {
+    // ReadableStream chunks have to be pulled in order.
+    // oxlint-disable-next-line eslint/no-await-in-loop
+    const { done } = await reader.read()
+    if (done) return
   }
 }
 
@@ -315,6 +340,7 @@ async function boundedBody(request: Request, maximumBytes: number): Promise<Arra
   const reader = request.body.getReader()
   const chunks: Uint8Array[] = []
   let length = 0
+  let tooLarge = false
   while (true) {
     // ReadableStream chunks have to be pulled in order.
     // oxlint-disable-next-line eslint/no-await-in-loop
@@ -322,12 +348,12 @@ async function boundedBody(request: Request, maximumBytes: number): Promise<Arra
     if (done) break
     length += value.byteLength
     if (length > maximumBytes) {
-      // oxlint-disable-next-line eslint/no-await-in-loop
-      await reader.cancel()
-      return null
+      tooLarge = true
+      continue
     }
     chunks.push(value)
   }
+  if (tooLarge) return null
   const body = new Uint8Array(length)
   let offset = 0
   for (const chunk of chunks) {
@@ -349,6 +375,14 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    try {
+      return await this.routeRequest(request)
+    } finally {
+      if (!request.bodyUsed) await discardRequestBody(request)
+    }
+  }
+
+  private async routeRequest(request: Request): Promise<Response> {
     const url = new URL(request.url)
     const { pathname } = url
 
@@ -393,6 +427,9 @@ export class TenantDO extends DurableObject<Env> {
     }
     if (request.method === 'GET' && pathname === '/snapshot') {
       return this.handleSnapshot(principal)
+    }
+    if (request.method === 'POST' && pathname === '/search') {
+      return this.handleSearch(request, principal)
     }
     if (request.method === 'POST' && pathname === '/hooks/github/setup') {
       return this.handleGithubSetup(request, url, principal)
@@ -787,6 +824,66 @@ export class TenantDO extends DurableObject<Env> {
   private handleSnapshot(principal: Principal): Response {
     if (!may(principal, 'work.read')) return jsonError(403, 'forbidden')
     return Response.json(this.snapshot())
+  }
+
+  private async handleSearch(request: Request, principal: Principal): Promise<Response> {
+    if (!may(principal, 'work.search')) return jsonError(403, 'forbidden')
+    const rawBody = await requestObject(request)
+    if (!rawBody) return jsonError(400, 'invalid_json')
+    if (typeof rawBody.query !== 'string') {
+      return searchError(new SearchQueryError('invalid_search_query', 'query must be a string', 0))
+    }
+    if (
+      rawBody.sort !== undefined &&
+      rawBody.sort !== SearchSort.Relevance &&
+      rawBody.sort !== SearchSort.Updated &&
+      rawBody.sort !== SearchSort.Created
+    ) {
+      return searchError(
+        new SearchQueryError(
+          'invalid_search_query',
+          'sort must be relevance, updated, or created',
+          0
+        )
+      )
+    }
+    if (
+      rawBody.limit !== undefined &&
+      (typeof rawBody.limit !== 'number' ||
+        !Number.isInteger(rawBody.limit) ||
+        rawBody.limit < 1 ||
+        rawBody.limit > 100)
+    ) {
+      return searchError(
+        new SearchQueryError('invalid_search_query', 'limit must be between 1 and 100', 0)
+      )
+    }
+    if (
+      rawBody.cursor !== undefined &&
+      typeof rawBody.cursor !== 'string' &&
+      rawBody.cursor !== null
+    ) {
+      return searchError(
+        new SearchQueryError('invalid_search_cursor', 'cursor must be a string or null', 0)
+      )
+    }
+    const parsed = searchRequestSchema.safeParse(rawBody)
+    if (!parsed.success) {
+      return searchError(new SearchQueryError('invalid_search_query', 'invalid search request', 0))
+    }
+    const body: SearchRequest = {
+      query: parsed.data.query,
+      sort: parsed.data.sort,
+      limit: parsed.data.limit,
+      cursor: parsed.data.cursor ?? null,
+    }
+    try {
+      return Response.json(searchTickets(this.sql, body, principal.memberId))
+    } catch (error) {
+      if (error instanceof SearchQueryError) return searchError(error)
+      console.error('search unavailable', error instanceof Error ? error.name : 'unknown error')
+      return jsonError(500, 'search_unavailable')
+    }
   }
 
   private snapshot(): Snapshot {

@@ -4,6 +4,7 @@ const ROUTES = new Set([
   'POST /enroll/invite',
   'POST /enroll/recover',
   'POST /sync',
+  'POST /search',
   'GET /snapshot',
   'POST /hooks/github',
   'POST /hooks/github/setup',

@@ -13,4 +13,10 @@ describe('Worker route matching', () => {
     expect(isRoute('POST', '/hooks/github/setup')).toBe(true)
     expect(isRoute('POST', '/hooks/github/setup/rotate')).toBe(false)
   })
+
+  test('routes search only as an exact POST endpoint', () => {
+    expect(isRoute('POST', '/search')).toBe(true)
+    expect(isRoute('GET', '/search')).toBe(false)
+    expect(isRoute('POST', '/search/extra')).toBe(false)
+  })
 })

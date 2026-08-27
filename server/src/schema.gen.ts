@@ -164,6 +164,54 @@ export interface ProjectTombstone {
 	seq: number;
 }
 
+export interface SearchErrorDetail {
+	error: string;
+	message: string;
+	offset: number;
+}
+
+export enum SearchMatchSource {
+	Key = "key",
+	Ticket = "ticket",
+	Comment = "comment",
+}
+
+export interface SearchMatch {
+	source: SearchMatchSource;
+	comment_id?: string;
+	excerpt: string | null;
+}
+
+export enum SearchSort {
+	Relevance = "relevance",
+	Updated = "updated",
+	Created = "created",
+}
+
+export interface SearchRequest {
+	query: string;
+	sort?: SearchSort;
+	limit?: number;
+	cursor: string | null;
+}
+
+export interface SearchResult {
+	key: string;
+	title: string;
+	project: string;
+	status: Status;
+	priority: Priority;
+	assignee: string | null;
+	created_at: string;
+	updated_at: string;
+	match: SearchMatch;
+}
+
+export interface SearchResponse {
+	results: SearchResult[];
+	next_cursor: string | null;
+}
+
 /** A ticket as stored by the server and mirrored to markdown. */
 export interface Ticket {
 	/** Immutable ULID; the protocol speaks ULIDs. */

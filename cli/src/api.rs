@@ -1,7 +1,7 @@
-//! HTTP client for the two server endpoints.
+//! HTTP client for Flat server endpoints.
 
 use anyhow::{anyhow, Context, Result};
-use flat_schema::{Snapshot, SyncRequest, SyncResponse};
+use flat_schema::{SearchRequest, SearchResponse, Snapshot, SyncRequest, SyncResponse};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -37,6 +37,16 @@ impl Client {
             .set("Authorization", &format!("Bearer {}", self.token))
             .call();
         parse_response(response, "GET /snapshot")
+    }
+
+    pub fn search(&self, request: &SearchRequest) -> Result<SearchResponse> {
+        let response = self
+            .agent
+            .post(&format!("{}/search", self.server))
+            .set("Authorization", &format!("Bearer {}", self.token))
+            .set("Content-Type", "application/json")
+            .send_string(&serde_json::to_string(request)?);
+        parse_response(response, "POST /search")
     }
 
     pub fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> Result<T> {
@@ -83,12 +93,48 @@ fn parse_response<T: DeserializeOwned>(
         }
         Err(ureq::Error::Status(code, response)) => {
             let body = response.into_string().unwrap_or_default();
-            let detail = serde_json::from_str::<serde_json::Value>(&body)
-                .ok()
-                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(String::from))
-                .unwrap_or(body);
+            let detail = server_error_detail(&body).unwrap_or(body);
             Err(anyhow!("{what} failed ({code}): {detail}"))
         }
         Err(e) => Err(anyhow!("{what} failed: {e}")),
+    }
+}
+
+fn server_error_detail(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let error = value.get("error")?.as_str()?;
+    let mut detail = error.to_string();
+    if let Some(message) = value.get("message").and_then(serde_json::Value::as_str) {
+        detail.push_str(": ");
+        detail.push_str(message);
+    }
+    if let Some(offset) = value.get("offset").and_then(serde_json::Value::as_u64) {
+        detail.push_str(&format!(" (byte {offset})"));
+    }
+    Some(detail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::server_error_detail;
+
+    #[test]
+    fn search_errors_keep_the_message_and_byte_offset() {
+        assert_eq!(
+            server_error_detail(
+                r#"{"error":"invalid_search_query","message":"unknown status \"working\"","offset":10}"#
+            )
+            .as_deref(),
+            Some("invalid_search_query: unknown status \"working\" (byte 10)")
+        );
+    }
+
+    #[test]
+    fn ordinary_api_errors_keep_the_existing_shape() {
+        assert_eq!(
+            server_error_detail(r#"{"error":"forbidden"}"#).as_deref(),
+            Some("forbidden")
+        );
+        assert_eq!(server_error_detail("not json"), None);
     }
 }

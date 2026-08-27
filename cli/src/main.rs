@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use flat_schema::{
-    Entity, Mutation, MutationOp, MutationSet, Priority, Project, SyncRequest, SyncResponse,
-    Ticket, TicketSet, PROTOCOL_VERSION,
+    Entity, Mutation, MutationOp, MutationSet, Priority, Project, SearchRequest, SearchResponse,
+    SearchSort, SyncRequest, SyncResponse, Ticket, TicketSet, PROTOCOL_VERSION,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -76,6 +76,19 @@ enum Command {
     },
     /// Push locally edited ticket files to the server.
     Push,
+    /// Search accepted server ticket state.
+    Search {
+        /// Flat search query. Quote this shell argument when it contains spaces.
+        query: String,
+        #[arg(long, value_enum)]
+        sort: Option<SearchSortArg>,
+        #[arg(long)]
+        limit: Option<u32>,
+        #[arg(long)]
+        cursor: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Add an append-only Markdown comment to a ticket.
     Comment {
         key: String,
@@ -273,6 +286,23 @@ enum AuditCommand {
         #[arg(long, default_value_t = 0)]
         after: u32,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum SearchSortArg {
+    Relevance,
+    Updated,
+    Created,
+}
+
+impl From<SearchSortArg> for SearchSort {
+    fn from(value: SearchSortArg) -> Self {
+        match value {
+            SearchSortArg::Relevance => SearchSort::Relevance,
+            SearchSortArg::Updated => SearchSort::Updated,
+            SearchSortArg::Created => SearchSort::Created,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -496,6 +526,26 @@ fn run() -> Result<()> {
         Command::Push => {
             push(&mut Checkout::open(&root)?)?;
         }
+        Command::Search {
+            query,
+            sort,
+            limit,
+            cursor,
+            json,
+        } => {
+            let config = store::load_config(&root)?;
+            let response = Client::new(&config.server, &config.token).search(&SearchRequest {
+                query,
+                sort: sort.map(SearchSort::from),
+                limit,
+                cursor,
+            })?;
+            if json {
+                print_json(&serde_json::to_value(response)?)?;
+            } else {
+                print!("{}", format_search_response(&response));
+            }
+        }
         Command::Comment { key, text, stdin } => {
             comment(&mut Checkout::open(&root)?, &key, text, stdin)?;
         }
@@ -542,6 +592,29 @@ fn run() -> Result<()> {
 
 fn client(checkout: &Checkout) -> Client {
     Client::new(&checkout.config.server, &checkout.config.token)
+}
+
+fn format_search_response(response: &SearchResponse) -> String {
+    let mut output = String::new();
+    for result in &response.results {
+        let assignee = result.assignee.as_deref().unwrap_or("-");
+        output.push_str(&format!(
+            "{}  {}  {}  {}  {}\n",
+            result.key,
+            result.status.as_str(),
+            result.priority.as_str(),
+            assignee,
+            result.title
+        ));
+        if let Some(excerpt) = &result.r#match.excerpt {
+            let excerpt = excerpt.split_whitespace().collect::<Vec<_>>().join(" ");
+            output.push_str(&format!("  {excerpt}\n"));
+        }
+    }
+    if let Some(cursor) = &response.next_cursor {
+        output.push_str(&format!("next cursor: {cursor}\n"));
+    }
+    output
 }
 
 fn initialize_checkout(
@@ -1439,7 +1512,9 @@ fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<usize> {
 
 #[cfg(test)]
 mod tests {
-    use flat_schema::{Priority, Status, TicketTombstone};
+    use flat_schema::{
+        Priority, SearchMatch, SearchMatchSource, SearchResult, Status, TicketTombstone,
+    };
 
     use super::*;
 
@@ -1487,6 +1562,59 @@ mod tests {
         .err()
         .expect("invalid priority should fail parsing");
         assert!(error.to_string().contains("unknown priority"));
+    }
+
+    #[test]
+    fn search_accepts_the_complete_server_request() {
+        let cli = Cli::try_parse_from([
+            "flat",
+            "search",
+            "oauth project:AUTH",
+            "--sort",
+            "updated",
+            "--limit",
+            "50",
+            "--cursor",
+            "cursor-token",
+            "--json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Command::Search {
+                query,
+                sort: Some(SearchSortArg::Updated),
+                limit: Some(50),
+                cursor: Some(cursor),
+                json: true,
+            } if query == "oauth project:AUTH" && cursor == "cursor-token"
+        ));
+    }
+
+    #[test]
+    fn search_human_output_is_compact_and_includes_the_next_cursor() {
+        let response = SearchResponse {
+            results: vec![SearchResult {
+                key: "AUTH-142".into(),
+                title: "Fix OAuth refresh".into(),
+                project: "AUTH".into(),
+                status: Status::InProgress,
+                priority: Priority::High,
+                assignee: Some("gabe@example.com".into()),
+                created_at: "2026-08-24T18:04:11.000Z".into(),
+                updated_at: "2026-08-26T09:22:41.000Z".into(),
+                r#match: SearchMatch {
+                    source: SearchMatchSource::Comment,
+                    comment_id: Some("comment-1".into()),
+                    excerpt: Some("...refresh lock\nis per-process...".into()),
+                },
+            }],
+            next_cursor: Some("next-token".into()),
+        };
+        assert_eq!(
+            format_search_response(&response),
+            "AUTH-142  in_progress  high  gabe@example.com  Fix OAuth refresh\n  ...refresh lock is per-process...\nnext cursor: next-token\n"
+        );
     }
 
     #[test]

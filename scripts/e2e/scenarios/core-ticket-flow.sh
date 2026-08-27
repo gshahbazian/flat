@@ -72,6 +72,47 @@ admin_ticket="$admin_path/DEMO/$ticket_key.md"
 e2e_assert_line "$admin_ticket" "title: Core E2E ticket"
 e2e_assert_line "$admin_ticket" "status: todo"
 
+e2e_log "Searching accepted server state"
+empty_search="$(
+  FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" search "definitely-no-match"
+)"
+e2e_assert_equal "" "$empty_search" "empty search output"
+
+search_json="$(
+  FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" search "Core E2E" --json
+)"
+jq -e '
+  has("results") and has("next_cursor") and
+  (.results | length == 1) and
+  (.results[0].key == "DEMO-1") and
+  (.results[0].match.source == "ticket") and
+  (.results[0].match.excerpt | type == "string")
+' <<<"$search_json" >/dev/null || e2e_fail "search JSON did not preserve the wire response"
+
+second_output="$(
+  FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" new "Secondary E2E ticket" --project DEMO
+)"
+second_key="$(awk 'NR == 1 { print $1 }' <<<"$second_output")"
+e2e_assert_equal "DEMO-2" "$second_key" "second ticket key"
+
+first_page="$(
+  FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" search "project:DEMO" --limit 1
+)"
+next_cursor="$(sed -n 's/^next cursor: //p' <<<"$first_page")"
+[[ -n "$next_cursor" ]] || e2e_fail "human search output did not print the next cursor"
+grep -Fq "DEMO-2" <<<"$first_page" || e2e_fail "first search page omitted the newest ticket"
+second_page="$(
+  FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" search "project:DEMO" --limit 1 --cursor "$next_cursor"
+)"
+grep -Fq "DEMO-1" <<<"$second_page" || e2e_fail "cursor did not return the next ticket"
+
+search_error="$E2E_TMP_DIR/search-error.txt"
+if FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" search 'é status:working' 2>"$search_error"; then
+  e2e_fail "invalid search query exited zero"
+fi
+grep -Fq 'invalid_search_query: unknown status "working" (byte 10)' "$search_error" ||
+  e2e_fail "CLI search error omitted the server message or byte offset"
+
 e2e_log "Syncing and updating the ticket as the member"
 FLAT_DIR="$member_root" "$FLAT_E2E_BIN" sync
 member_ticket="$member_path/DEMO/$ticket_key.md"
@@ -88,6 +129,15 @@ e2e_assert_line "$admin_ticket" "status: in_progress"
 e2e_log "Commenting from the admin's dirty checkout"
 sed 's/^title: Core E2E ticket$/title: Admin local title/' "$admin_ticket" >"$admin_ticket.updated"
 mv "$admin_ticket.updated" "$admin_ticket"
+dirty_search="$(
+  FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" search "Admin local title"
+)"
+e2e_assert_equal "" "$dirty_search" "search unexpectedly read the dirty local mirror"
+accepted_search="$(
+  FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" search "Core E2E ticket"
+)"
+grep -Fq "$ticket_key" <<<"$accepted_search" ||
+  e2e_fail "search did not read the accepted server title"
 printf 'Found the cause.\n\n- Added a regression test.\n' |
   FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" comment "$ticket_key" --stdin
 e2e_assert_line "$admin_ticket" "title: Admin local title"
@@ -96,6 +146,11 @@ e2e_assert_line "$admin_ticket" "<!-- flat:comments -->"
 grep -Fq "### $ADMIN_EMAIL — " "$admin_ticket" ||
   e2e_fail "comment did not render admin attribution"
 e2e_assert_line "$admin_ticket" "Found the cause."
+comment_search="$(
+  FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" search "regression test"
+)"
+grep -Fq "$ticket_key" <<<"$comment_search" ||
+  e2e_fail "newly committed comment was not searchable"
 
 e2e_log "Pushing the preserved local edit and converging mirrors"
 FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" push

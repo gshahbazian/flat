@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { describe, expect, test } from 'vitest'
 
-import { LATEST_SCHEMA_VERSION, runMigrations } from '../src/migrations'
+import { LATEST_SCHEMA_VERSION, rebuildTicketSearch, runMigrations } from '../src/migrations'
 
 class TestSql {
   constructor(readonly database = new DatabaseSync(':memory:')) {}
@@ -127,6 +127,97 @@ describe('ordered database migrations', () => {
     expect(foreignKeys).toContainEqual(
       expect.objectContaining({ table: 'tickets', from: 'ticket_id', on_delete: 'CASCADE' })
     )
+    const searchColumns = sql.database.prepare('PRAGMA table_info(ticket_search)').all() as Array<{
+      name: string
+    }>
+    expect(searchColumns.map((column) => column.name)).toEqual([
+      'ticket_id',
+      'source_kind',
+      'source_id',
+      'title',
+      'description',
+      'comment',
+    ])
+  })
+
+  test('search migration backfills and rebuilds ticket and comment documents', () => {
+    const sql = baseDatabase(0)
+    migrate(sql)
+    sql.database.exec(`
+      DROP TRIGGER ticket_search_ticket_insert;
+      DROP TRIGGER ticket_search_ticket_update;
+      DROP TRIGGER ticket_search_comment_insert;
+      DROP TRIGGER ticket_search_ticket_delete;
+      DROP TABLE ticket_search;
+      UPDATE meta SET value = '6' WHERE key = 'schema_version';
+      INSERT INTO tenant_metadata (singleton, display_name, initialized_at)
+      VALUES (1, 'Tenant', '2026-08-01T00:00:00.000Z');
+      INSERT INTO members
+        (id, email, role, status, invited_by, created_at, activated_at, suspended_at)
+      VALUES ('member-1', 'member@example.com', 'admin', 'active', NULL,
+        '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:00.000Z', NULL);
+      INSERT INTO tokens
+        (id, member_id, kind, name, access, secret_verifier, verifier_key_id, created_by,
+         issued_via, created_at, expires_at, last_used_at, revoked_at)
+      VALUES ('token-1', 'member-1', 'human', 'cli', 'admin', 'secret', 'key', 'member-1',
+        'self', '2026-08-01T00:00:00.000Z', NULL, NULL, NULL);
+      INSERT INTO tickets
+        (id, key, project, title, body, status, priority, assignee, created_at, updated_at, seq)
+      VALUES ('ticket-1', 'DEMO-1', '00000000000000000000000000', 'Titleword title',
+        'Bodyword body', 'todo', 'none', NULL, '2026-08-01T00:00:00.000Z',
+        '2026-08-01T00:00:00.000Z', 1);
+      INSERT INTO comments
+        (id, ticket_id, body, member_id, token_id, token_kind, agent_name,
+         delegating_member_id, created_at, seq)
+      VALUES ('comment-1', 'ticket-1', 'Commentword comment', 'member-1', 'token-1', 'human',
+        NULL, NULL, '2026-08-01T00:00:00.000Z', 2);
+    `)
+
+    migrate(sql)
+
+    for (const term of ['titleword', 'bodyword', 'commentword']) {
+      expect(
+        sql.database
+          .prepare('SELECT count(*) AS count FROM ticket_search WHERE ticket_search MATCH ?')
+          .get(term)
+      ).toEqual({ count: 1 })
+    }
+    sql.database.exec('DELETE FROM ticket_search')
+    rebuildTicketSearch(sql)
+    expect(
+      sql.database
+        .prepare("SELECT source_kind FROM ticket_search WHERE ticket_search MATCH 'commentword'")
+        .all()
+    ).toEqual([{ source_kind: 'comment' }])
+
+    const rowid = sql.database
+      .prepare("SELECT rowid FROM ticket_search WHERE source_kind = 'ticket'")
+      .get()
+    sql.database.exec("UPDATE tickets SET status = 'done' WHERE id = 'ticket-1'")
+    expect(
+      sql.database.prepare("SELECT rowid FROM ticket_search WHERE source_kind = 'ticket'").get()
+    ).toEqual(rowid)
+
+    sql.database.exec(
+      "UPDATE tickets SET title = 'Newtitle', body = 'Newbody' WHERE id = 'ticket-1'"
+    )
+    for (const term of ['titleword', 'bodyword']) {
+      expect(
+        sql.database
+          .prepare('SELECT count(*) AS count FROM ticket_search WHERE ticket_search MATCH ?')
+          .get(term)
+      ).toEqual({ count: 0 })
+    }
+    expect(
+      sql.database
+        .prepare("SELECT count(*) AS count FROM ticket_search WHERE ticket_search MATCH 'newtitle'")
+        .get()
+    ).toEqual({ count: 1 })
+
+    sql.database.exec("DELETE FROM tickets WHERE id = 'ticket-1'")
+    expect(sql.database.prepare('SELECT count(*) AS count FROM ticket_search').get()).toEqual({
+      count: 0,
+    })
   })
 
   test('version-3 tickets survive with safe defaults and timestamps', () => {
