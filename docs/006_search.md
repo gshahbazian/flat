@@ -367,9 +367,10 @@ implementation directly; it does not run the CLI, build another index, or
 inspect the Markdown mirror.
 
 The tool description states that results reflect accepted server state and
-exclude unpushed local edits. Results remain summaries, so callers use the
-separate `get_ticket` tool from `007_server_mcp.md` for the full ticket and its
-ordered comments.
+exclude unpushed local edits. An empty query is invalid; filters-only queries
+such as `status:todo,in_progress` list tickets without full-text search.
+Results remain summaries, so callers use the separate `get_ticket` tool from
+`007_server_mcp.md` for the full ticket and its ordered comments.
 
 ## Implementation order
 

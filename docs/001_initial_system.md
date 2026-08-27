@@ -57,7 +57,8 @@ Worker (HTTP API + /mcp)               flat CLI (Rust)
             deltas down, one round trip)
 ```
 
-Hosted and local coding agents connect to the same server-side MCP endpoint.
+Local coding agents and server-side hosted agents that can attach a Flat bearer
+token connect to the same `/mcp` endpoint.
 
 **Why one Durable Object:** the hard part of a ticket system is ordering, not
 storage. A single DO serializes every write and stamps it with a
@@ -249,11 +250,12 @@ mirror, invokes the Rust CLI, or sees unpushed local edits.
 
 One implementation is the natural fit because the tenant Durable Object is
 already the authoritative data and authorization boundary and search already
-runs there. The same endpoint serves hosted agents and local coding agents
-without duplicating tool definitions, validation, authentication, error
-handling, or write semantics in Rust and TypeScript. It also avoids a local
-process, client configuration, and lifecycle. The Markdown mirror and Rust CLI
-remain useful, separate interfaces.
+runs there. The same endpoint serves local coding agents and server-side hosted
+agents that can attach a Flat bearer token, without duplicating tool
+definitions, validation, authentication, error handling, or write semantics in
+Rust and TypeScript. It also avoids a local process, client configuration, and
+lifecycle. It does not serve browser pages or OAuth widget flows. The Markdown
+mirror and Rust CLI remain useful, separate interfaces.
 
 The initial tools search and read tickets, create and update tickets, append
 comments, list projects, and discover active assignable members. Membership,

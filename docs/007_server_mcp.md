@@ -24,8 +24,8 @@ Server-side MCP is the only design because:
 1. The tenant Durable Object is already the authoritative data and
    authorization boundary.
 2. Tools must read accepted server state, not a stale mirror or unpushed edits.
-3. One HTTP endpoint works for hosted agents and local coding agents through
-   the same protocol.
+3. One HTTP endpoint works for local coding agents and server-side hosted
+   agents that can attach a Flat bearer token.
 4. One implementation avoids duplicating tool definitions, validation,
    authentication, error handling, and write semantics in Rust and TypeScript.
 5. It avoids managing a local process, MCP client command configuration, and
@@ -42,13 +42,15 @@ server-enforced.
 
 ## Protocol and transport
 
-The exact public path is `/mcp`. The Worker route allowlist recognizes only
-`POST`, `GET`, `DELETE`, and `OPTIONS` on that exact path. A suffix such as
-`/mcp/extra` is a 404. `POST` carries protocol messages. `OPTIONS` is an
-unauthenticated CORS preflight that validates Origin and never reaches a tool;
-the MCP HTTP handler serves it. Because Flat does not support server-pushed
-messages or transport sessions, `GET` and `DELETE` return 405 with an `Allow`
-header.
+The exact public path is `/mcp`. The Worker owns that path and does not
+forward the MCP request body to the tenant Durable Object as a public HTTP
+route. The Worker allowlist recognizes `POST`, `GET`, and `DELETE` on that
+exact path. A suffix such as `/mcp/extra` is a 404.
+
+`POST` carries protocol messages. Flat does not support server-pushed messages
+or transport sessions, so `GET` and `DELETE` return 405 with `Allow: POST`
+before authentication. Other methods on `/mcp`, including `OPTIONS`, also
+return 405. There is no CORS product path and no browser MCP client.
 
 Implementation uses the Cloudflare Agents SDK v2 `createMcpHandler()` API from
 `agents/mcp/server` and an SDK v2 server factory from
@@ -59,39 +61,47 @@ keeping durable application data behind a Durable Object. Configure it with:
 ```ts
 {
   route: '/mcp',
-  legacy: 'reject',
+  legacy: 'stateless',
   responseMode: 'json',
+  corsOptions: false,
 }
 ```
 
-The `legacy: 'reject'` option is intentional: Flat has no deployed MCP
-contract to preserve. `responseMode: 'json'` is still the Streamable HTTP
-protocol path, but it avoids holding an event stream open when every v1 tool
-finishes in one request. Flat issues no MCP session ID and stores no protocol
-session, event replay, subscription, or resume state. The tool list is static,
-so it also advertises no list-changed capability. See Cloudflare's current
+`legacy: 'stateless'` keeps the Streamable HTTP `initialize` / `tools/list` /
+`tools/call` flow that current process MCP clients use. It still issues no
+session ID and still returns 405 for `GET` and `DELETE`. `legacy: 'reject'`
+would speak only the 2026-07-28 dialect and would break those clients.
+`responseMode: 'json'` is still the Streamable HTTP protocol path, but it
+avoids holding an event stream open when every v1 tool finishes in one
+request. `corsOptions: false` disables CORS headers. Flat issues no MCP
+session ID and stores no protocol session, event replay, subscription, or
+resume state. The tool list is static, so it also advertises no list-changed
+capability. See Cloudflare's current
 [MCP handler API](https://developers.cloudflare.com/agents/model-context-protocol/apis/handler-api/).
 
 The endpoint exposes tools only. V1 has no MCP resources, prompts, sampling,
 elicitation, roots, subscriptions, tasks, or server-originated notifications.
 
-### Host, Origin, and CORS handling
+### Host and Origin handling
 
-The SDK handler validates any browser `Origin` and accepts origin-less
-non-browser clients. Keep that validation enabled. Never configure
-`allowedOriginHostnames: "*"`. The default localhost and `workers.dev`
-allowlists are sufficient for the initial deployment. A deployment that adds
-a custom hostname must configure exact `allowedHostnames` and, if it serves a
-browser MCP client, exact `allowedOriginHostnames` at the same time. CORS does
-not authenticate a caller.
+The SDK handler validates a present `Origin` header and accepts origin-less
+clients. Keep that DNS-rebinding check enabled. Do not configure
+`allowedOriginHostnames`, and never set it to `"*"`.
+
+The default localhost and `workers.dev` Host allowlists are sufficient for the
+initial deployment. A custom hostname must set exact `allowedHostnames` in
+both `server/wrangler.jsonc` and `infra/alchemy.run.ts`. Host validation is
+not authentication.
 
 All production traffic requires HTTPS. Bearer values are supplied as an
-`Authorization` header, never in a URL. Cloudflare's MCP client supports
-custom bearer headers for this use case; see the official
+`Authorization` header, never in a URL. Operators issue Flat human or agent
+tokens through the existing CLI and configure that token in their MCP client.
+The intended callers are process clients such as Claude Code, Cursor, and
+Cloudflare's `McpClient` with a custom bearer header; see the official
 [McpClient header configuration](https://developers.cloudflare.com/agents/model-context-protocol/apis/client-api/#custom-headers).
-OAuth discovery and interactive authorization are out of scope for the
-self-hosted v1 product. Operators issue Flat human or agent tokens through the
-existing CLI and configure that token in their MCP client.
+OAuth discovery, interactive authorization, and browser-origin MCP are out of
+scope for the self-hosted v1 product. Hosted agents that only speak OAuth from
+a web page are not a v1 target.
 
 ## Routing and trust boundaries
 
@@ -118,12 +128,13 @@ Tenant Durable Object tool executor
 Worker MCP result adapter -> client
 ```
 
-For every MCP HTTP request, before the SDK handles `initialize`, `tools/list`,
-or `tools/call`, the Worker sends a bearer-only authentication probe to the
-tenant Durable Object. The probe returns only success or the existing Flat
-error; it does not return a principal that the Worker may trust later. This
-ensures setup state, expiry, revocation, suspension, and verifier-key removal
-also govern protocol discovery.
+For every `POST /mcp` request, before the SDK handles `initialize`,
+`tools/list`, or `tools/call`, the Worker sends a bearer-only authentication
+probe to the tenant Durable Object. `GET` and `DELETE` return 405 first and
+never probe. The probe returns only success or the existing Flat error; it
+does not return a principal that the Worker may trust later. This ensures
+setup state, expiry, revocation, suspension, and verifier-key removal also
+govern protocol discovery.
 
 Each tool callback sends its validated input and the original, unchanged
 `Authorization` value to a private, exact tenant-DO executor path. Those paths
@@ -197,9 +208,9 @@ profiles; create and update accept one exact normalized email or `null`. The
 tenant Durable Object resolves both again inside the write transaction.
 
 There is no general list-tickets tool. `search_tickets` already supports
-filters-only queries and bounded pagination. There is no delete tool because
-deletion requires an admin human token and is not part of the initial agent
-surface.
+filters-only queries and bounded pagination; the query string must still be
+nonempty. There is no delete tool because deletion requires an admin human
+token and is not part of the initial agent surface.
 
 Administrative tools are excluded. MCP cannot manage members, invitations,
 recoveries, upgrades, tokens, audit records, setup, GitHub webhooks,
@@ -208,13 +219,19 @@ continue through CLI commands and dedicated HTTP endpoints.
 
 ### Common tool-result conventions
 
-Every tool declares strict JSON input and output schemas. Each output schema is
-a union of that tool's success payload and the common error wrapper. A
-successful call returns `structuredContent` conforming to the schema and one
-short text block summarizing the outcome. The text block does not duplicate
-ticket descriptions, comments, or full result JSON. The official MCP schema
-requires tool-originated failures to use `isError: true`; see the
+Every tool declares a strict JSON input schema and a success-only JSON output
+schema. The error wrapper is not part of `outputSchema`. A successful call
+returns `structuredContent` conforming to that schema and a `text` content
+block containing the same JSON. Clients that only forward `content` to the
+model must still see search hits, ticket bodies, comments, and discovery
+lists. Write receipts are small enough that the duplicated JSON is the receipt
+itself.
+
+The official MCP schema requires tool-originated failures to use
+`isError: true`; see the
 [MCP tool-result schema](https://modelcontextprotocol.io/specification/2025-11-25/schema#calltoolresult).
+Failures return that flag, one safe text block, and the structured error
+object below. They do not have to match `outputSchema`.
 
 Timestamps are server-generated RFC 3339 UTC strings. IDs are immutable ULIDs.
 Project keys and ticket keys are returned in their canonical uppercase form.
@@ -240,7 +257,9 @@ entity changed after the original write.
 
 Description: search accepted server ticket state. Results do not include local
 mirror edits, manually created files, or conflict markers. Results are
-summaries; use `get_ticket` for the description and ordered comments.
+summaries; use `get_ticket` for the description and ordered comments. An empty
+or whitespace-only query is invalid. To list tickets without full-text search,
+pass a filters-only query such as `status:todo,in_progress` or `project:AUTH`.
 
 Input is exactly the `SearchRequest` contract from `006_search.md`:
 
@@ -542,9 +561,12 @@ wire contract is already shared.
 
 MCP adapters must not call public HTTP endpoints through `fetch()`. Extract or
 reuse tenant-DO domain helpers so HTTP, sync, webhook, and MCP paths share one
-implementation without a network loop. The tool layer translates human-facing
-keys and emails into the existing ULID mutation contract only after current
-server-state validation.
+implementation without a network loop. MCP writes follow the `/sync`
+transaction shape: `apply()`, `applied_mutations` receipt, mutation log, and
+audit in one Durable Object transaction. They must not copy the GitHub webhook
+path, which does not insert `applied_mutations`. The tool layer translates
+human-facing keys and emails into the existing ULID mutation contract only
+after current server-state validation.
 
 ## Writes, retries, and conflicts
 
@@ -557,11 +579,15 @@ mcp:<tool-name>:<idempotency_key>
 ```
 
 The complete namespaced value is limited to 192 ASCII bytes. The server
-reserves the `mcp:` mutation-ID namespace for this adapter.
+reserves the `mcp:` mutation-ID namespace for this adapter. `/sync` and any
+other client mutation path reject a `mutation_id` that starts with `mcp:`.
 
 Before applying a write, normalize defaulted values, uppercase keys, and
-normalize email; hash the canonical object `{tool, input}`. Within the same
-tenant-DO transaction as the write:
+normalize email; hash the canonical object `{tool, input}`. MCP
+`applied_mutations` rows store that hash. Sync rows continue to hash the
+canonical mutation envelope, as in `002_permissions_system.md`. The namespace
+decides which hash a lookup compares. Within the same tenant-DO transaction as
+the write:
 
 1. Reauthenticate and authorize the current principal.
 2. Look up the namespaced ID in `applied_mutations`.
@@ -592,14 +618,17 @@ Connection-level failures occur before MCP dispatch:
 
 | Condition | HTTP behavior |
 |---|---|
+| `GET` or `DELETE` `/mcp` | `405` with `Allow: POST`, before authentication |
+| Other methods on `/mcp`, including `OPTIONS` | `405` with `Allow: POST` |
 | Tenant uninitialized | `409` with `{ "error": "setup_required" }` |
 | Missing, malformed, unknown, expired, revoked, key-removed token, or inactive member | `401` with `{ "error": "invalid_token" }` and `WWW-Authenticate: Bearer realm="flat"` |
 | Body over the transport limit | `413` with `{ "error": "mcp_payload_too_large" }` |
 | Unsupported media type | `415` with `{ "error": "unsupported_media_type" }` |
-| Invalid Host or Origin | `403`, emitted before tool dispatch |
+| Invalid Host or Origin on `POST` | `403`, emitted before tool dispatch |
 
-These responses apply to initialization and discovery as well as tool calls.
-They never contain an MCP session ID.
+Method rejection wins over setup and authentication: `GET /mcp` is 405 even
+before tenant setup. The `POST` responses apply to initialization and
+discovery as well as tool calls. They never contain an MCP session ID.
 
 Unknown methods and tools, malformed JSON-RPC, and arguments that fail a
 tool's advertised structural JSON Schema remain SDK protocol errors (including
@@ -660,8 +689,9 @@ parsed as untrusted data.
 comments in sequence order up to both `comment_limit` and the 4 MiB result
 limit, then returns a cursor. If the ticket object or one individual comment
 cannot fit by itself, the call returns `result_too_large`; it does not emit
-partial UTF-8 or partial Markdown. All content blocks and structured content
-count toward the result limit.
+partial UTF-8 or partial Markdown. The serialized `text` JSON and
+`structuredContent` both count toward the result limit, so packing must leave
+room for that duplication.
 
 V1 adds no application-level rate limiter. The single tenant Durable Object,
 Cloudflare platform limits, strict body/result limits, bounded pages, and
@@ -709,7 +739,9 @@ must not capture bodies or sensitive headers.
 Implementation changes remain inside the existing `server` Worker and tenant
 Durable Object:
 
-1. Add exact `/mcp` methods to `server/src/routing.ts`.
+1. Add exact `POST`, `GET`, and `DELETE` `/mcp` methods to
+   `server/src/routing.ts`. Handle them in the Worker; do not `stub.fetch` the
+   MCP request into `TenantDO` the way other public routes are forwarded.
 2. Add a TypeScript MCP transport/adapter module and private tenant-DO
    executors.
 3. Add `agents` and the compatible exact
@@ -720,16 +752,19 @@ Durable Object:
    Durable Object, Worker, KV namespace, queue, or database.
 5. Reuse `FLAT_HMAC_KEYS` and existing token rows. No MCP credential or shared
    secret is introduced.
-6. Use the SDK's default localhost/`workers.dev` Host and Origin restrictions.
-   A custom-domain deployment adds exact non-secret hostname/origin settings
-   to both `server/wrangler.jsonc` and `infra/alchemy.run.ts`.
+6. Set `corsOptions: false`. Keep the SDK's default localhost/`workers.dev`
+   Host restrictions and Origin DNS-rebinding check. A custom-domain
+   deployment adds exact non-secret `allowedHostnames` to both
+   `server/wrangler.jsonc` and `infra/alchemy.run.ts`. Do not add origin
+   allowlists.
 7. Verify the selected SDK's Worker compatibility-date requirement during
    implementation and move the Wrangler and Alchemy dates together if needed.
 
 The current `applied_mutations` columns are sufficient for MCP write receipts;
-no new persistence service is required. If implementation discovers that one
-row cannot safely distinguish canonical MCP input from canonical sync
-mutations, extend that table in the next numbered SQLite migration rather than
+no new persistence service is required. `/sync` must reject `mcp:` mutation
+IDs so MCP `{tool, input}` hashes cannot collide with sync envelope hashes. If
+implementation discovers that one row still cannot safely distinguish those
+inputs, extend that table in the next numbered SQLite migration rather than
 creating a second idempotency system.
 
 The Rust CLI, `schema/src/lib.rs`, mirror store, and
@@ -744,7 +779,8 @@ documentation-only decision.
 - Every tool input accepts its documented shape and rejects unknown fields,
   identity fields, invalid enums, invalid sequences, oversized values, empty
   update sets, and malformed cursors.
-- Every success and error conforms to its output schema and size bound.
+- Every success conforms to its output schema and size bound. Errors use
+  `isError: true` and the common error wrapper, not `outputSchema`.
 - Tool descriptions explicitly say accepted server state, exclude local
   edits, and state the permission and retry requirement.
 - MCP key/email normalization matches shared validators.
@@ -759,12 +795,16 @@ documentation-only decision.
   methods fail as documented.
 - `POST` initializes, lists exactly seven tools, and calls each tool through
   Streamable HTTP JSON responses.
-- `GET` and `DELETE` return 405 and no session ID is ever returned.
-- The handler rejects the legacy protocol lane.
+- `GET` and `DELETE` return 405 with `Allow: POST` without requiring a bearer
+  token, including before setup. No session ID is ever returned.
+- `OPTIONS` returns 405. Responses include no CORS headers.
 - Oversized bodies, wrong content types, malformed JSON-RPC, invalid Host, and
   invalid Origin fail without invoking a tool.
 - The endpoint never registers resources, prompts, tasks, subscriptions, or
   administrative tools.
+- Successful read and discovery results put the same JSON in `content` and
+  `structuredContent`. `outputSchema` is the success payload only.
+- `/sync` rejects a `mutation_id` that starts with `mcp:`.
 
 ### Authentication and permission tests
 
@@ -784,6 +824,8 @@ documentation-only decision.
 
 - Search results match `POST /search`, including qualifiers, ranking, excerpts,
   cursors, validation offsets, and immediate index visibility.
+- Filters-only queries such as `status:todo,in_progress` list tickets; an empty
+  query is a validation error.
 - Search and reads ignore an edited local mirror in the black-box scenario.
 - `get_ticket` returns the full description and comments in stable order;
   comment pagination is fixed to its first-page watermark.
@@ -807,21 +849,23 @@ documentation-only decision.
 
 ### Black-box E2E
 
-Extend the real Wrangler scenario to connect an MCP Inspector or SDK v2 test
-client to `/mcp` with an admin token and a viewer token. It must discover the
-seven tools, create a ticket after project/member discovery, search it, read it,
-update it with `base_seq`, add and read a comment, replay each write, and prove
-viewer writes fail. Edit the CLI mirror without pushing and prove MCP continues
-to return accepted server state. Revoke the agent token and prove the next MCP
+Extend the real Wrangler scenario to connect an SDK v2 test client to `/mcp`
+with an admin token and a viewer token. It must discover the seven tools,
+create a ticket after project/member discovery, search it, read it, update it
+with `base_seq`, add and read a comment, replay each write, and prove viewer
+writes fail. Edit the CLI mirror without pushing and prove MCP continues to
+return accepted server state. Revoke the agent token and prove the next MCP
 request fails.
 
 The E2E test must use the deployed Worker URL and bearer header. It must not
-invoke a client-side MCP process or use the Rust CLI as an MCP adapter.
+invoke a client-side MCP process, a browser client, or the Rust CLI as an MCP
+adapter.
 
 ## Implementation order
 
 1. Pin the compatible Agents SDK and MCP SDK v2 packages; add a protocol-only
-   `/mcp` handler with strict Host/Origin, body, method, and stateless settings.
+   `/mcp` handler with `legacy: 'stateless'`, `corsOptions: false`, Host/Origin
+   checks, body limits, and `GET`/`DELETE` 405 before authentication.
 2. Add the tenant-DO authentication preflight and private executor routing,
    with authentication and lifecycle tests before registering tools.
 3. Add shared MCP result/error adapters, correlation IDs, safe logging, and
@@ -844,16 +888,21 @@ Server-side MCP is complete when:
 
 - `/mcp` is the only MCP endpoint and exposes exactly the seven documented
   tools over stateless Streamable HTTP.
-- The endpoint never issues a protocol session ID, and unsupported continued
-  connection methods return 405.
-- Every protocol request is authenticated by the tenant Durable Object and
+- The endpoint never issues a protocol session ID, and `GET`/`DELETE` return
+  405 before authentication.
+- Responses include no CORS headers.
+- Every `POST /mcp` request is authenticated by the tenant Durable Object and
   every tool is reauthenticated and policy-checked at execution.
+- `/sync` rejects `mcp:` mutation IDs.
 - Token expiry, revocation, suspension, demotion, and HMAC-key removal take
   effect without cached-session delay.
 - Reads and search return accepted server state only; unpushed mirror edits are
   invisible.
-- Search reuses `006_search.md`, returns summaries, and pairs with a full
-  ticket read containing ordered, untruncated comments.
+- Search reuses `006_search.md`, returns summaries, lists tickets with
+  filters-only queries, and pairs with a full ticket read containing ordered,
+  untruncated comments.
+- Successful tool results put the same JSON in `content` and
+  `structuredContent`.
 - Project and assignable-member discovery make ticket creation deterministic
   without exposing administrative records.
 - Writes reuse the server mutation, conflict, attribution, audit, and
@@ -870,6 +919,7 @@ Server-side MCP is complete when:
 - An MCP command in the Rust CLI
 - Reading, writing, or reconciling the Markdown mirror through MCP
 - Protocol sessions, SSE result streams, subscriptions, resumability, or tasks
+- Browser MCP clients, CORS, or `OPTIONS` preflight handling
 - OAuth discovery or interactive OAuth flows
 - Force updates, deletes, label tools, project administration, or project-owner
   changes
