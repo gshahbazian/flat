@@ -356,3 +356,82 @@ describe.sequential('operator recovery with a configured verifier', () => {
     expect(JSON.stringify(operatorEvent)).not.toContain('flat_rec_')
   }, 30_000)
 })
+
+describe.sequential('operator recovery enrollment revocation', () => {
+  let worker: Unstable_DevWorker
+
+  beforeAll(async () => {
+    worker = await startWorker(OPERATOR_VERIFIER)
+  }, 30_000)
+
+  afterAll(async () => {
+    await worker.stop()
+  })
+
+  test('revokes a live upgrade enrollment through the shared recovery transaction', async () => {
+    const target = await setup(worker)
+    const helperAdminToken = await inviteAndEnroll(
+      worker,
+      target.token,
+      'upgrade-helper@example.com',
+      'admin'
+    )
+
+    const demotion = await json(
+      worker,
+      '/members/role',
+      authenticated(helperAdminToken, { email: 'target-admin@example.com', role: 'member' })
+    )
+    expect(demotion.response.status).toBe(200)
+
+    const memberRecovery = await json<{ recovery_code: string }>(
+      worker,
+      '/members/recover',
+      authenticated(helperAdminToken, { email: 'target-admin@example.com' })
+    )
+    expect(memberRecovery.response.status).toBe(200)
+    const memberToken = await json<TokenResponse>(
+      worker,
+      '/enroll/recover',
+      post({ credential: memberRecovery.body.recovery_code, token_name: 'member-recovery-cli' })
+    )
+    expect(memberToken.response.status).toBe(200)
+
+    const promotion = await json<{ upgrade_code: string }>(
+      worker,
+      '/members/role',
+      authenticated(helperAdminToken, { email: 'target-admin@example.com', role: 'admin' })
+    )
+    expect(promotion.response.status).toBe(200)
+    expect(promotion.body.upgrade_code).toMatch(/^flat_upg_[0-9A-HJKMNP-TV-Z]{26}_/)
+
+    const operatorRecovery = await json<{ recovery_code: string }>(
+      worker,
+      '/operator/recover',
+      post({
+        operator_credential: OPERATOR_CREDENTIAL,
+        email: 'target-admin@example.com',
+      })
+    )
+    expect(operatorRecovery.response.status).toBe(200)
+
+    const recoveredAdmin = await json<TokenResponse>(
+      worker,
+      '/enroll/recover',
+      post({ credential: operatorRecovery.body.recovery_code, token_name: 'operator-recovery-cli' })
+    )
+    expect(recoveredAdmin.response.status).toBe(200)
+
+    const revokedUpgrade = await json<{ error: string }>(
+      worker,
+      '/tokens/upgrade',
+      authenticated(recoveredAdmin.body.token, { upgrade_code: promotion.body.upgrade_code })
+    )
+    expect(revokedUpgrade.response.status).toBe(410)
+    expect(revokedUpgrade.body.error).toBe('enrollment_revoked')
+
+    expect(
+      (await json(worker, '/snapshot', authenticated(memberToken.body.token))).response.status
+    ).toBe(401)
+  }, 30_000)
+})
