@@ -5,16 +5,16 @@ markdown files that agents grep, edit, and push back. See
 [docs/001_initial_system.md](docs/001_initial_system.md) for the full design.
 
 Current implemented slice: projects and ownership, multi-project mirrors,
-ticket fields, append-only comments, per-member permissions for the HTTP
-ticket-sync and administration surfaces, and GitHub PR webhooks. Comments
-retain server-derived human or agent attribution and render directly in ticket
-files. A deployment is claimed once, admins invite members, and each
-installation or agent has a distinct credential.
+ticket fields, append-only comments, server-side search with a CLI client,
+per-member permissions for the HTTP ticket-sync and administration surfaces,
+and GitHub PR webhooks. Comments retain server-derived human or agent
+attribution and render directly in ticket files. A deployment is claimed once,
+admins invite members, and each installation or agent has a distinct
+credential.
 
 The broader accepted design is not complete yet. WebSocket/watch sessions,
-search and remote MCP, labels, force pushes, native
-OS-keychain storage, and the operator-recovery deployment runbook remain
-explicit follow-up work.
+server-side MCP, labels, force pushes, native OS-keychain storage, and the
+operator-recovery deployment runbook remain explicit follow-up work.
 
 ## Layout
 

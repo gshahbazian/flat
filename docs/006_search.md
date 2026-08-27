@@ -1,7 +1,7 @@
 # Server search
 
-Status: implemented for the server, HTTP API, and CLI. MCP transport support
-remains deferred until those transports ship.
+Status: implemented for the server, HTTP API, and CLI. The server-side MCP tool
+remains planned in `007_server_mcp.md`.
 
 This document defines server search for Flat. It extends the search outline in
 `001_initial_system.md` and uses the authorization model in
@@ -17,16 +17,15 @@ markers.
 Local agents may search the mirror with `rg` when they want local working-copy
 state. Flat does not wrap, replace, or synchronize that workflow.
 
-The complete feature has four callers:
+The complete feature has three callers:
 
 - `flat search` in the Rust CLI.
-- The local MCP server.
-- The remote MCP server.
-- The HTTP API used by those clients.
+- The `POST /search` HTTP API.
+- The server-side MCP `search_tickets` tool.
 
-The HTTP contract, result model, and query behavior are shared. The first
-implementation phase ships the index, HTTP API, and CLI. MCP uses the same
-contract when those transports ship.
+The HTTP contract, result model, and query behavior are shared. The implemented
+phase ships the index, HTTP API, and CLI. Server-side MCP reuses that contract
+when `007_server_mcp.md` is implemented.
 
 ## Settled decisions
 
@@ -359,16 +358,19 @@ Adding the command must update `skills/flat/SKILL.md` in the same change. The
 skill should continue to teach `rg` for local working-copy search and explain
 that `flat search` reads accepted server state.
 
-## MCP
+## Server-side MCP
 
-Both MCP transports expose a `search` tool with the same fields as the HTTP
-request. The structured result uses the HTTP response shape. The local MCP
-tool still calls the server. It does not build a local index or search the
-Markdown mirror.
+The Cloudflare-hosted endpoint exposes `search_tickets` with the same `query`,
+`sort`, `limit`, and `cursor` fields as the HTTP request. Its structured result
+is the HTTP response shape. The tool invokes the tenant Durable Object search
+implementation directly; it does not run the CLI, build another index, or
+inspect the Markdown mirror.
 
-MCP descriptions must state that results reflect server state and that local
-unpushed edits are absent. MCP clients may follow a search result with the
-separate ticket-read tool.
+The tool description states that results reflect accepted server state and
+exclude unpushed local edits. An empty query is invalid; filters-only queries
+such as `status:todo,in_progress` list tickets without full-text search.
+Results remain summaries, so callers use the separate `get_ticket` tool from
+`007_server_mcp.md` for the full ticket and its ordered comments.
 
 ## Implementation order
 
@@ -383,7 +385,7 @@ separate ticket-read tool.
 5. Add `POST /search`, route validation, authentication, and `work.search`
    authorization.
 6. Add `flat search`, human output, JSON output, and the Flat skill update.
-7. Add the local and remote MCP tool when each MCP transport ships.
+7. Add `search_tickets` when the server-side MCP endpoint ships.
 
 ## Acceptance criteria
 
@@ -418,4 +420,5 @@ following:
 - CLI success, empty results, JSON output, cursor output, and server failures
   have stable exit and output behavior.
 
-MCP acceptance tests reuse the same contract cases when the transports ship.
+Server-side MCP acceptance tests reuse the same contract cases when the
+endpoint ships and prove that the tool reads accepted server state.

@@ -23,7 +23,7 @@ back. Structured writes also work via CLI commands and MCP tools.
 |---|---|
 | Name | Codename **flat tee**; CLI binary `flat`. Real name TBD |
 | Server | TypeScript on Cloudflare Workers + Durable Objects |
-| CLI + local MCP | Rust |
+| CLI | Rust |
 | Schema sharing | Rust structs are source of truth; codegen TS types (typeshare / schemars -> JSON Schema); round-trip fixture tests in CI |
 | Tenancy | One company = one deployment (single tenant). Sub-teams own **projects** |
 | Hierarchy | Tenant -> projects -> tickets. No teams table in v1; members are tenant-level; projects list owner member IDs but remain visible to all members |
@@ -35,7 +35,7 @@ back. Structured writes also work via CLI commands and MCP tools.
 | Deferred | Teams, milestones, cycles, ticket relations, attachments (R2), custom fields, custom statuses, OAuth, hosted multi-tenant service |
 | Identity | Enrollment binds each token to a tenant member email. `git config user.email` may supply a CLI default or warning but grants no identity or access |
 | Auth | One-time tenant setup, invitation enrollment, and per-installation human or agent bearer tokens. See `002_permissions_system.md` |
-| MCP | v1 ships both: local stdio (`flat mcp`) and remote (Worker, streamable HTTP, bearer auth, Cloudflare agents SDK) |
+| MCP | One server-side MCP endpoint on the Worker, using Streamable HTTP and the existing per-member bearer tokens. See `007_server_mcp.md` |
 | Hosting | Self-host only in v1: `wrangler deploy` into the company's own account |
 | License | Apache-2.0 |
 | Repo | Monorepo: `/server` (TS), `/cli` (Rust workspace), `/schema` (types + codegen), shared contract-test fixtures |
@@ -45,17 +45,20 @@ back. Structured writes also work via CLI commands and MCP tools.
 ```
 Cloudflare (company's own account)     Developer / agent machine
 ----------------------------------    --------------------------------------
-Worker (HTTP API, remote MCP;          flat CLI (Rust)
-        auth in the DO — 002)            ├─ ~/.flat/<tenant>/AUTH/AUTH-142.md  <── agent reads/edits via bash
-  └─ Tenant Durable Object               ├─ base copies + SQLite state db
-     (SQLite: projects, tickets,         └─ flat mcp (stdio)                  <── local agent tool calls
-      comments, labels, members,
-      FTS5 index,                      flat sync / flat push
-      + ordered mutation log)                │
+Worker (HTTP API + /mcp)               flat CLI (Rust)
+  └─ Tenant Durable Object               ├─ ~/.flat/<tenant>/AUTH/AUTH-142.md  <── agent reads/edits via bash
+     (authoritative auth + data;        └─ base copies + SQLite state db
+      SQLite projects, tickets,
+      comments, labels, members,      flat sync / flat push
+      FTS5 index, and one ordered            │
+      mutation log)                         │
         ▲                                    │
         └── POST /sync (mutations up, ───────┘
             deltas down, one round trip)
 ```
+
+Local coding agents and server-side hosted agents that can attach a Flat bearer
+token connect to the same `/mcp` endpoint.
 
 **Why one Durable Object:** the hard part of a ticket system is ordering, not
 storage. A single DO serializes every write and stamps it with a
@@ -108,6 +111,9 @@ round-trip every message shape in CI.
   `mutation_id` returns the original result instead of double-applying.
   Kept forever in v1. (Agents retry on every timeout — this is day-one
   behavior, not hardening.)
+- Mutation IDs are otherwise opaque, but public `/sync` reserves the `mcp:`
+  prefix for the server-side MCP adapter. A prefixed mutation is rejected on
+  its own without blocking other valid mutations in the batch.
 
 ### Sync endpoint
 
@@ -225,7 +231,6 @@ flat ls / flat show KEY        # pretty listings over local cache
 flat search QUERY              # server FTS
 flat path                      # print mirror location
 flat project|member|token ...  # admin subcommands
-flat mcp                       # stdio MCP server
 ```
 
 One generic `flat set` instead of sugar commands — fewer commands for agents
@@ -235,22 +240,31 @@ to learn; file editing is the primary write path anyway.
 
 Server-side **SQLite FTS5** in the tenant DO over title/description/comments
 (one virtual table + triggers on rows we already write). Exposed as the
-`search` MCP tool — required by remote agents, who can't grep — and
+`search_tickets` MCP tool — required by hosted agents that cannot grep — and
 `flat search` for parity. Local agents are taught to grep the mirror first.
 
 ## MCP
 
-Same tool definitions, two transports:
+Flat has one MCP implementation: a Cloudflare-hosted Streamable HTTP endpoint
+at `/mcp`. It uses the same bearer credentials as the HTTP API, and the tenant
+Durable Object authenticates, authorizes, and executes every tool operation.
+MCP reads accepted server state directly; it never reads or edits the Markdown
+mirror, invokes the Rust CLI, or sees unpushed local edits.
 
-- **Local (stdio)**: `flat mcp`, bundled in the CLI. Reads from local cache:
-  instant, offline. Primary mode for coding agents. Small surface: grep
-  replaces list/get; MCP is mainly writes + search.
-- **Remote**: on the Worker via Cloudflare agents SDK, streamable HTTP,
-  bearer token auth. For hosted/chat agents with no filesystem; leans on the
-  `search` tool for discovery.
+One implementation is the natural fit because the tenant Durable Object is
+already the authoritative data and authorization boundary and search already
+runs there. The same endpoint serves local coding agents and server-side hosted
+agents that can attach a Flat bearer token, without duplicating tool
+definitions, validation, authentication, error handling, or write semantics in
+Rust and TypeScript. It also avoids a local process, client configuration, and
+lifecycle. It does not serve browser pages or OAuth widget flows. The Markdown
+mirror and Rust CLI remain useful, separate interfaces.
 
-Exact tool list is deliberately unspecced — tools are self-describing and
-cheap to iterate.
+The initial tools search and read tickets, create and update tickets, append
+comments, list projects, and discover active assignable members. Membership,
+token, enrollment, audit, webhook, credential, and other tenant administration
+remain CLI and dedicated-HTTP responsibilities. `007_server_mcp.md` defines
+the exact protocol, contracts, security behavior, and tool list.
 
 ## First milestone
 
@@ -261,8 +275,8 @@ Exercises every architectural bet before MCP enters the picture:
 3. CLI: `init`, `new`, `sync` (mirror materialization), `push` with
    field-level conflict detection and `--merge` markers.
 
-Then: comments, `--watch`, FTS + `search`, local MCP, remote MCP, admin
-commands, docs + example AGENTS.md snippet.
+Then: comments, `--watch`, FTS + `search`, server-side MCP, admin commands,
+docs + example AGENTS.md snippet.
 
 Auth in the first milestone is one shared bearer token checked in the Worker
 — a placeholder. The real system in `002_permissions_system.md` is its own
