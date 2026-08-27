@@ -11,10 +11,12 @@ administration surfaces, and GitHub PR webhooks. Comments retain server-derived
 human or agent attribution and render directly in ticket files. A deployment
 is claimed once, admins invite members, and each installation or agent has a
 distinct credential.
+Operator recovery provides a deployer-only break-glass path for an existing
+active admin without resetting the tenant.
 
 The broader accepted design is not complete yet. WebSocket/watch sessions,
-labels, force pushes, native OS-keychain storage, and the operator-recovery
-deployment runbook remain explicit follow-up work.
+labels, force pushes, and native OS-keychain storage remain explicit follow-up
+work.
 
 ## MCP
 
@@ -131,12 +133,41 @@ the last synced server state.
 
 ```sh
 cd infra && pnpm install
-ALCHEMY_PASSWORD=<state passphrase> pnpm deploy
+ALCHEMY_PASSWORD='<state-passphrase>' pnpm deploy
 ```
 
 Deployment generates and prints the one-time `flat_setup_...` credential. The
 credential HMAC key and setup verifier are encrypted in Alchemy state; no
 shared deployment-wide bearer token is installed.
+
+### Operator recovery
+
+If every admin has lost access, use the same Alchemy state, Cloudflare account,
+stage, and profile as the normal deployment:
+
+```sh
+cd infra
+ALCHEMY_PASSWORD='<state-passphrase>' pnpm recover -- --stage prod
+```
+
+Omit `--stage prod` if the deployment uses Alchemy's default stage. Add
+`--profile <profile>` when the normal deployment uses one. The command prompts
+for the Flat server URL and active admin email. It generates and prints a
+one-time operator code, deploys only its HMAC verifier, calls the recovery
+endpoint, prints the 15-minute recovery code once, and deploys again with the
+operator verifier removed. Neither credential is accepted as a command-line
+argument.
+
+If the final cleanup deployment fails, immediately rerun the normal deployment
+with the same stage and profile. A successfully used verifier remains consumed
+in the tenant even while stale Worker configuration is present.
+
+Redeem the printed recovery code through the existing CLI flow; the CLI prompts
+for it instead of accepting it in argv:
+
+```sh
+flat init https://<flat-host> --recover
+```
 
 After initialization, an admin can run `flat github` to print the exact
 payload URL and tenant webhook secret. Configure a repository or organization
