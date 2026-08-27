@@ -49,6 +49,7 @@ import {
   MutationOp,
   Priority,
   Role,
+  SearchSort,
   Status,
   TokenAccess,
   TokenKind,
@@ -235,6 +236,17 @@ async function requestObject(request: Request): Promise<Record<string, unknown> 
   }
 }
 
+async function discardRequestBody(request: Request): Promise<void> {
+  if (request.body === null) return
+  const reader = request.body.getReader()
+  while (true) {
+    // ReadableStream chunks have to be pulled in order.
+    // oxlint-disable-next-line eslint/no-await-in-loop
+    const { done } = await reader.read()
+    if (done) return
+  }
+}
+
 function parseJson(value: string): { success: true; data: unknown } | { success: false } {
   try {
     return { success: true, data: JSON.parse(value) }
@@ -328,6 +340,7 @@ async function boundedBody(request: Request, maximumBytes: number): Promise<Arra
   const reader = request.body.getReader()
   const chunks: Uint8Array[] = []
   let length = 0
+  let tooLarge = false
   while (true) {
     // ReadableStream chunks have to be pulled in order.
     // oxlint-disable-next-line eslint/no-await-in-loop
@@ -335,12 +348,12 @@ async function boundedBody(request: Request, maximumBytes: number): Promise<Arra
     if (done) break
     length += value.byteLength
     if (length > maximumBytes) {
-      // oxlint-disable-next-line eslint/no-await-in-loop
-      await reader.cancel()
-      return null
+      tooLarge = true
+      continue
     }
     chunks.push(value)
   }
+  if (tooLarge) return null
   const body = new Uint8Array(length)
   let offset = 0
   for (const chunk of chunks) {
@@ -362,6 +375,14 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    try {
+      return await this.routeRequest(request)
+    } finally {
+      if (!request.bodyUsed) await discardRequestBody(request)
+    }
+  }
+
+  private async routeRequest(request: Request): Promise<Response> {
     const url = new URL(request.url)
     const { pathname } = url
 
@@ -809,17 +830,45 @@ export class TenantDO extends DurableObject<Env> {
     if (!may(principal, 'work.search')) return jsonError(403, 'forbidden')
     const rawBody = await requestObject(request)
     if (!rawBody) return jsonError(400, 'invalid_json')
+    if (typeof rawBody.query !== 'string') {
+      return searchError(new SearchQueryError('invalid_search_query', 'query must be a string', 0))
+    }
+    if (
+      rawBody.sort !== undefined &&
+      rawBody.sort !== SearchSort.Relevance &&
+      rawBody.sort !== SearchSort.Updated &&
+      rawBody.sort !== SearchSort.Created
+    ) {
+      return searchError(
+        new SearchQueryError(
+          'invalid_search_query',
+          'sort must be relevance, updated, or created',
+          0
+        )
+      )
+    }
+    if (
+      rawBody.limit !== undefined &&
+      (typeof rawBody.limit !== 'number' ||
+        !Number.isInteger(rawBody.limit) ||
+        rawBody.limit < 1 ||
+        rawBody.limit > 100)
+    ) {
+      return searchError(
+        new SearchQueryError('invalid_search_query', 'limit must be between 1 and 100', 0)
+      )
+    }
+    if (
+      rawBody.cursor !== undefined &&
+      typeof rawBody.cursor !== 'string' &&
+      rawBody.cursor !== null
+    ) {
+      return searchError(
+        new SearchQueryError('invalid_search_cursor', 'cursor must be a string or null', 0)
+      )
+    }
     const parsed = searchRequestSchema.safeParse(rawBody)
     if (!parsed.success) {
-      if (
-        Object.hasOwn(rawBody, 'cursor') &&
-        typeof rawBody.cursor !== 'string' &&
-        rawBody.cursor !== null
-      ) {
-        return searchError(
-          new SearchQueryError('invalid_search_cursor', 'cursor must be a string or null', 0)
-        )
-      }
       return searchError(new SearchQueryError('invalid_search_query', 'invalid search request', 0))
     }
     const body: SearchRequest = {

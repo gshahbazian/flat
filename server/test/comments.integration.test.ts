@@ -140,6 +140,13 @@ describe.sequential('comments', () => {
   })
 
   test('syncs append-only comments with durable attribution and audit', async () => {
+    const beforeSetup = await json<{ error: string }>(worker, '/search', {
+      method: 'POST',
+      body: JSON.stringify({ query: 'anything' }),
+    })
+    expect(beforeSetup.status).toBe(409)
+    expect(beforeSetup.body.error).toBe('setup_required')
+
     const setup = await json<{
       token: string
       member: { id: string }
@@ -171,13 +178,13 @@ describe.sequential('comments', () => {
     const ticket = created.body.deltas.find((candidate) => candidate.id === TICKET_ID)!
 
     const titleSearch = await json<{
-      results: Array<{ key: string; match: { source: string } }>
+      results: Array<{ key: string; match: { source: string; excerpt: string } }>
     }>(worker, '/search', authenticated(adminToken, { query: 'comment target' }))
     expect(titleSearch.status).toBe(200)
     expect(titleSearch.body.results).toEqual([
       expect.objectContaining({
         key: 'DEMO-1',
-        match: expect.objectContaining({ source: 'ticket' }),
+        match: expect.objectContaining({ source: 'ticket', excerpt: 'Comment target' }),
       }),
     ])
 
@@ -220,8 +227,21 @@ describe.sequential('comments', () => {
     )
     expect(invalidSearch.status).toBe(422)
     expect(invalidSearch.body).toMatchObject({ error: 'invalid_search_query', offset: 10 })
+    const invalidLimit = await json<{ error: string; message: string }>(
+      worker,
+      '/search',
+      authenticated(adminToken, { query: 'comment', limit: 101 })
+    )
+    expect(invalidLimit.status).toBe(422)
+    expect(invalidLimit.body).toMatchObject({
+      error: 'invalid_search_query',
+      message: 'limit must be between 1 and 100',
+    })
 
-    const humanMutation = commentMutation('comment-human', 'Human **Markdown**')
+    const longComment =
+      'Human **Markdown** \u001b[31mred\u001b[0m ' +
+      Array.from({ length: 40 }, (_, index) => `filler${index}`).join(' ')
+    const humanMutation = commentMutation('comment-human', longComment)
     const human = await sync(worker, member.token, created.body.latest_seq, [humanMutation])
     expect(human.status).toBe(200)
     expect(human.body.conflicts).toEqual([])
@@ -251,6 +271,10 @@ describe.sequential('comments', () => {
         match: expect.objectContaining({ source: 'comment', comment_id: 'comment-human' }),
       }),
     ])
+    const excerpt = commentSearch.body.results[0].match.excerpt
+    expect(excerpt).toContain('Human **Markdown** red')
+    expect(excerpt).not.toContain('\u001b')
+    expect(excerpt.endsWith('...')).toBe(true)
 
     const replay = await sync(worker, member.token, human.body.latest_seq, [humanMutation])
     expect(replay.body.applied).toEqual(human.body.applied)
@@ -370,5 +394,5 @@ describe.sequential('comments', () => {
       authenticated(adminToken, { query: 'human markdown' })
     )
     expect(afterDeleteSearch.body.results).toEqual([])
-  }, 30_000)
+  })
 })

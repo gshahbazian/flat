@@ -576,64 +576,37 @@ function searchTextTickets(
   binding: string
 ): SearchResponse {
   const bindings: Array<string | number | null> = [compileFtsQuery(parsed.text)]
-  const conditions = ['ticket_search MATCH ?', "ticket_search.rank MATCH 'bm25(0, 0, 0, 10, 3, 1)'"]
+  const conditions = ['best.match_number = 1']
   addFilters(conditions, bindings, parsed, memberId)
-  const rows = sql
-    .exec<SearchRow & Record<string, SearchValue>>(
-      `SELECT t.id AS ticket_id, t.key, t.title, p.key AS project, t.status, t.priority,
-         m.email AS assignee, t.created_at, t.updated_at,
-         ticket_search.source_kind, ticket_search.source_id,
-         snippet(ticket_search, -1, '', '', '...', 32) AS excerpt,
-         ticket_search.rank AS search_rank
-       FROM ticket_search
-       JOIN tickets t ON t.id = ticket_search.ticket_id
-       JOIN projects p ON p.id = t.project
-       LEFT JOIN members m ON m.id = t.assignee
-       WHERE ${conditions.join(' AND ')}
-       ORDER BY search_rank, ticket_search.source_kind DESC, ticket_search.source_id`,
-      ...bindings
-    )
-    .toArray()
-  const bestByTicket = new Map<string, SearchRow>()
-  for (const row of rows) {
-    if (!bestByTicket.has(row.key)) bestByTicket.set(row.key, row)
-  }
-  const candidates = [...bestByTicket.values()].map((row) => ({
-    ticket_id: row.ticket_id,
-    source_kind: row.source_kind,
-    source_id: row.source_id,
-    excerpt: row.excerpt,
-    search_rank: row.search_rank,
-  }))
-  if (candidates.length === 0) return { results: [], next_cursor: null }
-
-  const pageBindings: Array<string | number | null> = [JSON.stringify(candidates)]
-  const pageConditions: string[] = []
-  if (cursor !== null) addCursor(pageConditions, pageBindings, cursor, sort)
-  const where = pageConditions.length > 0 ? `WHERE ${pageConditions.join(' AND ')}` : ''
-  pageBindings.push(limit + 1)
+  if (cursor !== null) addCursor(conditions, bindings, cursor, sort)
+  bindings.push(limit + 1)
   const page = sql
     .exec<SearchRow & Record<string, SearchValue>>(
-      `WITH best AS (
-         SELECT
-           json_extract(value, '$.ticket_id') AS ticket_id,
-           json_extract(value, '$.source_kind') AS source_kind,
-           json_extract(value, '$.source_id') AS source_id,
-           json_extract(value, '$.excerpt') AS excerpt,
-           json_extract(value, '$.search_rank') AS search_rank
-         FROM json_each(?)
+      `WITH raw_matches AS MATERIALIZED (
+         SELECT ticket_id, source_kind, source_id,
+           ticket_search.rank AS search_rank,
+           snippet(ticket_search, -1, '', '', '...', 32) AS excerpt
+         FROM ticket_search
+         WHERE ticket_search MATCH ?
+           AND ticket_search.rank MATCH 'bm25(0, 0, 0, 10, 3, 1)'
+       ), best_matches AS (
+         SELECT *, row_number() OVER (
+           PARTITION BY ticket_id
+           ORDER BY search_rank, source_kind DESC, source_id
+         ) AS match_number
+         FROM raw_matches
        )
        SELECT t.id AS ticket_id, t.key, t.title, p.key AS project, t.status, t.priority,
          m.email AS assignee, t.created_at, t.updated_at,
          best.source_kind, best.source_id, best.excerpt, best.search_rank
-       FROM best
+       FROM best_matches best
        JOIN tickets t ON t.id = best.ticket_id
        JOIN projects p ON p.id = t.project
        LEFT JOIN members m ON m.id = t.assignee
-       ${where}
+       WHERE ${conditions.join(' AND ')}
        ORDER BY ${orderBy(sort)}
        LIMIT ?`,
-      ...pageBindings
+      ...bindings
     )
     .toArray()
   const hasNext = page.length > limit

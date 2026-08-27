@@ -1,6 +1,7 @@
 # Server search
 
-Status: accepted design. Implementation has not started.
+Status: implemented for the server, HTTP API, and CLI. MCP transport support
+remains deferred until those transports ship.
 
 This document defines server search for Flat. It extends the search outline in
 `001_initial_system.md` and uses the authorization model in

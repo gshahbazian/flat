@@ -12,12 +12,15 @@ import {
 } from '../src/search'
 
 class TestSql implements SearchSql {
+  readonly queries: string[] = []
+
   constructor(readonly database = new DatabaseSync(':memory:')) {}
 
   exec<T extends Record<string, ArrayBuffer | string | number | null>>(
     query: string,
     ...bindings: Array<string | number | null>
   ) {
+    this.queries.push(query)
     const rows = this.database.prepare(query).all(...bindings) as T[]
     return { toArray: () => rows }
   }
@@ -145,13 +148,18 @@ describe('search query parser', () => {
 
 describe('ticket search retrieval', () => {
   test('deduplicates documents and ranks title before description before comment', () => {
-    const response = searchTickets(searchDatabase(), request('needle'), 'member-me')
+    const sql = searchDatabase()
+    const response = searchTickets(sql, request('needle'), 'member-me')
     expect(response.results.map((result) => result.key)).toEqual(['AUTH-1', 'AUTH-2', 'OPS-1'])
     expect(response.results[0].match.source).toBe('ticket')
     expect(response.results[2].match).toMatchObject({
       source: 'comment',
       comment_id: 'comment-1',
     })
+    expect(sql.queries).toHaveLength(1)
+    expect(sql.queries[0]).toContain('AS MATERIALIZED')
+    expect(sql.queries[0]).toContain('LIMIT ?')
+    expect(sql.queries[0]).not.toContain('json_each')
   })
 
   test('combines structured filters and resolves me, none, and member email', () => {

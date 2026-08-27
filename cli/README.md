@@ -10,6 +10,8 @@ flat init URL --token                  # configure an existing FLAT_TOKEN
 flat new TITLE --project KEY [--priority PRIORITY] [--assignee EMAIL]
 flat sync [--merge]                    # pull server changes into the mirror
 flat push                              # send locally edited files back
+flat search QUERY [--sort MODE] [--limit N] [--cursor TOKEN] [--json]
+                                        # search accepted server state
 flat comment KEY TEXT                  # add an append-only comment
 flat comment KEY --stdin               # read multiline Markdown from stdin
 flat path                              # print the mirror location

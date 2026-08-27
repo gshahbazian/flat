@@ -22,6 +22,6 @@ export default {
     }
 
     const stub = env.TENANT.get(env.TENANT.idFromName('tenant'))
-    return stub.fetch(request.clone())
+    return stub.fetch(request)
   },
 }
