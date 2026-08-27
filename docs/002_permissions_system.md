@@ -6,9 +6,9 @@ supersedes its bootstrap and member-enrollment details.
 Implementation note: the current milestone covers tenant setup, enrollment,
 token/member administration, audit, projects, authorization for the HTTP
 ticket-sync surface, comments, server-side search, and server-side MCP.
-WebSocket/watch, labels, force push, native keychain storage, and the
-operator-recovery deployment procedure remain deferred slices of this accepted
-design.
+WebSocket/watch, labels, force push, and native keychain storage remain deferred
+slices of this accepted design. The operator-recovery deployment procedure is
+implemented.
 
 In particular:
 

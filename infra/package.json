@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "deploy": "alchemy deploy",
+    "recover": "node operator-recover.ts",
     "destroy": "alchemy destroy",
     "typecheck": "tsc --noEmit"
   },

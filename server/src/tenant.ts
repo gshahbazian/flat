@@ -162,6 +162,10 @@ class PrincipalChangedError extends Error {
 
 class DuplicateTokenNameError extends Error {}
 
+class OperatorRecoveryConsumedError extends Error {}
+
+class RecoveryTargetChangedError extends Error {}
+
 interface ApplyConflict extends MutationConflict {
   code?: string
   details?: Record<string, unknown>
@@ -2259,56 +2263,84 @@ export class TenantDO extends DurableObject<Env> {
     const now = isoNow()
     const expiresAt = addSeconds(now, lifetime)
     let revokedTokenIds: string[] = []
-    this.ctx.storage.transactionSync(() => {
-      let currentPrincipal = principal
-      if (principal) {
-        currentPrincipal = this.requireCurrentPrincipal(principal, 'member.recover')
-      }
-      revokedTokenIds = this.sql
-        .exec<{ id: string }>(
-          'SELECT id FROM tokens WHERE member_id = ? AND revoked_at IS NULL',
+    try {
+      this.ctx.storage.transactionSync(() => {
+        if (
+          consumedVerifier !== undefined &&
+          this.optionalMeta('consumed_operator_recovery_verifier') === consumedVerifier
+        ) {
+          throw new OperatorRecoveryConsumedError()
+        }
+        let currentPrincipal = principal
+        if (principal) {
+          currentPrincipal = this.requireCurrentPrincipal(principal, 'member.recover')
+        }
+        const currentMember = this.memberByEmail(email)
+        if (
+          !currentMember ||
+          currentMember.id !== member.id ||
+          currentMember.status !== MemberStatus.Active ||
+          (actorKind === 'deployment' && currentMember.role !== Role.Admin)
+        ) {
+          throw new RecoveryTargetChangedError()
+        }
+        revokedTokenIds = this.sql
+          .exec<{ id: string }>(
+            'SELECT id FROM tokens WHERE member_id = ? AND revoked_at IS NULL',
+            member.id
+          )
+          .toArray()
+          .map((row) => row.id)
+        this.sql.exec(
+          'UPDATE tokens SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL',
+          now,
           member.id
         )
-        .toArray()
-        .map((row) => row.id)
-      this.sql.exec(
-        'UPDATE tokens SET revoked_at = ? WHERE member_id = ? AND revoked_at IS NULL',
-        now,
-        member.id
-      )
-      this.sql.exec(
-        `UPDATE enrollments SET revoked_at = ?
-         WHERE member_id = ? AND kind IN ('recovery', 'upgrade') AND consumed_at IS NULL AND revoked_at IS NULL`,
-        now,
-        member.id
-      )
-      this.sql.exec(
-        `INSERT INTO enrollments
-         (id, member_id, kind, secret_verifier, verifier_key_id, intended_role, intended_access,
-          created_by, created_by_kind, created_at, expires_at, consumed_at, revoked_at)
-         VALUES (?, ?, 'recovery', ?, ?, NULL, NULL, ?, ?, ?, ?, NULL, NULL)`,
-        enrollment.id,
-        member.id,
-        enrollment.verifier,
-        enrollment.keyId,
-        currentPrincipal?.memberId ?? null,
-        actorKind,
-        now,
-        expiresAt
-      )
-      if (consumedVerifier !== undefined) {
         this.sql.exec(
-          `INSERT INTO meta (key, value) VALUES ('consumed_operator_recovery_verifier', ?)
-           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
-          consumedVerifier
+          `UPDATE enrollments SET revoked_at = ?
+           WHERE member_id = ? AND kind IN ('recovery', 'upgrade') AND consumed_at IS NULL AND revoked_at IS NULL`,
+          now,
+          member.id
         )
-      }
-      const seq = this.nextSeq()
-      this.audit(seq, 'member.recover', currentPrincipal, actorKind, 'member', member.id, {
-        enrollment_id: enrollment.id,
-        revoked_token_ids: revokedTokenIds,
+        this.sql.exec(
+          `INSERT INTO enrollments
+           (id, member_id, kind, secret_verifier, verifier_key_id, intended_role, intended_access,
+            created_by, created_by_kind, created_at, expires_at, consumed_at, revoked_at)
+           VALUES (?, ?, 'recovery', ?, ?, NULL, NULL, ?, ?, ?, ?, NULL, NULL)`,
+          enrollment.id,
+          member.id,
+          enrollment.verifier,
+          enrollment.keyId,
+          currentPrincipal?.memberId ?? null,
+          actorKind,
+          now,
+          expiresAt
+        )
+        if (consumedVerifier !== undefined) {
+          this.sql.exec(
+            `INSERT INTO meta (key, value) VALUES ('consumed_operator_recovery_verifier', ?)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+            consumedVerifier
+          )
+        }
+        const seq = this.nextSeq()
+        this.audit(seq, 'member.recover', currentPrincipal, actorKind, 'member', member.id, {
+          enrollment_id: enrollment.id,
+          revoked_token_ids: revokedTokenIds,
+        })
       })
-    })
+    } catch (error) {
+      if (error instanceof OperatorRecoveryConsumedError) {
+        return jsonError(401, 'invalid_operator_recovery')
+      }
+      if (error instanceof RecoveryTargetChangedError) {
+        if (actorKind === 'deployment') {
+          return jsonError(409, 'operator_recovery_target_invalid')
+        }
+        return jsonError(409, 'member_not_active')
+      }
+      throw error
+    }
     this.closeTokenSessions(revokedTokenIds)
     return Response.json(
       { email, expires_at: expiresAt, recovery_code: enrollment.credential },
