@@ -7,6 +7,7 @@ import {
   type CallToolResult,
 } from '@modelcontextprotocol/server'
 import { createMcpHandler } from 'agents/mcp/server'
+import { z } from 'zod'
 
 import type { Env } from './index'
 import { readBoundedMcpBody } from './mcp-body'
@@ -35,8 +36,10 @@ import {
   type McpErrorBody,
   type McpToolName,
 } from './mcp-schema'
+import { jsonObjectSchema, jsonValueSchema, type JsonValue } from './request-schema'
 
 const JSON_CONTENT_TYPE = 'application/json'
+const JSON_RPC_ID_SCHEMA = z.union([z.string(), z.number()])
 
 function httpError(status: number, code: string, headers?: HeadersInit): Response {
   return Response.json({ error: code }, { status, headers })
@@ -47,21 +50,22 @@ function jsonRpcError(status: number, code: number, message: string): Response {
 }
 
 function mcpEnvelopeRejection(body: ArrayBuffer): Response | undefined {
-  let value: unknown
+  let decoded: JsonValue
   try {
-    value = JSON.parse(new TextDecoder().decode(body))
+    decoded = jsonValueSchema.parse(JSON.parse(new TextDecoder().decode(body)))
   } catch {
     return undefined
   }
 
-  if (Array.isArray(value)) {
+  if (Array.isArray(decoded)) {
     return jsonRpcError(400, -32600, 'JSON-RPC batches are not supported.')
   }
-  if (!isJsonObject(value)) return undefined
+  const value = jsonObjectSchema.safeParse(decoded)
+  if (!value.success) return undefined
 
-  const { id } = value
-  if (typeof id !== 'string' && typeof id !== 'number') return undefined
-  const idBytes = new TextEncoder().encode(JSON.stringify(id)).byteLength
+  const id = JSON_RPC_ID_SCHEMA.safeParse(value.data.id)
+  if (!id.success) return undefined
+  const idBytes = new TextEncoder().encode(JSON.stringify(id.data)).byteLength
   if (idBytes <= MCP_MAX_REQUEST_ID_BYTES) return undefined
   return jsonRpcError(400, -32600, 'JSON-RPC request ID is too large.')
 }
@@ -74,9 +78,9 @@ function requestWithBody(request: Request, body: ArrayBuffer): Request {
   })
 }
 
-async function jsonBody(response: Response): Promise<unknown> {
+async function jsonBody(response: Response): Promise<JsonValue> {
   try {
-    return await response.json()
+    return jsonValueSchema.parse(await response.json())
   } catch {
     return null
   }
@@ -124,7 +128,7 @@ async function executeTool(
   stub: DurableObjectStub,
   authorization: string,
   tool: McpToolName,
-  input: unknown,
+  input: JsonValue,
   correlationId: string
 ): Promise<CallToolResult> {
   try {
@@ -183,21 +187,16 @@ async function executeTool(
       )
     }
 
-    if (!isJsonObject(body)) {
-      return internalError(correlationId)
-    }
+    const parsedBody = jsonObjectSchema.safeParse(body)
+    if (!parsedBody.success) return internalError(correlationId)
     return {
-      content: [{ type: 'text', text: JSON.stringify(body) }],
-      structuredContent: body,
+      content: [{ type: 'text', text: JSON.stringify(parsedBody.data) }],
+      structuredContent: parsedBody.data,
     }
   } catch {
     console.error(`mcp executor failed correlation_id=${correlationId}`)
     return internalError(correlationId)
   }
-}
-
-function isJsonObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 function createServer(

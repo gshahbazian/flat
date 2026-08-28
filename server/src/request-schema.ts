@@ -4,8 +4,21 @@ import { Role, TokenAccess, TokenKind } from './schema.gen'
 import { emailSchema, tenantNameSchema, tokenNameSchema } from './validate'
 import { roleSchema } from './wire-schema'
 
-export const jsonObjectSchema = z.looseObject({})
+export const jsonValueSchema = z.json()
+export const jsonObjectSchema = z.record(z.string(), jsonValueSchema)
 export const stringValueSchema = z.string()
+
+export type JsonValue = z.infer<typeof jsonValueSchema>
+export type JsonObject = z.infer<typeof jsonObjectSchema>
+export type JsonInputValue =
+  | boolean
+  | number
+  | string
+  | null
+  | undefined
+  | JsonInputValue[]
+  | JsonInputObject
+export type JsonInputObject = { [key: string]: JsonInputValue }
 
 export function durationSchema(maximum: number) {
   return z.number().int().positive().max(maximum)
@@ -17,15 +30,15 @@ function defaulted<T extends string>(schema: z.ZodType<T>, fallback: T) {
 
 export const setupBodySchema = z
   .object({
-    setup_credential: z.unknown().optional(),
-    credential: z.unknown().optional(),
-    email: z.unknown().optional(),
-    admin_email: z.unknown().optional(),
-    tenant_name: z.unknown().optional(),
-    display_name: z.unknown().optional(),
-    token_name: z.unknown().optional(),
-    cli_name: z.unknown().optional(),
-    name: z.unknown().optional(),
+    setup_credential: jsonValueSchema.optional(),
+    credential: jsonValueSchema.optional(),
+    email: jsonValueSchema.optional(),
+    admin_email: jsonValueSchema.optional(),
+    tenant_name: jsonValueSchema.optional(),
+    display_name: jsonValueSchema.optional(),
+    token_name: jsonValueSchema.optional(),
+    cli_name: jsonValueSchema.optional(),
+    name: jsonValueSchema.optional(),
   })
   .transform((body) => ({
     credential: body.setup_credential ?? body.credential,
@@ -45,7 +58,7 @@ export const invitationMemberSchema = z.object({
   role: defaulted(roleSchema, Role.Member),
 })
 
-export const bulkInvitationMarkerSchema = z.object({ members: z.array(z.unknown()) })
+export const bulkInvitationMarkerSchema = z.object({ members: z.array(jsonValueSchema) })
 
 export function bulkInvitationSchema(defaultSeconds: number, maximumSeconds: number) {
   return z
@@ -80,12 +93,12 @@ export function invitationSchema(defaultSeconds: number, maximumSeconds: number)
 export function enrollmentBodySchema(kind: 'invite' | 'recovery') {
   return z
     .object({
-      credential: z.unknown().optional(),
-      invitation_code: z.unknown().optional(),
-      recovery_code: z.unknown().optional(),
-      token_name: z.unknown().optional(),
-      cli_name: z.unknown().optional(),
-      name: z.unknown().optional(),
+      credential: jsonValueSchema.optional(),
+      invitation_code: jsonValueSchema.optional(),
+      recovery_code: jsonValueSchema.optional(),
+      token_name: jsonValueSchema.optional(),
+      cli_name: jsonValueSchema.optional(),
+      name: jsonValueSchema.optional(),
     })
     .transform((body) => {
       let credential = body.credential ?? body.recovery_code
@@ -101,9 +114,9 @@ export const emailBodySchema = z.object({ email: emailSchema })
 
 export const operatorRecoveryBodySchema = z
   .object({
-    operator_credential: z.unknown().optional(),
-    credential: z.unknown().optional(),
-    email: z.unknown().optional(),
+    operator_credential: jsonValueSchema.optional(),
+    credential: jsonValueSchema.optional(),
+    email: jsonValueSchema.optional(),
   })
   .transform((body) => ({
     credential: body.operator_credential ?? body.credential,
@@ -117,8 +130,8 @@ export const upgradeCreationBodySchema = z.object({
 
 export const tokenUpgradeBodySchema = z
   .object({
-    credential: z.unknown().optional(),
-    upgrade_code: z.unknown().optional(),
+    credential: jsonValueSchema.optional(),
+    upgrade_code: jsonValueSchema.optional(),
   })
   .transform((body) => ({ credential: body.credential ?? body.upgrade_code }))
 
@@ -133,9 +146,9 @@ export const tokenAccessSchema = z.enum(TokenAccess)
 export const tokenCreateBodySchema = z.object({
   name: tokenNameSchema,
   kind: defaulted(tokenKindSchema, TokenKind.Agent),
-  for_email: z.unknown().optional(),
-  access: z.unknown().optional(),
-  expires_in_seconds: z.unknown().optional(),
+  for_email: jsonValueSchema.optional(),
+  access: jsonValueSchema.optional(),
+  expires_in_seconds: jsonValueSchema.optional(),
 })
 
 export const tokenRevokeBodySchema = z.object({ token_id: z.string() })

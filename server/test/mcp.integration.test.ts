@@ -4,7 +4,15 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { unstable_dev, type Unstable_DevWorker } from 'wrangler'
 
-import { encodeMcpCursor, MCP_MAX_REQUEST_ID_BYTES } from '../src/mcp-schema'
+import {
+  encodeMcpCursor,
+  getTicketOutputSchema,
+  listProjectsOutputSchema,
+  MCP_MAX_REQUEST_ID_BYTES,
+  writeReceiptSchema,
+  type WriteReceipt,
+} from '../src/mcp-schema'
+import type { JsonValue } from '../src/request-schema'
 import { MAX_PROJECT_DESCRIPTION_BYTES } from '../src/validate'
 
 const HMAC_KEY = Buffer.alloc(32, 47)
@@ -21,15 +29,29 @@ const TOOL_NAMES = [
   'update_ticket',
 ]
 type WorkerRequestInit = NonNullable<Parameters<Unstable_DevWorker['fetch']>[1]>
+type WorkerResponse = Awaited<ReturnType<Unstable_DevWorker['fetch']>>
+
+interface JsonResponse<T> {
+  response: Response
+  body: T
+}
+
+async function webResponse(response: WorkerResponse): Promise<Response> {
+  return new Response(await response.arrayBuffer(), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: Object.fromEntries(response.headers.entries()),
+  })
+}
 
 async function json<T>(
   worker: Unstable_DevWorker,
   path: string,
-  init: WorkerRequestInit = {},
-  _type?: (value: unknown) => T
-): Promise<{ response: Response; body: T }> {
-  const response = (await worker.fetch(`http://flat.test${path}`, init)) as unknown as Response
+  init: WorkerRequestInit = {}
+): Promise<JsonResponse<T>> {
+  const response = await webResponse(await worker.fetch(`http://flat.test${path}`, init))
   const text = await response.text()
+  // SAFETY: Each test supplies T for the endpoint contract it exercises.
   const body = text ? (JSON.parse(text) as T) : (null as T)
   return { response, body }
 }
@@ -44,7 +66,7 @@ function mcpFetch(worker: Unstable_DevWorker): typeof fetch {
     if (request.method !== 'GET' && request.method !== 'HEAD' && request.body !== null) {
       workerInit.body = await request.text()
     }
-    const response = (await worker.fetch(request.url, workerInit)) as unknown as Response
+    const response = await webResponse(await worker.fetch(request.url, workerInit))
     if (response.headers.has('Mcp-Session-Id')) throw new Error('MCP returned a session ID')
     return response
   }
@@ -107,7 +129,7 @@ describe.sequential('server-side MCP', () => {
   let worker: Unstable_DevWorker
   let adminToken: string
   let primaryTicketKey: string
-  let primaryCreatedReceipt: Record<string, unknown>
+  let primaryCreatedReceipt: WriteReceipt
 
   beforeAll(async () => {
     worker = await unstable_dev('src/index.ts', {
@@ -297,9 +319,9 @@ describe.sequential('server-side MCP', () => {
     expect(created.structuredContent).toEqual(
       expect.objectContaining({ key: 'DEMO-1', replayed: false })
     )
-    const createdReceipt = created.structuredContent as Record<string, unknown>
+    const createdReceipt = writeReceiptSchema.parse(created.structuredContent)
     primaryCreatedReceipt = createdReceipt
-    primaryTicketKey = String(createdReceipt.key)
+    primaryTicketKey = createdReceipt.key
     const replayed = await legacy.callTool({
       name: 'create_ticket',
       arguments: {
@@ -342,7 +364,7 @@ describe.sequential('server-side MCP', () => {
         next_comment_cursor: null,
       })
     )
-    const ticketSeq = (ticket.structuredContent as { ticket: { seq: number } }).ticket.seq
+    const ticketSeq = getTicketOutputSchema.parse(ticket.structuredContent).ticket.seq
 
     const updated = await legacy.callTool({
       name: 'update_ticket',
@@ -385,7 +407,7 @@ describe.sequential('server-side MCP', () => {
       },
     })
     expect(disjoint.isError).not.toBe(true)
-    const disjointReceipt = disjoint.structuredContent as { seq: number }
+    const disjointReceipt = writeReceiptSchema.parse(disjoint.structuredContent)
     const cleared = await legacy.callTool({
       name: 'update_ticket',
       arguments: {
@@ -421,7 +443,7 @@ describe.sequential('server-side MCP', () => {
       },
     })
     expect(commentReplay.structuredContent).toEqual({
-      ...(commented.structuredContent as Record<string, unknown>),
+      ...writeReceiptSchema.parse(commented.structuredContent),
       replayed: true,
     })
     await legacy.callTool({
@@ -436,11 +458,7 @@ describe.sequential('server-side MCP', () => {
       name: 'get_ticket',
       arguments: { key: 'DEMO-1', comment_limit: 1 },
     })
-    const firstPage = firstCommentPage.structuredContent as {
-      ticket: { id: string }
-      comments: Array<{ body: string }>
-      next_comment_cursor: string
-    }
+    const firstPage = getTicketOutputSchema.parse(firstCommentPage.structuredContent)
     expect(firstPage.comments).toEqual([expect.objectContaining({ body: 'Comment through MCP' })])
     expect(firstPage.next_comment_cursor).toEqual(expect.any(String))
     await legacy.callTool({
@@ -505,7 +523,7 @@ describe.sequential('server-side MCP', () => {
     })
     const description = '\\'.repeat(MAX_PROJECT_DESCRIPTION_BYTES)
     const keys = ['BIGA', 'BIGB', 'BIGC']
-    const created = await json<{ conflicts: unknown[] }>(worker, '/sync', {
+    const created = await json<{ conflicts: JsonValue[] }>(worker, '/sync', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${adminToken}`,
@@ -540,10 +558,7 @@ describe.sequential('server-side MCP', () => {
       expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(
         4 * 1024 * 1024
       )
-      const page = result.structuredContent as {
-        projects: Array<{ key: string }>
-        next_cursor: string | null
-      }
+      const page = listProjectsOutputSchema.parse(result.structuredContent)
       returnedKeys.push(...page.projects.map((project) => project.key))
       cursor = page.next_cursor
       pages += 1
@@ -611,9 +626,9 @@ describe.sequential('server-side MCP', () => {
         title: 'Modern protocol ticket',
       },
     })
-    const modernKey = (modernCreated.structuredContent as { key: string }).key
+    const modernKey = writeReceiptSchema.parse(modernCreated.structuredContent).key
     const modernRead = await modern.callTool({ name: 'get_ticket', arguments: { key: modernKey } })
-    const modernSeq = (modernRead.structuredContent as { ticket: { seq: number } }).ticket.seq
+    const modernSeq = getTicketOutputSchema.parse(modernRead.structuredContent).ticket.seq
     await modern.callTool({
       name: 'update_ticket',
       arguments: {
@@ -745,19 +760,7 @@ describe.sequential('server-side MCP', () => {
       name: 'get_ticket',
       arguments: { key: primaryTicketKey },
     })
-    const comments = (
-      attributed.structuredContent as {
-        comments: Array<{
-          body: string
-          author: {
-            kind: string
-            member: { email: string }
-            agent_name: string | null
-            delegated_by: { email: string } | null
-          }
-        }>
-      }
-    ).comments
+    const comments = getTicketOutputSchema.parse(attributed.structuredContent).comments
     expect(comments).toEqual(
       expect.arrayContaining([
         expect.objectContaining({

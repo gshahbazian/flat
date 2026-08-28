@@ -2,13 +2,25 @@ import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { createInterface } from 'node:readline/promises'
 
+import { z } from 'zod'
+
 const OPERATOR_CREDENTIAL_ENV = 'FLAT_OPERATOR_RECOVERY_CREDENTIAL'
 const OPERATOR_DEPLOY_ENV = 'FLAT_OPERATOR_RECOVERY_DEPLOY'
 
-interface RecoveryResponse {
-  recovery_code: string
-  expires_at: string
-}
+const recoveryResponseSchema = z
+  .object({
+    recovery_code: z.string().startsWith('flat_rec_'),
+    expires_at: z.string().refine((value) => Number.isFinite(Date.parse(value))),
+  })
+  .strict()
+
+const errorResponseSchema = z
+  .object({
+    error: z.string().regex(/^[a-z0-9_]+$/),
+  })
+  .strict()
+
+type RecoveryResponse = z.infer<typeof recoveryResponseSchema>
 
 function deployArguments(args: string[]): string[] {
   const result: string[] = []
@@ -89,33 +101,6 @@ async function deploy(args: string[], credential?: string): Promise<void> {
   })
 }
 
-function recoveryResponse(value: unknown): RecoveryResponse | null {
-  if (value === null || typeof value !== 'object') return null
-  if (
-    !('recovery_code' in value) ||
-    typeof value.recovery_code !== 'string' ||
-    !value.recovery_code.startsWith('flat_rec_')
-  ) {
-    return null
-  }
-  if (
-    !('expires_at' in value) ||
-    typeof value.expires_at !== 'string' ||
-    !Number.isFinite(Date.parse(value.expires_at))
-  ) {
-    return null
-  }
-  return { recovery_code: value.recovery_code, expires_at: value.expires_at }
-}
-
-function errorCode(value: unknown): string | null {
-  if (value === null || typeof value !== 'object') return null
-  if (!('error' in value)) return null
-  const { error } = value
-  if (typeof error !== 'string' || !/^[a-z0-9_]+$/.test(error)) return null
-  return error
-}
-
 async function requestRecovery(
   server: string,
   email: string,
@@ -133,17 +118,17 @@ async function requestRecovery(
     throw new Error(`operator recovery returned HTTP ${response.status} with invalid JSON`)
   }
   if (!response.ok) {
-    const code = errorCode(body)
-    const suffix = code === null ? '' : ` (${code})`
+    const parsedError = errorResponseSchema.safeParse(body)
+    const suffix = parsedError.success ? ` (${parsedError.data.error})` : ''
     throw new Error(`operator recovery returned HTTP ${response.status}${suffix}`)
   }
-  const parsed = recoveryResponse(body)
-  if (!parsed) throw new Error('operator recovery returned an invalid response')
-  return parsed
+  const parsed = recoveryResponseSchema.safeParse(body)
+  if (!parsed.success) throw new Error('operator recovery returned an invalid response')
+  return parsed.data
 }
 
-function message(error: unknown): string {
-  if (error instanceof Error) return error.message
+function message(cause: unknown): string {
+  if (cause instanceof Error) return cause.message
   return 'unknown error'
 }
 
@@ -187,7 +172,7 @@ async function main(): Promise<void> {
   process.stdout.write('Operator verifier removed.\n')
 }
 
-main().catch((error: unknown) => {
-  process.stderr.write(`Operator recovery failed: ${message(error)}\n`)
+main().catch((cause: unknown) => {
+  process.stderr.write(`Operator recovery failed: ${message(cause)}\n`)
   process.exitCode = 1
 })

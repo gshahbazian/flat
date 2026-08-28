@@ -1,3 +1,5 @@
+import { z } from 'zod'
+
 import {
   Priority,
   SearchMatchSource,
@@ -54,6 +56,17 @@ interface SearchCursor {
   key: string
 }
 
+const searchCursorSchema = z
+  .object({
+    v: z.literal(1),
+    binding: z.string(),
+    sort: z.enum(SearchSort),
+    rank: z.number().optional(),
+    time: z.string().refine((value) => Number.isFinite(Date.parse(value))),
+    key: z.string().regex(TICKET_KEY),
+  })
+  .strict()
+
 interface SearchRow {
   ticket_id: string | null
   key: string
@@ -97,7 +110,7 @@ function fail(query: string, message: string, characterOffset: number): never {
   throw new SearchQueryError('invalid_search_query', message, byteOffset(query, characterOffset))
 }
 
-function parseQuoted(query: string, start: number): { value: string; end: number } {
+function parseQuoted(query: string, start: number) {
   let value = ''
   let index = start + 1
   while (index < query.length) {
@@ -391,29 +404,12 @@ function decodeBase64Url(value: string): string {
 
 function parseCursor(raw: string, binding: string, sort: SearchSort): SearchCursor {
   try {
-    const decoded: unknown = JSON.parse(decodeBase64Url(raw))
-    if (typeof decoded !== 'object' || decoded === null || Array.isArray(decoded)) {
-      throw new Error()
-    }
-    const value = Object.fromEntries(Object.entries(decoded))
-    const time = value.time
-    const key = value.key
-    const rank = value.rank
-    if (value.v !== 1 || value.binding !== binding || value.sort !== sort) throw new Error()
-    if (typeof time !== 'string' || !Number.isFinite(Date.parse(time))) {
-      throw new Error()
-    }
-    if (typeof key !== 'string' || !TICKET_KEY.test(key)) throw new Error()
-    if (sort === SearchSort.Relevance && typeof rank !== 'number') throw new Error()
-    if (sort !== SearchSort.Relevance && rank !== undefined) throw new Error()
-    const cursor: SearchCursor = {
-      v: 1,
-      binding,
-      sort,
-      time,
-      key,
-    }
-    if (typeof rank === 'number') cursor.rank = rank
+    const parsed = searchCursorSchema.safeParse(JSON.parse(decodeBase64Url(raw)))
+    if (!parsed.success) throw new Error()
+    const cursor = parsed.data
+    if (cursor.binding !== binding || cursor.sort !== sort) throw new Error()
+    if (sort === SearchSort.Relevance && cursor.rank === undefined) throw new Error()
+    if (sort !== SearchSort.Relevance && cursor.rank !== undefined) throw new Error()
     return cursor
   } catch {
     throw new SearchQueryError('invalid_search_cursor', 'cursor is invalid for this search', 0)

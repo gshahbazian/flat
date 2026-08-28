@@ -1,3 +1,5 @@
+import { z } from 'zod'
+
 import { mcpError } from './mcp-response'
 import {
   decodeMcpCursor,
@@ -12,14 +14,39 @@ import {
   type ListProjectsOutput,
 } from './mcp-schema'
 import type { Principal } from './policy'
-import { jsonObjectSchema } from './request-schema'
+import type { JsonObject } from './request-schema'
 import type { Priority, Role, Status, TokenKind } from './schema.gen'
 import { SearchQueryError, searchTickets } from './search'
 import { sequenceSchema } from './wire-schema'
 
+const commentCursorSchema = z
+  .object({
+    kind: z.literal('comments'),
+    ticket_id: z.string(),
+    watermark: sequenceSchema,
+    last_seq: sequenceSchema,
+    last_id: z.string().min(1),
+  })
+  .strict()
+
+const projectCursorSchema = z
+  .object({
+    kind: z.literal('projects'),
+    last_key: z.string(),
+  })
+  .strict()
+
+const memberCursorSchema = z
+  .object({
+    kind: z.literal('members'),
+    query: z.string(),
+    last_email: z.string(),
+  })
+  .strict()
+
 export function mcpSearchTickets(
   sql: SqlStorage,
-  rawBody: Record<string, unknown>,
+  rawBody: JsonObject,
   principal: Principal
 ): Response {
   const parsed = searchTicketsInputSchema.safeParse(rawBody)
@@ -38,11 +65,7 @@ export function mcpSearchTickets(
   }
 }
 
-export function mcpGetTicket(
-  sql: SqlStorage,
-  rawBody: Record<string, unknown>,
-  latestSeq: number
-): Response {
+export function mcpGetTicket(sql: SqlStorage, rawBody: JsonObject, latestSeq: number): Response {
   const parsed = getTicketInputSchema.safeParse(rawBody)
   if (!parsed.success) {
     return mcpError(422, 'validation', 'invalid_arguments', 'Invalid ticket read request.')
@@ -80,28 +103,16 @@ export function mcpGetTicket(
   let lastSeq = -1
   let lastId = ''
   if (input.comment_cursor !== null) {
-    const cursor = mcpCursor(input.comment_cursor)
-    if (
-      cursor === null ||
-      cursor.kind !== 'comments' ||
-      cursor.ticket_id !== ticket.id ||
-      typeof cursor.last_id !== 'string' ||
-      cursor.last_id.length === 0
-    ) {
+    const cursor = commentCursorSchema.safeParse(decodeMcpCursor(input.comment_cursor))
+    if (!cursor.success || cursor.data.ticket_id !== ticket.id) {
       return mcpError(422, 'validation', 'invalid_cursor', 'Comment cursor is invalid.')
     }
-    const cursorWatermark = sequenceSchema.safeParse(cursor.watermark)
-    const cursorLastSeq = sequenceSchema.safeParse(cursor.last_seq)
-    if (
-      !cursorWatermark.success ||
-      !cursorLastSeq.success ||
-      cursorLastSeq.data > cursorWatermark.data
-    ) {
+    if (cursor.data.last_seq > cursor.data.watermark) {
       return mcpError(422, 'validation', 'invalid_cursor', 'Comment cursor is invalid.')
     }
-    watermark = cursorWatermark.data
-    lastSeq = cursorLastSeq.data
-    lastId = cursor.last_id
+    watermark = cursor.data.watermark
+    lastSeq = cursor.data.last_seq
+    lastId = cursor.data.last_id
   }
 
   const rows = sql.exec<{
@@ -220,18 +231,18 @@ export function mcpGetTicket(
   return Response.json(output)
 }
 
-export function mcpListProjects(sql: SqlStorage, rawBody: Record<string, unknown>): Response {
+export function mcpListProjects(sql: SqlStorage, rawBody: JsonObject): Response {
   const parsed = listProjectsInputSchema.safeParse(rawBody)
   if (!parsed.success) {
     return mcpError(422, 'validation', 'invalid_arguments', 'Invalid project list request.')
   }
   let lastKey = ''
   if (parsed.data.cursor !== null) {
-    const cursor = mcpCursor(parsed.data.cursor)
-    if (cursor === null || cursor.kind !== 'projects' || typeof cursor.last_key !== 'string') {
+    const cursor = projectCursorSchema.safeParse(decodeMcpCursor(parsed.data.cursor))
+    if (!cursor.success) {
       return mcpError(422, 'validation', 'invalid_cursor', 'Project cursor is invalid.')
     }
-    lastKey = cursor.last_key
+    lastKey = cursor.data.last_key
   }
   const rows = sql.exec<{ id: string; key: string; display_name: string; description: string }>(
     `SELECT id, key, display_name, description FROM projects
@@ -275,10 +286,7 @@ export function mcpListProjects(sql: SqlStorage, rawBody: Record<string, unknown
   return Response.json(output)
 }
 
-export function mcpListAssignableMembers(
-  sql: SqlStorage,
-  rawBody: Record<string, unknown>
-): Response {
+export function mcpListAssignableMembers(sql: SqlStorage, rawBody: JsonObject): Response {
   const parsed = listAssignableMembersInputSchema.safeParse(rawBody)
   if (!parsed.success) {
     return mcpError(422, 'validation', 'invalid_arguments', 'Invalid member list request.')
@@ -286,16 +294,11 @@ export function mcpListAssignableMembers(
   const { query } = parsed.data
   let lastEmail = ''
   if (parsed.data.cursor !== null) {
-    const cursor = mcpCursor(parsed.data.cursor)
-    if (
-      cursor === null ||
-      cursor.kind !== 'members' ||
-      cursor.query !== query ||
-      typeof cursor.last_email !== 'string'
-    ) {
+    const cursor = memberCursorSchema.safeParse(decodeMcpCursor(parsed.data.cursor))
+    if (!cursor.success || cursor.data.query !== query) {
       return mcpError(422, 'validation', 'invalid_cursor', 'Member cursor is invalid.')
     }
-    lastEmail = cursor.last_email
+    lastEmail = cursor.data.last_email
   }
   const rows = sql
     .exec<{ id: string; email: string; role: Role }>(
@@ -316,10 +319,4 @@ export function mcpListAssignableMembers(
       : null,
   }
   return Response.json(output)
-}
-
-function mcpCursor(value: string): Record<string, unknown> | null {
-  const decoded = decodeMcpCursor(value)
-  const parsed = jsonObjectSchema.safeParse(decoded)
-  return parsed.success ? parsed.data : null
 }

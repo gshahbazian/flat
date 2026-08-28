@@ -1,4 +1,5 @@
 import { MCP_PATH, MCP_TOOLS, type McpToolName } from './mcp-schema'
+import { jsonObjectSchema, stringValueSchema } from './request-schema'
 
 const MCP_PROTOCOL_METHODS = new Set([
   'initialize',
@@ -16,17 +17,18 @@ function isMcpToolName(value: string): value is McpToolName {
 
 function mcpOperation(body: ArrayBuffer): string {
   try {
-    const value: unknown = JSON.parse(new TextDecoder().decode(body))
-    if (!value || typeof value !== 'object') return 'unknown'
-    const message = value as { method?: unknown; params?: unknown }
-    if (typeof message.method !== 'string') return 'unknown'
-    if (!MCP_PROTOCOL_METHODS.has(message.method)) return 'unknown_method'
-    if (message.method !== 'tools/call') return message.method
-    if (!message.params || typeof message.params !== 'object') return message.method
-    const name = (message.params as { name?: unknown }).name
-    if (typeof name !== 'string') return message.method
-    if (!isMcpToolName(name)) return 'unknown_tool'
-    return name
+    const message = jsonObjectSchema.safeParse(JSON.parse(new TextDecoder().decode(body)))
+    if (!message.success) return 'unknown'
+    const method = stringValueSchema.safeParse(message.data.method)
+    if (!method.success) return 'unknown'
+    if (!MCP_PROTOCOL_METHODS.has(method.data)) return 'unknown_method'
+    if (method.data !== 'tools/call') return method.data
+    const params = jsonObjectSchema.safeParse(message.data.params)
+    if (!params.success) return method.data
+    const name = stringValueSchema.safeParse(params.data.name)
+    if (!name.success) return method.data
+    if (!isMcpToolName(name.data)) return 'unknown_tool'
+    return name.data
   } catch {
     return 'malformed'
   }

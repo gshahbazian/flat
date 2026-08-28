@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { describe, expect, test } from 'vitest'
 
+import type { JsonObject } from '../src/request-schema'
 import { SearchSort } from '../src/schema.gen'
 import {
   compileFtsQuery,
@@ -21,6 +22,7 @@ class TestSql implements SearchSql {
     ...bindings: Array<string | number | null>
   ) {
     this.queries.push(query)
+    // SAFETY: The query's selected columns define T, and each test creates the matching schema.
     const rows = this.database.prepare(query).all(...bindings) as T[]
     return { toArray: () => rows }
   }
@@ -75,7 +77,7 @@ function searchDatabase(): TestSql {
   return sql
 }
 
-function request(query: string, overrides: Record<string, unknown> = {}) {
+function request(query: string, overrides: JsonObject = {}) {
   return {
     query,
     cursor: null,
