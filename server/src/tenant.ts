@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers'
+import { z } from 'zod'
 
 import { conflictingFields } from './conflict'
 import {
@@ -52,6 +53,7 @@ import {
   enrollmentBodySchema,
   invitationSchema,
   jsonObjectSchema,
+  jsonValueSchema,
   memberRoleBodySchema,
   operatorRecoveryBodySchema,
   setupBodySchema,
@@ -63,6 +65,8 @@ import {
   tokenRevokeBodySchema,
   tokenUpgradeBodySchema,
   upgradeCreationBodySchema,
+  type JsonObject,
+  type JsonValue,
 } from './request-schema'
 import {
   Entity,
@@ -106,6 +110,7 @@ import {
   mutationInputSchema,
   mutationRecordSchema,
   searchRequestSchema,
+  sequenceSchema,
   syncEnvelopeSchema,
 } from './wire-schema'
 
@@ -168,10 +173,10 @@ class RecoveryTargetChangedError extends Error {}
 
 interface ApplyConflict extends MutationConflict {
   code?: string
-  details?: Record<string, unknown>
+  details?: JsonObject
 }
 
-const MCP_ACTIONS: Record<McpToolName, Action> = {
+const MCP_ACTIONS = {
   search_tickets: 'work.search',
   get_ticket: 'work.read',
   list_projects: 'work.read',
@@ -179,7 +184,7 @@ const MCP_ACTIONS: Record<McpToolName, Action> = {
   create_ticket: 'ticket.create',
   update_ticket: 'ticket.update',
   add_comment: 'comment.create',
-}
+} satisfies Record<McpToolName, Action>
 
 type McpWriteRequest =
   | { tool: 'create_ticket'; input: CreateTicketInput }
@@ -271,9 +276,9 @@ function addSeconds(timestamp: string, seconds: number): string {
 
 type SqlRow<T> = T & Record<string, SqlStorageValue>
 
-async function requestObject(request: Request): Promise<Record<string, unknown> | null> {
+async function requestObject(request: Request): Promise<JsonObject | null> {
   try {
-    const value = await request.json<unknown>()
+    const value = await request.json()
     const result = jsonObjectSchema.safeParse(value)
     if (!result.success) return null
     return result.data
@@ -293,22 +298,21 @@ async function discardRequestBody(request: Request): Promise<void> {
   }
 }
 
-function parseJson(value: string): { success: true; data: unknown } | { success: false } {
+function parseJson(value: string): { success: true; data: JsonValue } | { success: false } {
   try {
-    return { success: true, data: JSON.parse(value) }
+    const parsed = jsonValueSchema.safeParse(JSON.parse(value))
+    if (!parsed.success) return { success: false }
+    return { success: true, data: parsed.data }
   } catch {
     return { success: false }
   }
 }
 
-function mutationReason(
-  raw: Record<string, unknown>,
-  operation: MutationOp,
-  entity: Entity
-): string {
+function mutationReason(raw: JsonObject, operation: MutationOp, entity: Entity): string {
   const result = mutationInputSchema.safeParse(raw)
   if (result.success) return 'malformed mutation'
-  if (typeof raw.entity_id !== 'string' || raw.entity_id.length === 0) {
+  const entityId = z.string().min(1).safeParse(raw.entity_id)
+  if (!entityId.success) {
     return 'entity_id is required'
   }
   const rawSet = jsonObjectSchema.safeParse(raw.set)
@@ -319,7 +323,7 @@ function mutationReason(
   const set = rawSet.data
   if (entity === Entity.Ticket) {
     for (const field of ['title', 'body'] as const) {
-      if (set[field] != null && typeof set[field] !== 'string') {
+      if (set[field] != null && !stringValueSchema.safeParse(set[field]).success) {
         return `set.${field} must be a string`
       }
     }
@@ -332,18 +336,22 @@ function mutationReason(
     ) {
       return `unknown priority ${JSON.stringify(set.priority)}`
     }
-    if (set.assignee !== undefined && set.assignee !== null && typeof set.assignee !== 'string') {
+    if (
+      set.assignee !== undefined &&
+      set.assignee !== null &&
+      !stringValueSchema.safeParse(set.assignee).success
+    ) {
       return 'set.assignee must be a member id or null'
     }
-    if (set.project != null && typeof set.project !== 'string') {
+    if (set.project != null && !stringValueSchema.safeParse(set.project).success) {
       return 'set.project must be a project id'
     }
   } else if (entity === Entity.Comment) {
     if (operation !== MutationOp.Create) return 'comments are append-only'
-    if (set.ticket != null && typeof set.ticket !== 'string') {
+    if (set.ticket != null && !stringValueSchema.safeParse(set.ticket).success) {
       return 'set.ticket must be a ticket id'
     }
-    if (set.body != null && typeof set.body !== 'string') {
+    if (set.body != null && !stringValueSchema.safeParse(set.body).success) {
       return 'set.body must be a string'
     }
   } else {
@@ -353,33 +361,25 @@ function mutationReason(
     if (set.display_name !== undefined && !projectNameSchema.safeParse(set.display_name).success) {
       return 'invalid_project_name'
     }
-    if (set.description !== undefined && typeof set.description !== 'string') {
+    const description = stringValueSchema.safeParse(set.description)
+    if (set.description !== undefined && !description.success) {
       return 'set.description must be a string'
     }
-    if (typeof set.description === 'string') {
-      const reason = invalidProjectDescription(set.description)
+    if (description.success) {
+      const reason = invalidProjectDescription(description.data)
       if (reason) return reason
     }
   }
   for (const field of ['owners_add', 'owners_remove'] as const) {
     const value = raw[field]
-    if (
-      value !== undefined &&
-      (!Array.isArray(value) || value.some((item) => typeof item !== 'string'))
-    ) {
+    if (value !== undefined && !z.array(z.string()).safeParse(value).success) {
       return `${field} must be a list of member ids`
     }
   }
   if (operation === MutationOp.Create && raw.base_seq !== undefined) {
     return 'create must not include base_seq'
   }
-  if (
-    operation !== MutationOp.Create &&
-    (typeof raw.base_seq !== 'number' ||
-      !Number.isInteger(raw.base_seq) ||
-      raw.base_seq < 0 ||
-      raw.base_seq > 0xffff_ffff)
-  ) {
+  if (operation !== MutationOp.Create && !sequenceSchema.safeParse(raw.base_seq).success) {
     return `${operation} requires a valid base_seq`
   }
   return `malformed ${entity} mutation`
@@ -555,7 +555,7 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   private async verifyConfiguredCredential(
-    credential: unknown,
+    credential: JsonValue | undefined,
     prefix: 'flat_setup' | 'flat_oprec',
     configured: string | undefined
   ): Promise<boolean> {
@@ -917,7 +917,7 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   private async mcpWrite(
-    rawBody: Record<string, unknown>,
+    rawBody: JsonObject,
     principal: Principal,
     tool: McpToolName,
     correlationId: string
@@ -1095,6 +1095,7 @@ export class TenantDO extends DurableObject<Env> {
       throw error
     }
 
+    // SAFETY: transactionSync runs the callback before returning, so it has finalized result.
     const finalResult = result as Response | WriteReceipt | null
     if (finalResult === null) return this.mcpInternalError(correlationId)
     if (finalResult instanceof Response) return finalResult
@@ -1210,7 +1211,7 @@ export class TenantDO extends DurableObject<Env> {
     if (!may(principal, 'work.search')) return jsonError(403, 'forbidden')
     const rawBody = await requestObject(request)
     if (!rawBody) return jsonError(400, 'invalid_json')
-    if (typeof rawBody.query !== 'string') {
+    if (!stringValueSchema.safeParse(rawBody.query).success) {
       return searchError(new SearchQueryError('invalid_search_query', 'query must be a string', 0))
     }
     if (
@@ -1227,22 +1228,12 @@ export class TenantDO extends DurableObject<Env> {
         )
       )
     }
-    if (
-      rawBody.limit !== undefined &&
-      (typeof rawBody.limit !== 'number' ||
-        !Number.isInteger(rawBody.limit) ||
-        rawBody.limit < 1 ||
-        rawBody.limit > 100)
-    ) {
+    if (rawBody.limit !== undefined && !durationSchema(100).safeParse(rawBody.limit).success) {
       return searchError(
         new SearchQueryError('invalid_search_query', 'limit must be between 1 and 100', 0)
       )
     }
-    if (
-      rawBody.cursor !== undefined &&
-      typeof rawBody.cursor !== 'string' &&
-      rawBody.cursor !== null
-    ) {
+    if (rawBody.cursor !== undefined && !z.string().nullable().safeParse(rawBody.cursor).success) {
       return searchError(
         new SearchQueryError('invalid_search_cursor', 'cursor must be a string or null', 0)
       )
@@ -1370,11 +1361,7 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   private applyTicket(mutation: Mutation): AppliedMutation | ApplyConflict {
-    const reject = (
-      reason: string,
-      code?: string,
-      details?: Record<string, unknown>
-    ): ApplyConflict => ({
+    const reject = (reason: string, code?: string, details?: JsonObject): ApplyConflict => ({
       mutation_id: mutation.mutation_id,
       entity_id: mutation.entity_id,
       reason,
@@ -1872,7 +1859,7 @@ export class TenantDO extends DurableObject<Env> {
       ) {
         return
       }
-      const results: Array<Record<string, unknown>> = []
+      const results: JsonObject[] = []
       for (const key of keys) {
         const row = this.sql
           .exec<{ id: string; status: Status; seq: number }>(
@@ -2012,7 +1999,7 @@ export class TenantDO extends DurableObject<Env> {
     )
   }
 
-  private async createInvitation(body: unknown, principal: Principal): Promise<Response> {
+  private async createInvitation(body: JsonValue, principal: Principal): Promise<Response> {
     const parsed = invitationSchema(DEFAULT_ENROLLMENT_SECONDS, MAX_ENROLLMENT_SECONDS).safeParse(
       body
     )
@@ -2181,7 +2168,7 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   private async verifyEnrollment(
-    value: unknown,
+    value: JsonValue | undefined,
     kind: EnrollmentRow['kind']
   ): Promise<EnrollmentRow | Response> {
     let prefix = 'flat_upg'
@@ -2503,7 +2490,7 @@ export class TenantDO extends DurableObject<Env> {
       return jsonError(409, 'member_not_pending')
     }
     const invitation = this.sql
-      .exec(
+      .exec<{ intended_role: Role; created_by: string }>(
         "SELECT intended_role, created_by FROM enrollments WHERE member_id = ? AND kind = 'invite' ORDER BY created_at DESC LIMIT 1",
         member.id
       )
@@ -3055,9 +3042,21 @@ export class TenantDO extends DurableObject<Env> {
     )
   }
 
-  private tokenMetadata(id: string): Record<string, unknown> | null {
+  private tokenMetadata(id: string): JsonObject | null {
     const row = this.sql
-      .exec(
+      .exec<{
+        id: string
+        name: string
+        kind: TokenKind
+        access: TokenAccess
+        member: string
+        created_by: string | null
+        issued_via: string
+        created_at: string
+        expires_at: string | null
+        last_used_at: string | null
+        revoked_at: string | null
+      }>(
         `SELECT t.id, t.name, t.kind, t.access, m.email AS member, creator.email AS created_by,
               t.issued_via, t.created_at, t.expires_at, t.last_used_at, t.revoked_at
        FROM tokens t JOIN members m ON m.id = t.member_id
@@ -3159,7 +3158,7 @@ export class TenantDO extends DurableObject<Env> {
     actorKind: TokenKind | 'enrollment' | 'deployment' | 'webhook',
     targetType: string,
     targetId: string,
-    metadata: Record<string, unknown>
+    metadata: JsonObject
   ): void {
     const safeMetadata = { ...metadata }
     if (

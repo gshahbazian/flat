@@ -8,6 +8,7 @@ import { describe, expect, test } from 'vitest'
 import { z } from 'zod'
 
 import { canonicalJson } from '../src/crypto'
+import { jsonValueSchema, type JsonValue } from '../src/request-schema'
 import {
   invalidCommentBody,
   invalidEmail,
@@ -30,9 +31,9 @@ import {
   ticketSchema,
 } from '../src/wire-schema'
 
-function fixture(name: string): unknown {
-  return JSON.parse(
-    readFileSync(new URL(`../../schema/fixtures/${name}.json`, import.meta.url), 'utf8')
+function fixture(name: string): JsonValue {
+  return jsonValueSchema.parse(
+    JSON.parse(readFileSync(new URL(`../../schema/fixtures/${name}.json`, import.meta.url), 'utf8'))
   )
 }
 
@@ -100,7 +101,9 @@ describe('schema fixtures round-trip through the generated types', () => {
 // The Rust twin (flat_schema::validate_title) runs this same fixture in
 // schema/tests/fixtures.rs, keeping the two implementations in lockstep.
 describe('title rule matches the Rust rule', () => {
-  const titles = fixture('titles') as { valid: string[]; invalid: string[] }
+  const titles = z
+    .object({ valid: z.array(z.string()), invalid: z.array(z.string()) })
+    .parse(fixture('titles'))
 
   test('valid titles pass', () => {
     for (const title of titles.valid) {
@@ -116,10 +119,12 @@ describe('title rule matches the Rust rule', () => {
 })
 
 describe('email rule matches the Rust rule', () => {
-  const emails = fixture('emails') as {
-    valid: Array<{ input: string; normalized: string }>
-    invalid: string[]
-  }
+  const emails = z
+    .object({
+      valid: z.array(z.object({ input: z.string(), normalized: z.string() })),
+      invalid: z.array(z.string()),
+    })
+    .parse(fixture('emails'))
 
   test('valid emails normalize', () => {
     for (const email of emails.valid) {

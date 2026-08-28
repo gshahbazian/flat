@@ -1,3 +1,4 @@
+import type { JsonValue } from './request-schema'
 // Field-level conflict detection for ticket updates.
 //
 // A stale base_seq is not by itself a conflict: the client may have edited
@@ -10,8 +11,9 @@ import type { MutationSet } from './schema.gen'
 
 export const TICKET_FIELDS = ['title', 'status', 'priority', 'assignee', 'body'] as const
 export type TicketField = (typeof TICKET_FIELDS)[number]
+type MutationSetValues = Partial<Record<TicketField, JsonValue>>
 
-export function fieldsSet(set: MutationSet | null | undefined): TicketField[] {
+export function fieldsSet(set: MutationSetValues | null | undefined): TicketField[] {
   if (!set) return []
   return TICKET_FIELDS.filter((field) => {
     if (field === 'assignee') return Object.hasOwn(set, field)

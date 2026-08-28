@@ -1,8 +1,10 @@
 import { DatabaseSync } from 'node:sqlite'
 
 import { describe, expect, test } from 'vitest'
+import { z } from 'zod'
 
 import { LATEST_SCHEMA_VERSION, rebuildTicketSearch, runMigrations } from '../src/migrations'
+import { jsonObjectSchema } from '../src/request-schema'
 
 class TestSql {
   constructor(readonly database = new DatabaseSync(':memory:')) {}
@@ -13,6 +15,7 @@ class TestSql {
   ) {
     const returnsRows = /^\s*(SELECT|PRAGMA|WITH)\b/i.test(query)
     if (returnsRows) {
+      // SAFETY: The selected columns define T, and each test creates the matching SQLite schema.
       const rows = this.database.prepare(query).all(...bindings) as T[]
       return {
         toArray: () => rows,
@@ -28,6 +31,7 @@ class TestSql {
     } else {
       this.database.exec(query)
     }
+    // SAFETY: A statement that returns no rows has an empty result for every row type T.
     return {
       toArray: () => [] as T[],
       one: () => {
@@ -82,10 +86,12 @@ describe('ordered database migrations', () => {
     const sql = baseDatabase(0)
     migrate(sql)
 
+    // SAFETY: The meta schema requires value to be text for this selected row.
     const version = sql.database
       .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
       .get() as { value: string }
     expect(Number(version.value)).toBe(LATEST_SCHEMA_VERSION)
+    // SAFETY: SQLite's table_info pragma guarantees these columns and value types.
     const columns = sql.database.prepare('PRAGMA table_info(tickets)').all() as Array<{
       name: string
       notnull: number
@@ -104,6 +110,7 @@ describe('ordered database migrations', () => {
       'seq',
     ])
     expect(columns.find((column) => column.name === 'priority')?.notnull).toBe(1)
+    // SAFETY: SQLite's table_info pragma guarantees the name column is text.
     const commentColumns = sql.database.prepare('PRAGMA table_info(comments)').all() as Array<{
       name: string
     }>
@@ -119,6 +126,7 @@ describe('ordered database migrations', () => {
       'created_at',
       'seq',
     ])
+    // SAFETY: SQLite's foreign_key_list pragma guarantees these columns are text.
     const foreignKeys = sql.database.prepare('PRAGMA foreign_key_list(comments)').all() as Array<{
       table: string
       from: string
@@ -127,6 +135,7 @@ describe('ordered database migrations', () => {
     expect(foreignKeys).toContainEqual(
       expect.objectContaining({ table: 'tickets', from: 'ticket_id', on_delete: 'CASCADE' })
     )
+    // SAFETY: SQLite's table_info pragma guarantees the name column is text.
     const searchColumns = sql.database.prepare('PRAGMA table_info(ticket_search)').all() as Array<{
       name: string
     }>
@@ -258,7 +267,7 @@ describe('ordered database migrations', () => {
 
     migrate(sql)
 
-    const ticket = sql.database.prepare('SELECT * FROM tickets').get() as Record<string, unknown>
+    const ticket = jsonObjectSchema.parse(sql.database.prepare('SELECT * FROM tickets').get())
     expect(ticket).toMatchObject({
       id: 'ticket-1',
       key: 'DEMO-1',
@@ -270,8 +279,9 @@ describe('ordered database migrations', () => {
       assignee: null,
       seq: 7,
     })
-    expect(new Date(String(ticket.created_at)).toISOString()).toBe(ticket.created_at)
-    expect(ticket.updated_at).toBe(ticket.created_at)
+    const createdAt = z.string().parse(ticket.created_at)
+    expect(new Date(createdAt).toISOString()).toBe(createdAt)
+    expect(ticket.updated_at).toBe(createdAt)
     expect(sql.database.prepare('SELECT key, next_ticket_num FROM projects').get()).toEqual({
       key: 'DEMO',
       next_ticket_num: 2,

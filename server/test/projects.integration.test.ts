@@ -3,6 +3,8 @@ import { createHmac } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { unstable_dev, type Unstable_DevWorker } from 'wrangler'
 
+import type { JsonInputValue } from '../src/request-schema'
+
 const HMAC_KEY = Buffer.alloc(32, 17)
 const SETUP_CREDENTIAL = `flat_setup_${Buffer.alloc(32, 19).toString('base64url')}`
 const SETUP_VERIFIER = createHmac('sha256', HMAC_KEY).update(SETUP_CREDENTIAL).digest('hex')
@@ -36,12 +38,13 @@ async function json<T>(
   init: WorkerRequestInit
 ): Promise<T> {
   const response = await worker.fetch(`http://flat.test${path}`, init)
+  // SAFETY: Each test supplies T for the endpoint contract it exercises.
   const body = (await response.json()) as T
   expect(response.status).toBe(200)
   return body
 }
 
-function authenticated(token: string, body?: unknown): WorkerRequestInit {
+function authenticated(token: string, body?: JsonInputValue): WorkerRequestInit {
   const headers = { Authorization: `Bearer ${token}` }
   if (body === undefined) return { headers }
   return {
@@ -81,7 +84,7 @@ async function syncProjects(
   worker: Unstable_DevWorker,
   token: string,
   lastSeq: number,
-  mutations: unknown[]
+  mutations: JsonInputValue[]
 ): Promise<ProjectSyncResponse> {
   return json<ProjectSyncResponse>(
     worker,

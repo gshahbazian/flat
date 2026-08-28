@@ -3,6 +3,8 @@ import { createHmac } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { unstable_dev, type Unstable_DevWorker } from 'wrangler'
 
+import type { JsonInputValue, JsonValue } from '../src/request-schema'
+
 const HMAC_KEY = Buffer.alloc(32, 7)
 const HMAC_SECRET = HMAC_KEY.toString('base64url')
 const SETUP_CREDENTIAL = `flat_setup_${Buffer.alloc(32, 9).toString('base64url')}`
@@ -13,6 +15,20 @@ type WorkerResponse = Awaited<ReturnType<Unstable_DevWorker['fetch']>>
 interface JsonResponse<T> {
   response: WorkerResponse
   body: T
+}
+
+type GithubPayload = {
+  action: string
+  number: number
+  pull_request: {
+    number: number
+    title: string
+    body: JsonValue
+    merged: boolean
+    html_url: string
+    base: { ref: string }
+  }
+  repository: { full_name: string; default_branch: string }
 }
 
 async function json<T>(
@@ -32,13 +48,14 @@ async function json<T>(
     headers,
   })
   const text = await response.text()
+  // SAFETY: Each test supplies T for the endpoint contract it exercises.
   return {
     response,
     body: text.length > 0 ? (JSON.parse(text) as T) : (null as T),
   }
 }
 
-function authenticated(token: string, body?: unknown): WorkerRequestInit {
+function authenticated(token: string, body?: JsonInputValue): WorkerRequestInit {
   const init: WorkerRequestInit = {
     headers: { Authorization: `Bearer ${token}` },
   }
@@ -49,7 +66,11 @@ function authenticated(token: string, body?: unknown): WorkerRequestInit {
   return init
 }
 
-function githubRequest(secret: string, delivery: string, payload: unknown): WorkerRequestInit {
+function githubRequest(
+  secret: string,
+  delivery: string,
+  payload: JsonInputValue
+): WorkerRequestInit {
   const body = JSON.stringify(payload)
   const signature = createHmac('sha256', secret).update(body).digest('hex')
   return {
@@ -402,13 +423,13 @@ describe.sequential('TenantDO integration', () => {
     })
     expect(oversized.response.status).toBe(413)
     expect(oversized.body.error).toBe('github_payload_too_large')
-    const basePayload = {
+    const basePayload: GithubPayload = {
       action: 'closed',
       number: 7,
       pull_request: {
         number: 7,
         title: 'Fixes DEMO-2',
-        body: null as unknown,
+        body: null,
         merged: true,
         html_url: 'https://github.example/acme/repo/pull/7',
         base: { ref: 'main' },

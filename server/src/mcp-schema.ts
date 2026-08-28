@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { jsonValueSchema, type JsonObject, type JsonValue } from './request-schema'
 import { Priority, Role, Status } from './schema.gen'
 import {
   emailSchema,
@@ -239,7 +240,7 @@ export interface McpErrorDetail {
   code: string
   message: string
   retryable: boolean
-  details?: Record<string, unknown>
+  details?: JsonObject
 }
 
 export interface McpErrorBody {
@@ -261,13 +262,13 @@ export const mcpErrorBodySchema = z
         code: z.string(),
         message: z.string(),
         retryable: z.boolean(),
-        details: z.record(z.string(), z.unknown()).optional(),
+        details: z.record(z.string(), jsonValueSchema).optional(),
       })
       .strict(),
   })
   .strict()
 
-export function mcpResultFits(value: unknown): boolean {
+export function mcpResultFits(value: JsonValue): boolean {
   const text = JSON.stringify(value)
   const result = {
     content: [{ type: 'text', text }],
@@ -287,20 +288,24 @@ export function mcpErrorResultFits(value: McpErrorBody): boolean {
   return bytes + MCP_RESULT_FRAMING_BYTES <= MCP_MAX_ERROR_BYTES
 }
 
-export function encodeMcpCursor(value: unknown): string {
+export function encodeMcpCursor(value: JsonValue): string {
   const bytes = new TextEncoder().encode(JSON.stringify(value))
   let binary = ''
   for (const byte of bytes) binary += String.fromCharCode(byte)
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-export function decodeMcpCursor(value: string): unknown {
+export function decodeMcpCursor(value: string): JsonValue | null {
   if (!/^[A-Za-z0-9_-]+$/.test(value)) return null
   try {
     const base64 = value.replace(/-/g, '+').replace(/_/g, '/')
     const binary = atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, '='))
     const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0))
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes))
+    const decoded = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes)
+    )
+    const parsed = jsonValueSchema.safeParse(decoded)
+    return parsed.success ? parsed.data : null
   } catch {
     return null
   }

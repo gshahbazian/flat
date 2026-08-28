@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { type JsonInputValue, type JsonValue } from './request-schema'
+
 export interface HmacKey {
   id: string
   secret: string
@@ -131,7 +133,10 @@ export interface ParsedCredential {
   secret: string
 }
 
-export function parseCredential(value: unknown, prefix: string): ParsedCredential | null {
+export function parseCredential(
+  value: JsonValue | undefined,
+  prefix: string
+): ParsedCredential | null {
   const parsed = z.string().safeParse(value)
   if (!parsed.success) return null
   const credential = parsed.data
@@ -146,35 +151,48 @@ export function parseCredential(value: unknown, prefix: string): ParsedCredentia
   return { id, secret }
 }
 
-export function createCredential(prefix: string): {
-  id: string
-  secret: string
-  credential: string
-} {
+export function createCredential(prefix: string) {
   const id = newUlid()
   const secret = randomSecret()
   return { id, secret, credential: `${prefix}_${id}_${secret}` }
 }
 
-function canonicalize(value: unknown): unknown {
+const jsonInputValueSchema: z.ZodType<JsonInputValue> = z.lazy(() =>
+  z.union([
+    z.boolean(),
+    z.number(),
+    z.string(),
+    z.null(),
+    z.undefined(),
+    z.array(jsonInputValueSchema),
+    z.record(z.string(), jsonInputValueSchema),
+  ])
+)
+const jsonInputObjectSchema = z.record(z.string(), jsonInputValueSchema)
+
+function canonicalize(value: JsonInputValue): JsonInputValue {
   if (Array.isArray(value)) return value.map(canonicalize)
-  if (value === null || typeof value !== 'object') return value
-  const result: Record<string, unknown> = {}
-  for (const [key, child] of Object.entries(value).toSorted(([left], [right]) => {
-    if (left < right) return -1
-    if (left > right) return 1
-    return 0
-  })) {
-    if (child !== undefined) result[key] = canonicalize(child)
-  }
-  return result
+  const parsed = jsonInputObjectSchema.safeParse(value)
+  if (!parsed.success) return value
+  return Object.fromEntries(
+    Object.entries(parsed.data)
+      .filter(([, child]) => child !== undefined)
+      .toSorted(([left], [right]) => {
+        if (left < right) return -1
+        if (left > right) return 1
+        return 0
+      })
+      .map(([key, child]) => [key, canonicalize(child)])
+  )
 }
 
-export function canonicalJson(value: unknown): string {
-  return JSON.stringify(canonicalize(value))
+export function canonicalJson(value: JsonInputValue): string {
+  const encoded = JSON.stringify(canonicalize(value))
+  if (encoded === undefined) throw new Error('cannot canonicalize undefined')
+  return encoded
 }
 
-export async function canonicalSha256(value: unknown): Promise<string> {
+export async function canonicalSha256(value: JsonInputValue): Promise<string> {
   const bytes = new TextEncoder().encode(canonicalJson(value))
   return bytesToHex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)))
 }

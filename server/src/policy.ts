@@ -46,11 +46,11 @@ export interface Principal {
   access: TokenAccess
   createdBy: string | null
 }
-const ACCESS_RANK: Record<TokenAccess, number> = {
+const ACCESS_RANK = {
   [TokenAccess.Read]: 0,
   [TokenAccess.Write]: 1,
   [TokenAccess.Admin]: 2,
-}
+} satisfies Record<TokenAccess, number>
 
 export function roleCeiling(role: Role): TokenAccess {
   if (role === Role.Admin) return TokenAccess.Admin

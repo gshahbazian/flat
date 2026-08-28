@@ -2,6 +2,7 @@ import { createHmac } from 'node:crypto'
 
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { unstable_dev, type Unstable_DevWorker } from 'wrangler'
+import { z } from 'zod'
 
 import { mcpToolPath } from '../src/mcp-schema'
 
@@ -38,7 +39,7 @@ describe.sequential('private MCP executor', () => {
         token_name: 'admin-cli',
       }),
     })
-    adminToken = ((await setup.json()) as { token: string }).token
+    adminToken = z.object({ token: z.string() }).parse(await setup.json()).token
   }, 30_000)
 
   afterAll(async () => {

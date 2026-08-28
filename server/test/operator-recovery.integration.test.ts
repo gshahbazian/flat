@@ -3,6 +3,8 @@ import { createHmac } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { unstable_dev, type Unstable_DevWorker } from 'wrangler'
 
+import type { JsonInputValue } from '../src/request-schema'
+
 const HMAC_KEY = Buffer.alloc(32, 31)
 const HMAC_SECRET = HMAC_KEY.toString('base64url')
 const SETUP_CREDENTIAL = `flat_setup_${Buffer.alloc(32, 32).toString('base64url')}`
@@ -27,19 +29,21 @@ function verifier(credential: string): string {
   return createHmac('sha256', HMAC_KEY).update(credential).digest('hex')
 }
 
-async function startWorker(operatorVerifier?: string): Promise<Unstable_DevWorker> {
-  const vars: Record<string, string> = {
+function workerVariables(operatorVerifier?: string) {
+  const baseVariables = {
     FLAT_HMAC_KEYS: JSON.stringify([{ id: 'test', secret: HMAC_SECRET }]),
     FLAT_SETUP_VERIFIER: `test:${SETUP_VERIFIER}`,
   }
-  if (operatorVerifier !== undefined) {
-    vars.FLAT_OPERATOR_RECOVERY_VERIFIER = `test:${operatorVerifier}`
-  }
+  if (operatorVerifier === undefined) return baseVariables
+  return { ...baseVariables, FLAT_OPERATOR_RECOVERY_VERIFIER: `test:${operatorVerifier}` }
+}
+
+async function startWorker(operatorVerifier?: string): Promise<Unstable_DevWorker> {
   return unstable_dev('src/index.ts', {
     config: 'wrangler.jsonc',
     persist: false,
     logLevel: 'error',
-    vars,
+    vars: workerVariables(operatorVerifier),
     experimental: {
       disableExperimentalWarning: true,
       disableDevRegistry: true,
@@ -62,17 +66,18 @@ async function json<T>(
   }
   const response = await worker.fetch(`http://flat.test${path}`, { ...init, headers })
   const text = await response.text()
+  // SAFETY: Each test supplies T for the endpoint contract it exercises.
   return {
     response,
     body: text.length > 0 ? (JSON.parse(text) as T) : (null as T),
   }
 }
 
-function post(body: unknown): WorkerRequestInit {
+function post(body: JsonInputValue): WorkerRequestInit {
   return { method: 'POST', body: JSON.stringify(body) }
 }
 
-function authenticated(token: string, body?: unknown): WorkerRequestInit {
+function authenticated(token: string, body?: JsonInputValue): WorkerRequestInit {
   const init: WorkerRequestInit = {
     headers: { Authorization: `Bearer ${token}` },
   }

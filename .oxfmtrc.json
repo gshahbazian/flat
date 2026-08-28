@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "ignorePatterns": ["server/src/schema.gen.ts"],
+  "ignorePatterns": ["server/src/schema.gen.ts", "tools/oxlint/anti-slop/**"],
   "sortImports": true,
   "useTabs": false,
   "tabWidth": 2,

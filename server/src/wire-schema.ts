@@ -106,13 +106,13 @@ const ownerDeltas = {
   owners_remove: z.array(z.string()).optional().default([]),
 }
 
-const mutationBaseShape = {
+const mutationBaseFields = {
   mutation_id: z.string().min(1),
   entity_id: z.string().min(1),
 }
 
 const ticketCreateMutationSchema = z.object({
-  ...mutationBaseShape,
+  ...mutationBaseFields,
   entity: z.literal(Entity.Ticket),
   op: z.literal(MutationOp.Create),
   base_seq: z.undefined().optional(),
@@ -122,7 +122,7 @@ const ticketCreateMutationSchema = z.object({
 })
 
 const ticketUpdateMutationSchema = z.object({
-  ...mutationBaseShape,
+  ...mutationBaseFields,
   entity: z.literal(Entity.Ticket),
   op: z.literal(MutationOp.Update),
   base_seq: sequenceSchema,
@@ -132,7 +132,7 @@ const ticketUpdateMutationSchema = z.object({
 })
 
 const ticketDeleteMutationSchema = z.object({
-  ...mutationBaseShape,
+  ...mutationBaseFields,
   entity: z.literal(Entity.Ticket),
   op: z.literal(MutationOp.Delete),
   base_seq: sequenceSchema,
@@ -142,7 +142,7 @@ const ticketDeleteMutationSchema = z.object({
 })
 
 const commentCreateMutationSchema = z.object({
-  ...mutationBaseShape,
+  ...mutationBaseFields,
   entity: z.literal(Entity.Comment),
   op: z.literal(MutationOp.Create),
   base_seq: z.undefined().optional(),
@@ -152,7 +152,7 @@ const commentCreateMutationSchema = z.object({
 })
 
 const projectCreateMutationSchema = z.object({
-  ...mutationBaseShape,
+  ...mutationBaseFields,
   entity: z.literal(Entity.Project),
   op: z.literal(MutationOp.Create),
   base_seq: z.undefined().optional(),
@@ -162,7 +162,7 @@ const projectCreateMutationSchema = z.object({
 })
 
 const projectUpdateMutationSchema = z.object({
-  ...mutationBaseShape,
+  ...mutationBaseFields,
   ...ownerDeltas,
   entity: z.literal(Entity.Project),
   op: z.literal(MutationOp.Update),
@@ -171,7 +171,7 @@ const projectUpdateMutationSchema = z.object({
 })
 
 const projectDeleteMutationSchema = z.object({
-  ...mutationBaseShape,
+  ...mutationBaseFields,
   entity: z.literal(Entity.Project),
   op: z.literal(MutationOp.Delete),
   base_seq: sequenceSchema,
@@ -204,7 +204,7 @@ const mutationInputSchemas = [
 
 export const mutationInputSchema = z.union(mutationInputSchemas) satisfies z.ZodType<Mutation>
 
-export const mutationRecordSchema = z.looseObject({})
+export const mutationRecordSchema = z.record(z.string(), z.json())
 
 export const mutationIdentitySchema = z.object({
   mutation_id: z.string().catch(''),
@@ -223,7 +223,7 @@ export const mutationAuthorizationSchema = z.object({
 export const syncEnvelopeSchema = z.object({
   protocol_version: z.literal(2),
   last_seq: sequenceSchema,
-  mutations: z.array(z.unknown()),
+  mutations: z.array(z.json()),
 })
 
 export const searchRequestSchema = z

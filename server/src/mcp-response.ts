@@ -1,4 +1,5 @@
 import type { McpErrorCategory, McpErrorDetail } from './mcp-schema'
+import type { JsonObject } from './request-schema'
 
 const CORRELATION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -9,7 +10,7 @@ export function mcpError(
   code: string,
   message: string,
   retryable = false,
-  details?: Record<string, unknown>
+  details?: JsonObject
 ): Response {
   const error: McpErrorDetail = { category, code, message, retryable }
   if (details !== undefined) error.details = details

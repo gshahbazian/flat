@@ -1,6 +1,7 @@
 {
   "name": "flat-monorepo",
   "private": true,
+  "type": "module",
   "scripts": {
     "check": "pnpm format:check && pnpm lint && pnpm -r typecheck && pnpm -r test",
     "e2e": "bash scripts/e2e/run.sh",
@@ -10,6 +11,7 @@
     "lint:fix": "oxlint --fix ."
   },
   "devDependencies": {
+    "@oxlint/plugins": "1.80.0",
     "oxfmt": "^0.65.0",
     "oxlint": "^1.80.0",
     "oxlint-tsgolint": "^7.0.2001"

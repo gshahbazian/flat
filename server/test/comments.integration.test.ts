@@ -3,6 +3,8 @@ import { createHmac } from 'node:crypto'
 import { afterAll, beforeAll, describe, expect, test } from 'vitest'
 import { unstable_dev, type Unstable_DevWorker } from 'wrangler'
 
+import type { JsonInputValue, JsonObject } from '../src/request-schema'
+
 const HMAC_KEY = Buffer.alloc(32, 27)
 const SETUP_CREDENTIAL = `flat_setup_${Buffer.alloc(32, 29).toString('base64url')}`
 const SETUP_VERIFIER = createHmac('sha256', HMAC_KEY).update(SETUP_CREDENTIAL).digest('hex')
@@ -49,10 +51,11 @@ async function json<T>(
   }
   const response = await worker.fetch(`http://flat.test${path}`, { ...init, headers })
   const text = await response.text()
+  // SAFETY: Each test supplies T for the endpoint contract it exercises.
   return { status: response.status, body: text ? (JSON.parse(text) as T) : (null as T) }
 }
 
-function authenticated(token: string, body?: unknown): WorkerRequestInit {
+function authenticated(token: string, body?: JsonInputValue): WorkerRequestInit {
   const init: WorkerRequestInit = { headers: { Authorization: `Bearer ${token}` } }
   if (body !== undefined) {
     init.method = 'POST'
@@ -92,7 +95,7 @@ function sync(
   worker: Unstable_DevWorker,
   token: string,
   lastSeq: number,
-  mutations: unknown[]
+  mutations: JsonInputValue[]
 ): Promise<JsonResponse<SyncResponse>> {
   return json(
     worker,
@@ -105,7 +108,7 @@ function sync(
   )
 }
 
-function commentMutation(id: string, body: string, ticket = TICKET_ID): Record<string, unknown> {
+function commentMutation(id: string, body: string, ticket = TICKET_ID) {
   return {
     mutation_id: `mutation-${id}`,
     op: 'create',
@@ -350,7 +353,7 @@ describe.sequential('comments', () => {
     ])
 
     const audit = await json<{
-      events: Array<{ action: string; metadata: Record<string, unknown> }>
+      events: Array<{ action: string; metadata: JsonObject }>
     }>(worker, '/audit', authenticated(adminToken))
     const commentEvents = audit.body.events.filter((event) => event.action === 'comment.create')
     expect(commentEvents).toHaveLength(3)

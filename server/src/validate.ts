@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import type { JsonValue } from './request-schema'
+
 export const MAX_COMMENT_BYTES = 1024 * 1024
 export const MAX_PROJECT_DESCRIPTION_BYTES = 256 * 1024
 export const COMMENT_SENTINEL = '<!-- flat:comments -->'
@@ -83,7 +85,7 @@ export const emailSchema = z
     return labels.length >= 2 && labels.every((label) => label.length > 0)
   })
 
-export function invalidEmail(value: unknown): string | null {
+export function invalidEmail(value: JsonValue): string | null {
   const result = emailSchema.safeParse(value)
   if (!result.success) return null
   return result.data
@@ -107,7 +109,7 @@ export const projectNameSchema = z
       !Array.from(name).some((character) => /[\u0000-\u001f\u007f-\u009f]/.test(character))
   )
 
-export function invalidTenantName(value: unknown): string | null {
+export function invalidTenantName(value: JsonValue): string | null {
   const result = tenantNameSchema.safeParse(value)
   if (!result.success) return null
   return result.data
