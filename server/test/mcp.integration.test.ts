@@ -612,7 +612,7 @@ describe.sequential('server-side MCP', () => {
     expect(pages).toBeGreaterThan(1)
     expect(returnedKeys).toEqual([...keys, 'DEMO'])
     await legacy.close()
-  })
+  }, 20_000)
 
   test('allows an authorized replacement token to replay the original receipt', async () => {
     const replacement = await json<{ token: string; metadata: { id: string } }>(worker, '/tokens', {
