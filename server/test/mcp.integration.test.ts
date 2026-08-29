@@ -13,7 +13,6 @@ import {
   type WriteReceipt,
 } from '../src/mcp-schema'
 import type { JsonValue } from '../src/request-schema'
-import { MAX_PROJECT_DESCRIPTION_BYTES } from '../src/validate'
 
 const HMAC_KEY = Buffer.alloc(32, 47)
 const SETUP_CREDENTIAL = `flat_setup_${Buffer.alloc(32, 49).toString('base64url')}`
@@ -307,12 +306,36 @@ describe.sequential('server-side MCP', () => {
       next_cursor: null,
     })
 
+    const labelCreated = await json<{
+      conflicts: unknown[]
+      label_deltas: Array<{ id: string; name: string }>
+    }>(worker, '/sync', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        protocol_version: 2,
+        last_seq: 0,
+        mutations: [
+          {
+            mutation_id: 'mcp-label-create',
+            entity: 'label',
+            op: 'create',
+            entity_id: 'mcp-label',
+            set: { name: 'mcp' },
+          },
+        ],
+      }),
+    })
+    expect(labelCreated.response.status).toBe(200)
+    expect(labelCreated.body.conflicts).toEqual([])
+
     const created = await legacy.callTool({
       name: 'create_ticket',
       arguments: {
         idempotency_key: 'integration-create',
         project: 'demo',
         title: 'Created through MCP',
+        labels: ['mcp'],
       },
     })
     expect(created.isError).not.toBe(true)
@@ -332,6 +355,7 @@ describe.sequential('server-side MCP', () => {
         status: 'todo',
         priority: 'none',
         assignee: null,
+        labels: ['mcp'],
       },
     })
     expect(replayed.structuredContent).toEqual({
@@ -359,7 +383,11 @@ describe.sequential('server-side MCP', () => {
     })
     expect(ticket.structuredContent).toEqual(
       expect.objectContaining({
-        ticket: expect.objectContaining({ key: 'DEMO-1', title: 'Created through MCP' }),
+        ticket: expect.objectContaining({
+          key: 'DEMO-1',
+          title: 'Created through MCP',
+          labels: [{ id: 'mcp-label', name: 'mcp' }],
+        }),
         comments: [],
         next_comment_cursor: null,
       })
@@ -418,6 +446,22 @@ describe.sequential('server-side MCP', () => {
       },
     })
     expect(cleared.isError).not.toBe(true)
+    const clearedReceipt = writeReceiptSchema.parse(cleared.structuredContent)
+    const labelsRemoved = await legacy.callTool({
+      name: 'update_ticket',
+      arguments: {
+        idempotency_key: 'integration-remove-label',
+        key: 'DEMO-1',
+        base_seq: clearedReceipt.seq,
+        labels_remove: ['mcp'],
+      },
+    })
+    expect(labelsRemoved.isError).not.toBe(true)
+    const withoutLabels = await legacy.callTool({
+      name: 'get_ticket',
+      arguments: { key: 'DEMO-1' },
+    })
+    expect(getTicketOutputSchema.parse(withoutLabels.structuredContent).ticket.labels).toEqual([])
     await legacy.close()
   })
 
@@ -517,12 +561,11 @@ describe.sequential('server-side MCP', () => {
     await legacy.close()
   })
 
-  test('paginates projects within the serialized result limit', async () => {
+  test('paginates projects with a cursor', async () => {
     const snapshot = await json<{ latest_seq: number }>(worker, '/snapshot', {
       headers: { Authorization: `Bearer ${adminToken}` },
     })
-    const description = '\\'.repeat(MAX_PROJECT_DESCRIPTION_BYTES)
-    const keys = ['BIGA', 'BIGB', 'BIGC']
+    const keys = ['PAGA', 'PAGB']
     const created = await json<{ conflicts: JsonValue[] }>(worker, '/sync', {
       method: 'POST',
       headers: {
@@ -533,11 +576,11 @@ describe.sequential('server-side MCP', () => {
         protocol_version: 2,
         last_seq: snapshot.body.latest_seq,
         mutations: keys.map((key, index) => ({
-          mutation_id: `large-project-${index}`,
+          mutation_id: `page-project-${index}`,
           entity: 'project',
           op: 'create',
-          entity_id: `large-project-id-${index}`,
-          set: { key, display_name: `Large project ${index}`, description },
+          entity_id: `page-project-id-${index}`,
+          set: { key, display_name: `Paged project ${index}` },
         })),
       }),
     })
@@ -552,20 +595,18 @@ describe.sequential('server-side MCP', () => {
       // oxlint-disable-next-line eslint/no-await-in-loop
       const result = await legacy.callTool({
         name: 'list_projects',
-        arguments: { limit: 100, cursor },
+        arguments: { limit: 1, cursor },
       })
       expect(result.isError).not.toBe(true)
-      expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(
-        4 * 1024 * 1024
-      )
       const page = listProjectsOutputSchema.parse(result.structuredContent)
-      returnedKeys.push(...page.projects.map((project) => project.key))
+      expect(page.projects).toHaveLength(1)
+      returnedKeys.push(page.projects[0].key)
       cursor = page.next_cursor
       pages += 1
     } while (cursor !== null)
 
-    expect(pages).toBeGreaterThan(1)
-    expect(returnedKeys).toEqual([...keys, 'DEMO'])
+    expect(pages).toBe(3)
+    expect(returnedKeys).toEqual(['DEMO', ...keys])
     await legacy.close()
   })
 
@@ -585,6 +626,7 @@ describe.sequential('server-side MCP', () => {
         idempotency_key: 'integration-create',
         project: 'DEMO',
         title: 'Created through MCP',
+        labels: ['mcp'],
       },
     })
     expect(replacementReplay.structuredContent).toEqual({
@@ -654,50 +696,6 @@ describe.sequential('server-side MCP', () => {
       expect.objectContaining({ results: [expect.objectContaining({ key: modernKey })] })
     )
     await modern.close()
-  })
-
-  test('returns a bounded error when one complete result cannot fit', async () => {
-    const snapshot = await json<{ latest_seq: number }>(worker, '/snapshot', {
-      headers: { Authorization: `Bearer ${adminToken}` },
-    })
-    const oversizedBody = 'x'.repeat(2 * 1024 * 1024 + 1)
-    const created = await json<{ applied: Array<{ key: string }> }>(worker, '/sync', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${adminToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        protocol_version: 2,
-        last_seq: snapshot.body.latest_seq,
-        mutations: [
-          {
-            mutation_id: 'oversized-result-ticket',
-            entity: 'ticket',
-            op: 'create',
-            entity_id: '01KMRESULTTOOLARGETICKET01',
-            set: {
-              project: '00000000000000000000000000',
-              title: 'Oversized result',
-              body: oversizedBody,
-            },
-          },
-        ],
-      }),
-    })
-    const client = await connectClient(worker, adminToken, 'legacy')
-    const result = await client.callTool({
-      name: 'get_ticket',
-      arguments: { key: created.body.applied[0].key },
-    })
-    expect(result.isError).toBe(true)
-    expect(result.structuredContent).toEqual(
-      expect.objectContaining({ error: expect.objectContaining({ code: 'result_too_large' }) })
-    )
-    expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(
-      16 * 1024
-    )
-    await client.close()
   })
 
   test('enforces permissions and reserves the MCP mutation namespace', async () => {

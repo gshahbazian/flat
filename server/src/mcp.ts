@@ -222,7 +222,7 @@ function createServer(
     'search_tickets',
     {
       description:
-        'Search accepted server ticket state with work.search permission. Local mirror edits are excluded. To list without full text, pass a filters-only query such as status:todo,in_progress or project:AUTH; an empty query is invalid. Results are summaries, so use get_ticket for full content.',
+        'Search accepted server ticket state with work.search permission. Local mirror edits are excluded. To list without full text, pass a filters-only query such as status:todo,in_progress, project:AUTH, label:bug, or label:none; an empty query is invalid. Results are summaries, so use get_ticket for full content.',
       inputSchema: searchTicketsInputSchema,
       outputSchema: searchTicketsOutputSchema,
       annotations: readAnnotations,
@@ -270,7 +270,7 @@ function createServer(
     'create_ticket',
     {
       description:
-        'Create a ticket in accepted server state with ticket.create permission. Reuse the same idempotency_key only when retrying an identical uncertain request.',
+        'Create a ticket, including existing label names, in accepted server state with ticket.create permission. Reuse the same idempotency_key only when retrying an identical uncertain request.',
       inputSchema: createTicketInputSchema,
       outputSchema: writeReceiptSchema,
       annotations: createAnnotations,
@@ -282,7 +282,7 @@ function createServer(
     'update_ticket',
     {
       description:
-        'Update a ticket in accepted server state with ticket.update permission and a base_seq from get_ticket. Reuse the same idempotency_key only when retrying an identical uncertain request.',
+        'Update ticket fields or label membership in accepted server state with ticket.update permission and a base_seq from get_ticket. Reuse the same idempotency_key only when retrying an identical uncertain request.',
       inputSchema: updateTicketInputSchema,
       outputSchema: writeReceiptSchema,
       annotations: {

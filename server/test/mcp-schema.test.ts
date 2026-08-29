@@ -30,6 +30,7 @@ describe('MCP tool schemas', () => {
       status: 'todo',
       priority: 'none',
       assignee: 'user@example.com',
+      labels: [],
     })
   })
 
@@ -104,18 +105,66 @@ describe('MCP tool schemas', () => {
   })
 
   test('fits one maximum-size project even with worst-case JSON escaping', () => {
+    expect(mcpResultFits(projectPage(['DEMO']))).toBe(true)
+  })
+
+  test('pages before two maximum-size projects can exceed the result limit', () => {
+    expect(mcpResultFits(projectPage(['BIGA', 'BIGB']))).toBe(false)
+  })
+
+  test('fits a typical ticket result and rejects one that exceeds the limit', () => {
+    expect(mcpResultFits(ticketResult('ok'))).toBe(true)
+    expect(mcpResultFits(ticketResult('x'.repeat(2 * 1024 * 1024 + 1)))).toBe(false)
+  })
+
+  test('keeps a result_too_large error inside the error-result limit', () => {
     expect(
-      mcpResultFits({
-        projects: [
-          {
-            id: '0'.repeat(26),
-            key: 'DEMO',
-            display_name: 'Demo',
-            description: '\0'.repeat(MAX_PROJECT_DESCRIPTION_BYTES),
-          },
-        ],
-        next_cursor: encodeMcpCursor({ kind: 'projects', last_key: 'DEMO' }),
+      mcpErrorResultFits({
+        error: {
+          category: 'validation',
+          code: 'result_too_large',
+          message: 'The ticket is too large to return.',
+          retryable: false,
+        },
       })
     ).toBe(true)
   })
 })
+
+function projectPage(keys: string[]) {
+  const lastKey = keys[keys.length - 1]
+  if (lastKey === undefined) {
+    throw new Error('projectPage requires at least one key')
+  }
+  return {
+    projects: keys.map((key) => ({
+      id: '0'.repeat(26),
+      key,
+      display_name: key,
+      description: '\0'.repeat(MAX_PROJECT_DESCRIPTION_BYTES),
+    })),
+    next_cursor: encodeMcpCursor({ kind: 'projects', last_key: lastKey }),
+  }
+}
+
+function ticketResult(body: string) {
+  return {
+    ticket: {
+      id: '0'.repeat(26),
+      key: 'DEMO-1',
+      project: { id: '0'.repeat(26), key: 'DEMO' },
+      title: 'Title',
+      body,
+      status: 'todo',
+      priority: 'none',
+      assignee: null,
+      labels: [],
+      created_at: '2026-08-25T12:34:56.000Z',
+      updated_at: '2026-08-25T12:34:56.000Z',
+      seq: 1,
+    },
+    comments: [],
+    comment_watermark: 1,
+    next_comment_cursor: null,
+  }
+}

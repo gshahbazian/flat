@@ -6,6 +6,7 @@ import {
   emailSchema,
   invalidCommentBody,
   invalidTicketBody,
+  labelNameSchema,
   projectKeySchema,
   titleSchema,
 } from './validate'
@@ -47,6 +48,11 @@ const normalizedTicketKeySchema = z
   .string()
   .transform((key) => key.toUpperCase())
   .refine((key) => /^[A-Z][A-Z0-9]{1,7}-[1-9][0-9]*$/.test(key), 'invalid ticket key')
+
+const labelNamesSchema = z
+  .array(labelNameSchema)
+  .max(100)
+  .refine((names) => new Set(names).size === names.length, 'labels must be unique')
 
 const ticketBodySchema = z.string().superRefine((body, context) => {
   const reason = invalidTicketBody(body)
@@ -99,6 +105,7 @@ export const createTicketInputSchema = z
     status: z.enum(Status).optional().default(Status.Todo),
     priority: z.enum(Priority).optional().default(Priority.None),
     assignee: emailSchema.nullable().optional().default(null),
+    labels: labelNamesSchema.optional().default([]),
   })
   .strict()
 
@@ -111,16 +118,30 @@ export const updateTicketSetSchema = z
     assignee: emailSchema.nullable().optional(),
   })
   .strict()
-  .refine((set) => Object.keys(set).length > 0, 'set must contain at least one editable field')
 
 export const updateTicketInputSchema = z
   .object({
     idempotency_key: idempotencyKeySchema,
     key: normalizedTicketKeySchema,
     base_seq: sequenceSchema,
-    set: updateTicketSetSchema,
+    set: updateTicketSetSchema.optional().default({}),
+    labels_add: labelNamesSchema.optional().default([]),
+    labels_remove: labelNamesSchema.optional().default([]),
   })
   .strict()
+  .superRefine((input, context) => {
+    if (
+      Object.keys(input.set).length === 0 &&
+      input.labels_add.length === 0 &&
+      input.labels_remove.length === 0
+    ) {
+      context.addIssue({ code: 'custom', message: 'update must change at least one field' })
+    }
+    const added = new Set(input.labels_add)
+    if (input.labels_remove.some((name) => added.has(name))) {
+      context.addIssue({ code: 'custom', message: 'a label cannot be added and removed' })
+    }
+  })
 
 export const addCommentInputSchema = z
   .object({
@@ -149,6 +170,7 @@ const ticketOutputSchema = z
     status: z.enum(Status),
     priority: z.enum(Priority),
     assignee: nullableSafeMemberSchema,
+    labels: z.array(z.object({ id: z.string(), name: z.string() }).strict()),
     created_at: z.string(),
     updated_at: z.string(),
     seq: sequenceSchema,

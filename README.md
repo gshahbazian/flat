@@ -5,7 +5,7 @@ markdown files that agents grep, edit, and push back. See
 [docs/001_initial_system.md](docs/001_initial_system.md) for the full design.
 
 Current implemented slice: projects and ownership, multi-project mirrors,
-ticket fields, append-only comments, server-side search with a CLI client,
+ticket fields and labels, append-only comments, server-side search with a CLI client,
 server-side MCP, per-member permissions for the HTTP ticket-sync and
 administration surfaces, and GitHub PR webhooks. Comments retain server-derived
 human or agent attribution and render directly in ticket files. A deployment
@@ -14,15 +14,15 @@ distinct credential.
 Operator recovery provides a deployer-only break-glass path for an existing
 active admin without resetting the tenant.
 
-The broader accepted design is not complete yet. Labels, force pushes, and
-native OS-keychain storage remain explicit follow-up work.
+The broader accepted design is not complete yet. Force pushes and native
+OS-keychain storage remain explicit follow-up work.
 
 ## MCP
 
 Process MCP clients connect to `https://<flat-host>/mcp` with a Flat human or
 agent bearer token in the `Authorization` header. The stateless endpoint
 exposes ticket search and reads, project and assignee discovery, ticket create
-and update, and comment creation. It always reads accepted server state, so
+and update (including labels), and comment creation. It always reads accepted server state, so
 unpushed Markdown mirror edits are intentionally absent.
 
 ## Layout
@@ -56,7 +56,8 @@ flat init http://localhost:8787 --setup
 # local setup code: flat_setup_CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk
 # setup creates a default DEMO project
 flat project create AUTH --name "Authentication"
-flat new "Fix OAuth token refresh race" --project AUTH --priority high --assignee gabe@acme.com
+flat label create auth
+flat new "Fix OAuth token refresh race" --project AUTH --priority high --assignee gabe@acme.com --label auth
 flat comment AUTH-1 "Reproduced with two concurrent refreshes."
 $EDITOR "$(flat path)/AUTH/AUTH-1.md"     # edit fields or description body
 flat push
@@ -90,6 +91,7 @@ title: Fix OAuth token refresh race
 status: todo
 priority: high
 assignee: gabe@acme.com
+labels: [auth, bug]
 created: 2026-08-25T12:34:56.000Z
 updated: 2026-08-25T13:45:00.000Z
 ---
@@ -105,7 +107,8 @@ Reproduced with two concurrent refreshes.
 
 Editable: `title`, `status` (`backlog|todo|in_progress|in_review|done|canceled`),
 `priority` (`none|low|medium|high|urgent`), `assignee` (a member email or
-`null`), and the body. Read-only: `id`, `project`, `created`, `updated`, and
+`null`), `labels` (a sorted inline list of synced label names), and the body.
+Read-only: `id`, `project`, `created`, `updated`, and
 everything from the `<!-- flat:comments -->` sentinel onward. Add comments
 with `flat comment KEY TEXT` or pipe multiline Markdown to `flat comment KEY
 --stdin`. Comments must contain non-whitespace content and may be at most 1 MiB
@@ -117,6 +120,8 @@ comment edits. `flat push` diffs each file against its base copy and sends one
 atomic update mutation per ticket; replaying a mutation is idempotent.
 Assignment emails are normalized and resolved through the synced member cache;
 run `flat sync` when a member is not found locally.
+Label names use lowercase ASCII slugs. Manage them with `flat label` and search
+accepted state with qualifiers such as `label:bug` or `label:none`.
 
 Conflicts are field-level: concurrent pushes that touch different fields of
 the same ticket both apply, and a field both sides changed rejects the whole

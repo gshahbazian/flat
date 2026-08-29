@@ -13,13 +13,16 @@ import {
   setupIdentitySchema,
   tokenCreateBodySchema,
 } from '../src/request-schema'
-import { Entity, MutationOp, Priority, Role, TokenKind } from '../src/schema.gen'
+import { Entity, MutationOp, Priority, Role, Status, TokenKind } from '../src/schema.gen'
 import { MAX_PROJECT_DESCRIPTION_BYTES } from '../src/validate'
 import {
   mutationInputSchema,
   mutationSchema,
   sequenceSchema,
+  snapshotSchema,
   syncEnvelopeSchema,
+  syncResponseSchema,
+  ticketSchema,
 } from '../src/wire-schema'
 
 describe('wire schemas', () => {
@@ -94,6 +97,75 @@ describe('wire schemas', () => {
     }
 
     expect(mutationInputSchema.safeParse(mutation).success).toBe(false)
+  })
+
+  test('normalizes label mutations and validates ticket membership deltas', () => {
+    const label = mutationInputSchema.parse({
+      mutation_id: 'label-create',
+      op: MutationOp.Create,
+      entity: Entity.Label,
+      entity_id: 'label-1',
+      set: { name: ' Bug ' },
+    })
+    expect(label).toEqual(expect.objectContaining({ set: { name: 'bug' } }))
+    expect(
+      mutationInputSchema.safeParse({
+        mutation_id: 'ticket-labels',
+        op: MutationOp.Update,
+        entity: Entity.Ticket,
+        entity_id: 'ticket-1',
+        base_seq: 1,
+        set: {},
+        labels_add: ['label-1'],
+        labels_remove: ['label-2'],
+      }).success
+    ).toBe(true)
+    expect(
+      mutationInputSchema.safeParse({
+        mutation_id: 'reserved-label',
+        op: MutationOp.Create,
+        entity: Entity.Label,
+        entity_id: 'label-2',
+        set: { name: 'none' },
+      }).success
+    ).toBe(false)
+  })
+
+  test('defaults additive label fields from pre-label payloads', () => {
+    const rawTicket = {
+      id: 'ticket-1',
+      key: 'DEMO-1',
+      project: 'project-1',
+      title: 'Old payload',
+      body: '',
+      status: Status.Todo,
+      priority: Priority.None,
+      assignee: null,
+      created_at: '2026-08-25T12:34:56.000Z',
+      updated_at: '2026-08-25T12:34:56.000Z',
+      seq: 1,
+    }
+    expect(ticketSchema.parse(rawTicket).labels).toEqual([])
+
+    const response = syncResponseSchema.parse({
+      applied: [],
+      conflicts: [],
+      deltas: [rawTicket],
+      comment_deltas: [],
+      latest_seq: 1,
+    })
+    expect(response.label_deltas).toEqual([])
+    expect(response.label_tombstones).toEqual([])
+    expect(response.deltas[0].labels).toEqual([])
+
+    const snapshot = snapshotSchema.parse({
+      projects: [],
+      tickets: [rawTicket],
+      comments: [],
+      latest_seq: 1,
+    })
+    expect(snapshot.labels).toEqual([])
+    expect(snapshot.tickets[0].labels).toEqual([])
   })
 })
 

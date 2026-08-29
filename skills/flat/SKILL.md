@@ -1,6 +1,6 @@
 ---
 name: flat
-description: Use an existing Flat CLI installation to manage Flat tickets or projects when the user names Flat, provides a Flat ticket or project key, or refers to work known to be in Flat. Do not use for generic task management or when `flat` is not installed and configured.
+description: Use an existing Flat CLI installation to manage Flat tickets, labels, or projects when the user names Flat, provides a Flat ticket or project key, or refers to work known to be in Flat. Do not use for generic task management or when `flat` is not installed and configured.
 ---
 
 # Flat
@@ -24,7 +24,8 @@ tools such as `rg` and `cat`.
 Use `flat search 'QUERY'` when the user wants accepted server state rather than
 the local working copy. It searches ticket titles, descriptions, and comments,
 with filters such as `project:AUTH`, `status:todo,in_progress`,
-`priority:high`, `assignee:me`, and `updated:>=2026-08-01`. Add `--json` for the
+`priority:high`, `label:bug`, `label:none`, `assignee:me`, and
+`updated:>=2026-08-01`. Add `--json` for the
 wire response, or `--sort updated|created`, `--limit N`, and `--cursor TOKEN`
 for explicit ordering and pagination. Server search does not sync first and
 does not include unpushed edits, manually created files, or conflict markers.
@@ -40,6 +41,7 @@ title: Fix OAuth token refresh race
 status: todo
 priority: high
 assignee: gabe@acme.com
+labels: [auth, bug]
 created: 2026-08-25T12:34:56.000Z
 updated: 2026-08-25T13:45:00.000Z
 ---
@@ -55,14 +57,17 @@ Reproduced with two concurrent refreshes.
 
 ## Write tickets
 
-`flat new TITLE --project KEY [--priority PRIORITY] [--assignee EMAIL]` creates
+`flat new TITLE --project KEY [--priority PRIORITY] [--assignee EMAIL]
+[--label NAME]...` creates
 a ticket on the server and writes its Markdown file to that project's mirror
 directory. `--project` is required. Run `flat project ls` after syncing to
 find valid project keys. Do not create ticket files by hand; `flat push` skips
 files that were not materialized by Flat.
 
-Edit an existing file's `title`, `status`, `priority`, `assignee`, or
-description body directly. The `id`, `project`, `created`, `updated`, filename,
+Edit an existing file's `title`, `status`, `priority`, `assignee`, `labels`, or
+description body directly. Labels use a sorted inline list such as
+`labels: [auth, bug]`; use `labels: []` for none. Legacy ticket files without
+`labels` are treated as unlabeled. The `id`, `project`, `created`, `updated`, filename,
 and everything from the `<!-- flat:comments -->` sentinel onward are read-only.
 The exact sentinel line is reserved and cannot appear in the description body.
 Valid statuses are `backlog`, `todo`, `in_progress`,
@@ -72,6 +77,23 @@ Valid statuses are `backlog`, `todo`, `in_progress`,
 clear an assignment. Flat normalizes assignment emails and resolves them from
 the synced member profiles. If an assignee cannot be found locally, run
 `flat sync` and retry. Run `flat push` to publish local edits to the server.
+
+## Manage labels
+
+Run `flat sync` before relying on label state. List or inspect labels with
+`flat label ls` and `flat label show NAME`. Create one with
+`flat label create NAME`, rename it with
+`flat label update NAME --new-name NEW_NAME`, and delete it with
+`flat label delete NAME`. Names are normalized lowercase ASCII slugs; `none`
+is reserved for search, and a claimed name is never reused. Create and rename
+require write access. Delete requires an admin human token and removes the
+label from every ticket.
+
+When editing a ticket, use names returned by `flat label ls`. Unknown names fail
+the push with a direction to sync. A local addition follows the label through a
+concurrent rename. If it was deleted, push asks you to remove it; merge drops
+the impossible addition. Concurrent label additions and removals otherwise
+merge as set changes rather than producing conflict markers.
 
 ## Add comments
 

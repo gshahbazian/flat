@@ -14,7 +14,8 @@
         "priority": "none",
         "assignee": null,
         "body": ""
-      }
+      },
+      "labels_add": ["01JG4BZA1ABELABCDEFGHJKLMN"]
     },
     {
       "mutation_id": "01JG4C3TA0PQRSTVWXYZ012345",
@@ -27,7 +28,8 @@
         "priority": "high",
         "assignee": "01JG4BZ4M6PQRSTVWXYZ012345",
         "body": "Fixed by serializing refresh behind the tenant DO."
-      }
+      },
+      "labels_remove": ["01JG4BZA1ABELABCDEFGHJKLMN"]
     },
     {
       "mutation_id": "01JG4C6Q90PQRSTVWXYZ012345",

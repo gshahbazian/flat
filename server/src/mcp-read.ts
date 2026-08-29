@@ -154,6 +154,13 @@ export function mcpGetTicket(sql: SqlStorage, rawBody: JsonObject, latestSeq: nu
       ticket.assignee_id === null || ticket.assignee_email === null
         ? null
         : { id: ticket.assignee_id, email: ticket.assignee_email },
+    labels: sql
+      .exec<{ id: string; name: string }>(
+        `SELECT l.id, l.name FROM ticket_labels tl JOIN labels l ON l.id = tl.label_id
+         WHERE tl.ticket_id = ? ORDER BY l.name`,
+        ticket.id
+      )
+      .toArray(),
     created_at: ticket.created_at,
     updated_at: ticket.updated_at,
     seq: ticket.seq,

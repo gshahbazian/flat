@@ -23,6 +23,13 @@ describe('permission policy', () => {
     expect(may(principal(), 'ticket.update')).toBe(true)
     expect(may(principal({ role: Role.Viewer }), 'ticket.update')).toBe(false)
     expect(may(principal({ access: TokenAccess.Read }), 'ticket.update')).toBe(false)
+    expect(may(principal(), 'label.create')).toBe(true)
+    expect(may(principal(), 'label.update')).toBe(true)
+    expect(may(principal({ role: Role.Viewer }), 'label.create')).toBe(false)
+    expect(may(principal(), 'label.delete')).toBe(false)
+    expect(may(principal({ role: Role.Admin, access: TokenAccess.Admin }), 'label.delete')).toBe(
+      true
+    )
     expect(may(principal({ role: Role.Admin, access: TokenAccess.Admin }), 'member.invite')).toBe(
       true
     )

@@ -1,0 +1,10 @@
+{
+  "mutation_id": "01JG4C3LABELPQRSTVWXYZ0123",
+  "op": "update",
+  "entity": "label",
+  "entity_id": "01JG4BZA1ABELABCDEFGHJKLMN",
+  "base_seq": 40,
+  "set": {
+    "name": "authentication"
+  }
+}

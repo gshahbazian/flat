@@ -15,11 +15,13 @@ import {
   invalidProjectDescription,
   invalidTicketBody,
   invalidTitle,
+  labelNameSchema,
   MAX_COMMENT_BYTES,
   MAX_PROJECT_DESCRIPTION_BYTES,
 } from '../src/validate'
 import {
   commentSchema,
+  labelSchema,
   mutationSchema,
   projectSchema,
   searchErrorDetailSchema,
@@ -50,6 +52,10 @@ describe('schema fixtures round-trip through the generated types', () => {
     expect(projectSchema.parse(fixture('project'))).toEqual(fixture('project'))
   })
 
+  test('label', () => {
+    expect(labelSchema.parse(fixture('label'))).toEqual(fixture('label'))
+  })
+
   test('mutation', () => {
     expect(mutationSchema.parse(fixture('mutation'))).toEqual(fixture('mutation'))
   })
@@ -60,6 +66,10 @@ describe('schema fixtures round-trip through the generated types', () => {
 
   test('comment mutation', () => {
     expect(mutationSchema.parse(fixture('comment_mutation'))).toEqual(fixture('comment_mutation'))
+  })
+
+  test('label mutation', () => {
+    expect(mutationSchema.parse(fixture('label_mutation'))).toEqual(fixture('label_mutation'))
   })
 
   test('sync_request', () => {
@@ -134,6 +144,27 @@ describe('email rule matches the Rust rule', () => {
 
   test('invalid emails reject', () => {
     for (const email of emails.invalid) expect(invalidEmail(email)).toBeNull()
+  })
+})
+
+describe('label name rule matches the Rust rule', () => {
+  const labels = z
+    .object({
+      valid: z.array(z.object({ input: z.string(), normalized: z.string() })),
+      invalid: z.array(z.string()),
+    })
+    .parse(fixture('labels'))
+
+  test('valid names normalize', () => {
+    for (const label of labels.valid) {
+      expect(labelNameSchema.parse(label.input)).toBe(label.normalized)
+    }
+  })
+
+  test('invalid names reject', () => {
+    for (const name of labels.invalid) {
+      expect(labelNameSchema.safeParse(name).success).toBe(false)
+    }
   })
 })
 

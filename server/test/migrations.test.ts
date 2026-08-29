@@ -147,6 +147,27 @@ describe('ordered database migrations', () => {
       'description',
       'comment',
     ])
+    // SAFETY: SQLite's table_info pragma guarantees the name column is text.
+    const labelColumns = sql.database.prepare('PRAGMA table_info(labels)').all() as Array<{
+      name: string
+    }>
+    expect(labelColumns.map((column) => column.name)).toEqual([
+      'id',
+      'name',
+      'created_at',
+      'updated_at',
+      'seq',
+    ])
+    // SAFETY: SQLite's foreign_key_list pragma guarantees these columns are text.
+    const membershipForeignKeys = sql.database
+      .prepare('PRAGMA foreign_key_list(ticket_labels)')
+      .all() as Array<{ table: string; from: string; on_delete: string }>
+    expect(membershipForeignKeys).toContainEqual(
+      expect.objectContaining({ table: 'tickets', from: 'ticket_id', on_delete: 'CASCADE' })
+    )
+    expect(membershipForeignKeys).toContainEqual(
+      expect.objectContaining({ table: 'labels', from: 'label_id', on_delete: 'CASCADE' })
+    )
   })
 
   test('search migration backfills and rebuilds ticket and comment documents', () => {
@@ -158,6 +179,10 @@ describe('ordered database migrations', () => {
       DROP TRIGGER ticket_search_comment_insert;
       DROP TRIGGER ticket_search_ticket_delete;
       DROP TABLE ticket_search;
+      DROP TABLE ticket_labels;
+      DROP TABLE label_tombstones;
+      DROP TABLE label_name_reservations;
+      DROP TABLE labels;
       UPDATE meta SET value = '6' WHERE key = 'schema_version';
       INSERT INTO tenant_metadata (singleton, display_name, initialized_at)
       VALUES (1, 'Tenant', '2026-08-01T00:00:00.000Z');

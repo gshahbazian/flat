@@ -17,6 +17,7 @@ const DEFAULT_LIMIT = 20
 const MAX_LIMIT = 100
 const TICKET_KEY = /^([A-Za-z][A-Za-z0-9]{1,7})-([1-9][0-9]*)$/
 const PROJECT_KEY = /^[A-Za-z][A-Za-z0-9]{1,7}$/
+const LABEL_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/
 const RFC3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/
 const DATE = /^(\d{4})-(\d{2})-(\d{2})$/
 
@@ -42,6 +43,7 @@ export interface ParsedSearchQuery {
   projects: string[] | null
   statuses: Status[] | null
   priorities: Priority[] | null
+  labels: string[] | null
   assignees: AssigneeFilter[] | null
   created: DateFilter | null
   updated: DateFilter | null
@@ -232,6 +234,7 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
     projects: null,
     statuses: null,
     priorities: null,
+    labels: null,
     assignees: null,
     created: null,
     updated: null,
@@ -279,7 +282,7 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
     }
 
     const qualifier = raw.slice(0, colon).toLocaleLowerCase('en-US')
-    const known = ['project', 'status', 'priority', 'assignee', 'created', 'updated']
+    const known = ['project', 'status', 'priority', 'assignee', 'label', 'created', 'updated']
     if (!known.includes(qualifier)) {
       fail(query, `unknown qualifier ${JSON.stringify(qualifier)}`, clauseOffset)
     }
@@ -356,6 +359,19 @@ export function parseSearchQuery(query: string): ParsedSearchQuery {
       )
       continue
     }
+    if (qualifier === 'label') {
+      const labels = splitAlternatives(query, value, valueOffset, qualifier)
+      const normalized: string[] = []
+      for (const label of labels) {
+        const name = label.value.toLowerCase()
+        if (name !== 'none' && !LABEL_NAME.test(name)) {
+          fail(query, `invalid label ${JSON.stringify(label.value)}`, label.offset)
+        }
+        normalized.push(name)
+      }
+      parsed.labels = sortedUnique(normalized)
+      continue
+    }
     if (value.includes(',')) fail(query, `${qualifier} accepts one comparison`, valueOffset)
     const date = parseDateFilter(query, value, valueOffset)
     if (qualifier === 'created') parsed.created = date
@@ -380,6 +396,7 @@ function queryBinding(query: ParsedSearchQuery, sort: SearchSort): string {
     projects: query.projects,
     statuses: query.statuses,
     priorities: query.priorities,
+    labels: query.labels,
     assignees: query.assignees,
     created: query.created,
     updated: query.updated,
@@ -471,6 +488,23 @@ function addFilters(
       }
       alternatives.push('m.email = ?')
       bindings.push(assignee.email)
+    }
+    conditions.push(`(${alternatives.join(' OR ')})`)
+  }
+  if (query.labels !== null) {
+    const names = query.labels.filter((name) => name !== 'none')
+    const alternatives: string[] = []
+    if (query.labels.includes('none')) {
+      alternatives.push(
+        'NOT EXISTS (SELECT 1 FROM ticket_labels empty WHERE empty.ticket_id = t.id)'
+      )
+    }
+    if (names.length > 0) {
+      alternatives.push(
+        `EXISTS (SELECT 1 FROM ticket_labels tl JOIN labels l ON l.id = tl.label_id
+         WHERE tl.ticket_id = t.id AND l.name IN (${placeholders(names.length)}))`
+      )
+      bindings.push(...names)
     }
     conditions.push(`(${alternatives.join(' OR ')})`)
   }

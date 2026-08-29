@@ -13,6 +13,28 @@ pub const PROTOCOL_VERSION: u32 = 2;
 pub const MAX_COMMENT_BYTES: usize = 1024 * 1024;
 pub const COMMENT_SENTINEL: &str = "<!-- flat:comments -->";
 
+/// Labels use compact lowercase names so their Markdown representation stays
+/// unambiguous and easy to edit by hand.
+pub fn normalize_label_name(name: &str) -> Result<String, String> {
+    let name = name
+        .trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c'))
+        .to_ascii_lowercase();
+    let bytes = name.as_bytes();
+    if bytes.is_empty() || bytes.len() > 64 || !bytes[0].is_ascii_alphanumeric() {
+        return Err("invalid_label_name".into());
+    }
+    if bytes[1..]
+        .iter()
+        .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("invalid_label_name".into());
+    }
+    if name == "none" {
+        return Err("reserved_label_name".into());
+    }
+    Ok(name)
+}
+
 /// Validates the immutable, human-facing project key used in ticket aliases
 /// and mirror directory names.
 pub fn validate_project_key(key: &str) -> Result<(), String> {
@@ -272,6 +294,9 @@ pub struct Ticket {
     /// Assigned member ULID, or null when unassigned.
     #[typeshare(serialized_as = "NullableString")]
     pub assignee: Option<String>,
+    /// Label ULIDs ordered by their current human-facing names.
+    #[serde(default)]
+    pub labels: Vec<String>,
     /// Server-generated UTC timestamps. Clients may not set these fields.
     pub created_at: String,
     pub updated_at: String,
@@ -315,6 +340,17 @@ pub struct Project {
     pub seq: u32,
 }
 
+/// A tenant-wide label referenced by ticket membership.
+#[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Label {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub seq: u32,
+}
+
 /// A server deletion that removes the corresponding local mirror state.
 #[typeshare]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -334,6 +370,14 @@ pub struct ProjectTombstone {
 }
 
 #[typeshare]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LabelTombstone {
+    pub id: String,
+    pub name: String,
+    pub seq: u32,
+}
+
+#[typeshare]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MutationOp {
@@ -349,6 +393,7 @@ pub enum Entity {
     Ticket,
     Comment,
     Project,
+    Label,
 }
 
 /// Scalar fields a mutation may set. Server validation restricts fields by
@@ -384,6 +429,8 @@ pub struct MutationSet {
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 /// Ticket editing code can keep the narrower domain name even though the wire
@@ -426,6 +473,11 @@ pub struct Mutation {
     pub owners_add: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub owners_remove: Vec<String>,
+    /// Ticket-label membership deltas. Values are label ULIDs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels_add: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels_remove: Vec<String>,
 }
 
 /// Canonical JSON used when binding an idempotency key to a mutation. Object
@@ -495,11 +547,16 @@ pub struct SyncResponse {
     /// Projects changed since the request's `last_seq`.
     #[serde(default)]
     pub project_deltas: Vec<Project>,
+    /// Labels changed since the request's `last_seq`.
+    #[serde(default)]
+    pub label_deltas: Vec<Label>,
     /// Tickets deleted since `last_seq`.
     #[serde(default)]
     pub tombstones: Vec<TicketTombstone>,
     #[serde(default)]
     pub project_tombstones: Vec<ProjectTombstone>,
+    #[serde(default)]
+    pub label_tombstones: Vec<LabelTombstone>,
     /// Current safe profiles. Administrative sequence gaps may occur without
     /// exposing their private records.
     #[serde(default)]
@@ -512,6 +569,8 @@ pub struct SyncResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Snapshot {
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub labels: Vec<Label>,
     pub tickets: Vec<Ticket>,
     pub comments: Vec<Comment>,
     #[serde(default)]

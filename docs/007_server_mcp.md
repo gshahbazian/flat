@@ -202,7 +202,7 @@ V1 exposes exactly seven tools:
 | `list_projects` | Discover valid projects for ticket creation | `work.read` | `true, false, true, false` |
 | `list_assignable_members` | Discover active members valid for assignment | `member.list` | `true, false, true, false` |
 | `create_ticket` | Create a ticket in a named project | `ticket.create` | `false, false, true, false` |
-| `update_ticket` | Update editable ticket fields with conflict detection | `ticket.update` | `false, true, true, false` |
+| `update_ticket` | Update editable ticket fields and labels | `ticket.update` | `false, true, true, false` |
 | `add_comment` | Append a comment | `comment.create` | `false, false, true, false` |
 
 All seven definitions are returned to every authenticated active member. Tool
@@ -270,7 +270,8 @@ Description: search accepted server ticket state. Results do not include local
 mirror edits, manually created files, or conflict markers. Results are
 summaries; use `get_ticket` for the description and ordered comments. An empty
 or whitespace-only query is invalid. To list tickets without full-text search,
-pass a filters-only query such as `status:todo,in_progress` or `project:AUTH`.
+pass a filters-only query such as `status:todo,in_progress`, `project:AUTH`,
+`label:bug`, or `label:none`.
 
 Input is exactly the `SearchRequest` contract from `006_search.md`:
 
@@ -351,6 +352,7 @@ Output:
     "status": "in_progress",
     "priority": "high",
     "assignee": { "id": "01H...", "email": "gabe@acme.com" },
+    "labels": [{ "id": "01L...", "name": "auth" }],
     "created_at": "2026-08-24T18:04:11.000Z",
     "updated_at": "2026-08-26T09:22:41.000Z",
     "seq": 4180
@@ -470,7 +472,8 @@ Input:
   "body": "Observed under concurrent refresh.",
   "status": "todo",
   "priority": "high",
-  "assignee": "gabe@acme.com"
+  "assignee": "gabe@acme.com",
+  "labels": ["auth"]
 }
 ```
 
@@ -483,11 +486,14 @@ Input:
 - `status` and `priority` are optional and default to `todo` and `none`.
 - `assignee` is optional. When present it is a normalized active-member email;
   `null` means unassigned.
+- `labels` is an optional list of unique normalized label names and defaults
+  to empty. Every name must already exist.
 
-The transaction resolves the project and assignee, generates the ticket ULID,
+The transaction resolves the project, assignee, and labels, generates the ticket ULID,
 allocates the project's next key, applies the existing ticket-create mutation,
 records idempotency and audit attribution, and returns the common write
-receipt. Unknown projects and invalid assignees are validation errors.
+receipt. Unknown projects, invalid assignees, and unknown labels are validation
+errors.
 
 ### `update_ticket`
 
@@ -506,19 +512,24 @@ Input:
     "status": "in_review",
     "priority": "urgent",
     "assignee": null
-  }
+  },
+  "labels_add": ["auth"],
+  "labels_remove": ["backlog"]
 }
 ```
 
-- `idempotency_key`, `key`, `base_seq`, and `set` are required.
+- `idempotency_key`, `key`, and `base_seq` are required. `set` defaults to an
+  empty object when the request changes labels only.
 - `base_seq` is an unsigned 32-bit sequence from the last full read.
-- `set` is strict and must contain at least one of `title`, `body`, `status`,
-  `priority`, or `assignee`.
+- `set` is strict and may contain `title`, `body`, `status`, `priority`, or
+  `assignee`. `labels_add` and `labels_remove` are optional unique name lists.
+  The request must change at least one scalar field or label membership, and a
+  label cannot appear in both lists.
 - `assignee: null` clears assignment. Omitting `assignee` leaves it unchanged.
 - Project, ID, timestamps, comments, actor data, and delegation are not
   editable fields.
 
-The executor resolves the key and optional assignee in the write transaction,
+The executor resolves the key, optional assignee, and labels in the write transaction,
 then applies the existing ticket-update mutation. A stale `base_seq` may still
 succeed when intervening writes changed only disjoint fields. Any overlapping
 field rejects the entire tool call and returns the current ticket sequence in
@@ -963,8 +974,8 @@ Server-side MCP is complete when:
 - Protocol sessions, SSE result streams, subscriptions, resumability, or tasks
 - Browser MCP clients, CORS, or `OPTIONS` preflight handling
 - OAuth discovery or interactive OAuth flows
-- Force updates, deletes, label tools, project administration, or project-owner
-  changes
+- Force updates, deletes, standalone label management tools, project
+  administration, or project-owner changes
 - Member, token, enrollment, recovery, setup, audit, webhook, credential, or
   tenant-administration tools
 - Application-level rate limiting in v1
