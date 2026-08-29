@@ -8,10 +8,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{bail, Result};
 use flat_schema::{Comment, Label, MemberProfile, Ticket};
 
 use crate::markdown::{self, TicketFile};
+use crate::store::{label_id_was_known, resolve_label_identity};
 
 pub struct Merged {
     pub content: String,
@@ -140,22 +141,16 @@ fn merge_labels(
     let base_ids = base
         .labels
         .iter()
-        .map(|name| historical_label_id(name, label_history))
+        .map(|name| resolve_label_identity(labels, label_history, name).map(|label| label.id))
         .collect::<Result<BTreeSet<_>>>()?;
-    let local_ids = local
-        .labels
-        .iter()
-        .map(|name| {
-            if base_names.contains(name.as_str()) {
-                historical_label_id(name, label_history)
-            } else {
-                labels
-                    .get(name)
-                    .map(|label| label.id.clone())
-                    .with_context(|| format!("unknown label {name:?}; run `flat sync`"))
-            }
-        })
-        .collect::<Result<BTreeSet<_>>>()?;
+    let mut local_ids = BTreeSet::new();
+    for name in &local.labels {
+        let label = resolve_label_identity(labels, label_history, name)?;
+        if label.current_name.is_none() && !base_names.contains(name.as_str()) {
+            continue;
+        }
+        local_ids.insert(label.id);
+    }
     let mut merged: BTreeSet<String> = server.labels.iter().cloned().collect();
     for added in local_ids.difference(&base_ids) {
         merged.insert(added.clone());
@@ -165,21 +160,17 @@ fn merge_labels(
     }
     merged
         .into_iter()
-        .map(|id| {
-            labels
-                .values()
-                .find(|label| label.id == id)
-                .map(|label| label.name.clone())
-                .with_context(|| format!("missing label {id}; run `flat sync`"))
+        .filter_map(|id| {
+            let current = labels.values().find(|label| label.id == id);
+            if let Some(label) = current {
+                return Some(Ok(label.name.clone()));
+            }
+            if label_id_was_known(label_history, &id) {
+                return None;
+            }
+            Some(Err(anyhow::anyhow!("missing label {id}; run `flat sync`")))
         })
         .collect()
-}
-
-fn historical_label_id(name: &str, label_history: &BTreeMap<String, String>) -> Result<String> {
-    label_history
-        .get(name)
-        .cloned()
-        .with_context(|| format!("unknown label {name:?}; run `flat sync`"))
 }
 
 fn push_field<T>(out: &mut String, name: &str, field: &Field<T>, fmt: impl Fn(&T) -> String) {
@@ -449,6 +440,53 @@ mod tests {
             &server,
             &BTreeMap::new(),
             &current_labels,
+            &label_history,
+            &[],
+        )
+        .unwrap();
+        assert!(markdown::parse(&merged.content).unwrap().labels.is_empty());
+    }
+
+    #[test]
+    fn locally_added_label_tracks_identity_across_a_rename() {
+        let base = file("t", Status::Todo, "body");
+        let mut local = base.clone();
+        local.labels = vec!["bug".into()];
+        let server = server("t", Status::Todo, "body");
+
+        let mut current_labels = labels();
+        let mut renamed = current_labels.remove("bug").unwrap();
+        renamed.name = "defect".into();
+        current_labels.insert(renamed.name.clone(), renamed);
+        let label_history = BTreeMap::from([("bug".into(), "label-bug".into())]);
+
+        let merged = merge(
+            &base,
+            &local,
+            &server,
+            &BTreeMap::new(),
+            &current_labels,
+            &label_history,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(markdown::parse(&merged.content).unwrap().labels, ["defect"]);
+    }
+
+    #[test]
+    fn locally_added_label_is_dropped_when_deleted_during_merge() {
+        let base = file("t", Status::Todo, "body");
+        let mut local = base.clone();
+        local.labels = vec!["bug".into()];
+        let server = server("t", Status::Todo, "body");
+        let label_history = BTreeMap::from([("bug".into(), "label-bug".into())]);
+
+        let merged = merge(
+            &base,
+            &local,
+            &server,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
             &label_history,
             &[],
         )

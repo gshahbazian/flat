@@ -58,9 +58,11 @@ field the next time Flat rematerializes them. Priority is one of `none`, `low`,
 `assignee: null`. Assignment emails use the shared normalization rules and are
 resolved through synced member profiles. If an email is missing from the
 local cache, run `flat sync` and retry.
-Label names are normalized lowercase ASCII slugs and must already exist in the
-synced label cache. `flat label create` and `flat label update` require write
-access; delete requires an admin human token. Claimed names are never reused.
+Label names are normalized lowercase ASCII slugs. A locally added name follows
+the same label through a concurrent rename. If the label was deleted, push asks
+you to remove it from the file. `flat label create` and `flat label update`
+require write access; delete requires an admin human token. Claimed names are
+never reused.
 
 Each file ends with a `<!-- flat:comments -->` section rendered from the
 server's append-only comments. Everything from that sentinel onward is

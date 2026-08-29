@@ -58,10 +58,13 @@ labels: [auth, bug]
 ```
 
 Names render in alphabetical order. An unlabeled ticket renders `labels: []`.
-The CLI rejects malformed inline lists, duplicate names, and names absent from
-the synced label cache. Push resolves names to ULIDs and sends set deltas.
+The CLI rejects malformed inline lists and duplicate names. Push resolves names
+through the current cache and permanent local history, so a locally added label
+still follows its identity after a concurrent rename. If that label was
+deleted, push asks the user to remove it instead of sending a stale ID.
 `flat sync --merge` performs a set merge: local additions and removals apply to
-the current server set without conflict markers.
+the current server set without conflict markers, and an impossible addition of
+a concurrently deleted label is dropped.
 
 ## CLI
 

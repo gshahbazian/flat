@@ -1499,23 +1499,23 @@ fn changed_ticket_set(
     } else {
         None
     };
-    let base_names: HashSet<&str> = base.labels.iter().map(String::as_str).collect();
     let base_labels = base
         .labels
         .iter()
-        .map(|name| checkout.resolve_historical_label(name))
+        .map(|name| checkout.resolve_label_identity(name).map(|label| label.id))
         .collect::<Result<BTreeSet<_>>>()?;
-    let file_labels = file
-        .labels
-        .iter()
-        .map(|name| {
-            if base_names.contains(name.as_str()) {
-                checkout.resolve_historical_label(name)
-            } else {
-                checkout.resolve_label(name)
-            }
-        })
-        .collect::<Result<BTreeSet<_>>>()?;
+    let base_names: HashSet<&str> = base.labels.iter().map(String::as_str).collect();
+    let mut file_labels = BTreeSet::new();
+    for name in &file.labels {
+        let label = checkout.resolve_label_identity(name)?;
+        if label.current_name.is_none() && !base_names.contains(name.as_str()) {
+            bail!(
+                "{}: label {name:?} was deleted; remove it from the file",
+                path.display()
+            );
+        }
+        file_labels.insert(label.id);
+    }
     let labels_add = file_labels.difference(&base_labels).cloned().collect();
     let labels_remove = base_labels.difference(&file_labels).cloned().collect();
     Ok(TicketChanges {
@@ -2098,6 +2098,76 @@ mod tests {
             changed_ticket_set(&checkout, &edited, &base, Path::new("DEMO-1.md")).unwrap();
         assert_eq!(changes.labels_add, ["label-bug"]);
         assert_eq!(changes.labels_remove, ["label-auth"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn push_diff_resolves_a_locally_added_renamed_label() {
+        let root = std::env::temp_dir().join(format!("flat-label-rename-{}", Ulid::new()));
+        let config = Config {
+            server: "https://flat.example".to_string(),
+            token: "test-token".to_string(),
+        };
+        store::save_config(&root, &config).unwrap();
+        let mut checkout = Checkout::open(&root).unwrap();
+        let mut label = Label {
+            id: "label-bug".into(),
+            name: "bug".into(),
+            created_at: "created".into(),
+            updated_at: "updated".into(),
+            seq: 1,
+        };
+        checkout.apply_labels(std::slice::from_ref(&label));
+        label.name = "defect".into();
+        label.seq = 2;
+        checkout.apply_labels(&[label]);
+
+        let base = markdown::parse(
+            "---\nid: DEMO-1\nproject: DEMO\ntitle: Title\nstatus: todo\nlabels: []\n---\n\n<!-- flat:comments -->\n## Comments\n",
+        )
+        .unwrap();
+        let mut edited = base.clone();
+        edited.labels = vec!["bug".into()];
+        let changes =
+            changed_ticket_set(&checkout, &edited, &base, Path::new("DEMO-1.md")).unwrap();
+
+        assert_eq!(changes.labels_add, ["label-bug"]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn push_diff_reports_a_locally_added_deleted_label() {
+        let root = std::env::temp_dir().join(format!("flat-label-delete-{}", Ulid::new()));
+        let config = Config {
+            server: "https://flat.example".to_string(),
+            token: "test-token".to_string(),
+        };
+        store::save_config(&root, &config).unwrap();
+        let mut checkout = Checkout::open(&root).unwrap();
+        checkout.apply_labels(&[Label {
+            id: "label-bug".into(),
+            name: "bug".into(),
+            created_at: "created".into(),
+            updated_at: "updated".into(),
+            seq: 1,
+        }]);
+        checkout.apply_label_tombstones(&[flat_schema::LabelTombstone {
+            id: "label-bug".into(),
+            name: "bug".into(),
+            seq: 2,
+        }]);
+
+        let base = markdown::parse(
+            "---\nid: DEMO-1\nproject: DEMO\ntitle: Title\nstatus: todo\nlabels: []\n---\n\n<!-- flat:comments -->\n## Comments\n",
+        )
+        .unwrap();
+        let mut edited = base.clone();
+        edited.labels = vec!["bug".into()];
+        let error =
+            changed_ticket_set(&checkout, &edited, &base, Path::new("DEMO-1.md")).unwrap_err();
+
+        assert!(error.to_string().contains("label \"bug\" was deleted"));
+        assert!(error.to_string().contains("remove it from the file"));
         std::fs::remove_dir_all(root).unwrap();
     }
 

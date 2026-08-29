@@ -89,9 +89,11 @@ is reserved for search, and a claimed name is never reused. Create and rename
 require write access. Delete requires an admin human token and removes the
 label from every ticket.
 
-When editing a ticket, use only names returned by `flat label ls`. Unknown
-names fail the push with a direction to sync. Concurrent label additions and
-removals merge as set changes rather than producing conflict markers.
+When editing a ticket, use names returned by `flat label ls`. Unknown names fail
+the push with a direction to sync. A local addition follows the label through a
+concurrent rename. If it was deleted, push asks you to remove it; merge drops
+the impossible addition. Concurrent label additions and removals otherwise
+merge as set changes rather than producing conflict markers.
 
 ## Add comments
 

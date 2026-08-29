@@ -55,6 +55,41 @@ pub struct State {
     pub comments: BTreeMap<String, Comment>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LabelIdentity {
+    pub id: String,
+    pub current_name: Option<String>,
+}
+
+pub(crate) fn resolve_label_identity(
+    labels: &BTreeMap<String, Label>,
+    label_history: &BTreeMap<String, String>,
+    name: &str,
+) -> Result<LabelIdentity> {
+    let normalized = flat_schema::normalize_label_name(name).map_err(anyhow::Error::msg)?;
+    if let Some(label) = labels.get(&normalized) {
+        return Ok(LabelIdentity {
+            id: label.id.clone(),
+            current_name: Some(label.name.clone()),
+        });
+    }
+    let id = label_history
+        .get(&normalized)
+        .with_context(|| format!("unknown label {normalized:?}; run `flat sync`"))?;
+    let current_name = labels
+        .values()
+        .find(|label| label.id == *id)
+        .map(|label| label.name.clone());
+    Ok(LabelIdentity {
+        id: id.clone(),
+        current_name,
+    })
+}
+
+pub(crate) fn label_id_was_known(label_history: &BTreeMap<String, String>, id: &str) -> bool {
+    label_history.values().any(|known_id| known_id == id)
+}
+
 pub fn flat_root() -> Result<PathBuf> {
     if let Some(dir) = std::env::var_os("FLAT_DIR") {
         return Ok(PathBuf::from(dir));
@@ -314,12 +349,8 @@ impl Checkout {
         Ok(self.label(name)?.id.clone())
     }
 
-    pub fn resolve_historical_label(&self, name: &str) -> Result<String> {
-        self.state
-            .label_history
-            .get(name)
-            .cloned()
-            .with_context(|| format!("unknown label {name:?}; run `flat sync`"))
+    pub fn resolve_label_identity(&self, name: &str) -> Result<LabelIdentity> {
+        resolve_label_identity(&self.state.labels, &self.state.label_history, name)
     }
 
     pub fn project(&self, key: &str) -> Result<&Project> {
@@ -687,7 +718,13 @@ mod tests {
         checkout.apply_labels(std::slice::from_ref(&renamed));
         assert!(!checkout.state.labels.contains_key("bug"));
         assert_eq!(checkout.resolve_label("defect").unwrap(), "label-1");
-        assert_eq!(checkout.resolve_historical_label("bug").unwrap(), "label-1");
+        assert_eq!(
+            checkout.resolve_label_identity("bug").unwrap(),
+            LabelIdentity {
+                id: "label-1".into(),
+                current_name: Some("defect".into()),
+            }
+        );
 
         checkout.apply_label_tombstones(&[LabelTombstone {
             id: label.id,
@@ -695,6 +732,13 @@ mod tests {
             seq: 3,
         }]);
         assert!(checkout.state.labels.is_empty());
+        assert_eq!(
+            checkout.resolve_label_identity("bug").unwrap(),
+            LabelIdentity {
+                id: "label-1".into(),
+                current_name: None,
+            }
+        );
     }
 
     #[test]

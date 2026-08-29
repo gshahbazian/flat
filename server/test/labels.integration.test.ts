@@ -208,6 +208,10 @@ describe.sequential('labels', () => {
       },
     ])
     expect(addBug.conflicts).toEqual([])
+    expect(addBug.deltas.find((ticket) => ticket.id === labeled.id)?.labels).toEqual([
+      auth.id,
+      bug.id,
+    ])
     const removeAuth = await sync(worker, memberToken, addBug.latest_seq, [
       {
         mutation_id: 'remove-auth-stale-base',
@@ -235,13 +239,27 @@ describe.sequential('labels', () => {
     )
     expect(noneSearch.results.map((result) => result.key)).toEqual(['DEMO-2'])
 
-    const renamed = await sync(worker, memberToken, removeAuth.latest_seq, [
+    const noOp = await sync(worker, memberToken, removeAuth.latest_seq, [
+      {
+        mutation_id: 'no-op-bug-rename',
+        entity: 'label',
+        op: 'update',
+        entity_id: bug.id,
+        base_seq: bug.seq,
+        set: { name: 'bug' },
+      },
+    ])
+    expect(noOp.conflicts).toEqual([])
+    expect(noOp.deltas).toEqual([])
+    const bugAfterNoOp = noOp.label_deltas.find((label) => label.id === bug.id)!
+
+    const renamed = await sync(worker, memberToken, noOp.latest_seq, [
       {
         mutation_id: 'rename-bug',
         entity: 'label',
         op: 'update',
         entity_id: bug.id,
-        base_seq: bug.seq,
+        base_seq: bugAfterNoOp.seq,
         set: { name: 'defect' },
       },
     ])

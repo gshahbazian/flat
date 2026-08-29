@@ -1692,8 +1692,8 @@ export class TenantDO extends DurableObject<Env> {
       return reject(`base_seq ${mutation.base_seq} is ahead of the label (seq ${label.seq})`)
     }
 
-    const ticketIds = this.labelTicketIds(mutation.entity_id)
     if (mutation.op === MutationOp.Delete) {
+      const ticketIds = this.labelTicketIds(mutation.entity_id)
       const seq = this.nextSeq()
       this.sql.exec(
         'INSERT INTO label_tombstones (id, name, seq) VALUES (?, ?, ?)',
@@ -1717,16 +1717,17 @@ export class TenantDO extends DurableObject<Env> {
     const nameResult = labelNameSchema.safeParse(mutation.set.name)
     if (!nameResult.success) return reject('update requires a valid set.name')
     const name = nameResult.data
-    if (mutation.base_seq < label.seq && name !== label.name) {
+    const changesName = name !== label.name
+    if (mutation.base_seq < label.seq && changesName) {
       return reject(`conflicting edits to name (label is at seq ${label.seq}): run \`flat sync\``)
     }
-    if (name !== label.name && this.labelNameReserved(name)) {
+    if (changesName && this.labelNameReserved(name)) {
       return reject(`label name ${name} is already used`)
     }
 
     const seq = this.nextSeq()
     const updatedAt = timestampAfter(label.updated_at)
-    if (name !== label.name) {
+    if (changesName) {
       this.sql.exec(
         'INSERT INTO label_name_reservations (name, label_id) VALUES (?, ?)',
         name,
@@ -1740,7 +1741,7 @@ export class TenantDO extends DurableObject<Env> {
       seq,
       mutation.entity_id
     )
-    this.touchTickets(ticketIds, seq)
+    if (changesName) this.touchTickets(this.labelTicketIds(mutation.entity_id), seq)
     this.log(mutation, seq)
     return {
       mutation_id: mutation.mutation_id,
@@ -3440,19 +3441,30 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   private ticketsSince(seq: number): Ticket[] {
-    const tickets = this.sql
-      .exec<SqlRow<Omit<Ticket, 'labels'>>>(
-        `SELECT id, key, project, title, body, status, priority, assignee, created_at, updated_at, seq
-         FROM tickets
-         WHERE seq > ? OR id IN (SELECT ticket_id FROM comments WHERE seq > ?)
-         ORDER BY seq, key`,
+    type TicketLabelRow = SqlRow<Omit<Ticket, 'labels'>> & { label_id: string | null }
+    type MaterializedTicket = Ticket & { labels: string[] }
+    const rows = this.sql
+      .exec<TicketLabelRow>(
+        `SELECT t.id, t.key, t.project, t.title, t.body, t.status, t.priority, t.assignee,
+                t.created_at, t.updated_at, t.seq, tl.label_id
+         FROM tickets t
+         LEFT JOIN ticket_labels tl ON tl.ticket_id = t.id
+         LEFT JOIN labels l ON l.id = tl.label_id
+         WHERE t.seq > ? OR t.id IN (SELECT ticket_id FROM comments WHERE seq > ?)
+         ORDER BY t.seq, t.key, l.name`,
         seq,
         seq
       )
       .toArray()
     const deltas: Ticket[] = []
-    for (const ticket of tickets) {
-      deltas.push({ ...ticket, labels: this.ticketLabelIds(ticket.id) })
+    let current: MaterializedTicket | null = null
+    for (const row of rows) {
+      if (current?.id !== row.id) {
+        const { label_id: _, ...ticket } = row
+        current = { ...ticket, labels: [] }
+        deltas.push(current)
+      }
+      if (row.label_id !== null) current.labels.push(row.label_id)
     }
     return deltas
   }
@@ -3484,18 +3496,6 @@ export class TenantDO extends DurableObject<Env> {
         seq
       )
       .toArray()
-  }
-
-  private ticketLabelIds(ticketId: string): string[] {
-    return this.sql
-      .exec<{ label_id: string }>(
-        `SELECT tl.label_id FROM ticket_labels tl
-         JOIN labels l ON l.id = tl.label_id
-         WHERE tl.ticket_id = ? ORDER BY l.name`,
-        ticketId
-      )
-      .toArray()
-      .map((row) => row.label_id)
   }
 
   private projectsSince(seq: number): Project[] {
