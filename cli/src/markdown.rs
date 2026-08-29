@@ -9,6 +9,7 @@
 //! status: todo
 //! priority: high
 //! assignee: gabe@example.com
+//! labels: [auth, bug]
 //! created: 2026-08-25T12:34:56.000Z
 //! updated: 2026-08-25T13:45:00.000Z
 //! ---
@@ -19,13 +20,13 @@
 //! ## Comments
 //! ```
 //!
-//! Editable: title, status, priority, assignee, body. Read-only: id, project,
-//! created, updated, and the rendered comment section.
+//! Editable: title, status, priority, assignee, labels, body. Read-only: id,
+//! project, created, updated, and the rendered comment section.
 
 use std::collections::BTreeMap;
 
 use anyhow::{bail, Context, Result};
-use flat_schema::{Comment, MemberProfile, Priority, Status, Ticket, TokenKind};
+use flat_schema::{Comment, Label, MemberProfile, Priority, Status, Ticket, TokenKind};
 
 pub use flat_schema::COMMENT_SENTINEL;
 
@@ -38,6 +39,7 @@ pub struct TicketFile {
     pub status: Status,
     pub priority: Priority,
     pub assignee: Option<String>,
+    pub labels: Vec<String>,
     /// Missing only for a pre-priority mirror that has not synced yet.
     pub created: Option<String>,
     /// Missing only for a pre-priority mirror that has not synced yet.
@@ -68,6 +70,7 @@ pub(crate) fn assignee_email(
 pub fn render(
     ticket: &Ticket,
     members: &BTreeMap<String, MemberProfile>,
+    labels: &BTreeMap<String, Label>,
     comments: &[Comment],
 ) -> Result<String> {
     flat_schema::validate_ticket_body(&ticket.body).map_err(anyhow::Error::msg)?;
@@ -78,14 +81,16 @@ pub fn render(
         .rsplit_once('-')
         .map(|(project, _)| project)
         .context("ticket key has no project prefix")?;
+    let label_names = label_names(ticket, labels)?;
     let mut out = format!(
-        "---\nid: {}\nproject: {}\ntitle: {}\nstatus: {}\npriority: {}\nassignee: {}\ncreated: {}\nupdated: {}\n---\n",
+        "---\nid: {}\nproject: {}\ntitle: {}\nstatus: {}\npriority: {}\nassignee: {}\nlabels: [{}]\ncreated: {}\nupdated: {}\n---\n",
         ticket.key,
         project,
         ticket.title,
         ticket.status.as_str(),
         ticket.priority.as_str(),
         assignee,
+        label_names.join(", "),
         ticket.created_at,
         ticket.updated_at
     );
@@ -97,6 +102,22 @@ pub fn render(
     }
     out.push_str(&render_comment_section(comments, members)?);
     Ok(out)
+}
+
+pub(crate) fn label_names(
+    ticket: &Ticket,
+    labels: &BTreeMap<String, Label>,
+) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for label_id in &ticket.labels {
+        let label = labels
+            .values()
+            .find(|label| label.id == *label_id)
+            .with_context(|| format!("missing label {label_id}; run `flat sync`"))?;
+        names.push(label.name.clone());
+    }
+    names.sort();
+    Ok(names)
 }
 
 pub fn render_comment_section(
@@ -188,6 +209,7 @@ pub fn parse(content: &str) -> Result<TicketFile> {
     let mut status = None;
     let mut priority = None;
     let mut assignee = None;
+    let mut labels = None;
     let mut created = None;
     let mut updated = None;
     loop {
@@ -216,10 +238,11 @@ pub fn parse(content: &str) -> Result<TicketFile> {
                     Some(flat_schema::normalize_email(value).map_err(anyhow::Error::msg)?)
                 })
             }
+            "labels" => labels = Some(parse_labels(value)?),
             "created" => created = Some(value.to_string()),
             "updated" => updated = Some(value.to_string()),
             other => bail!(
-                "unknown frontmatter field {other:?} (fields: id, project, title, status, priority, assignee, created, updated)"
+                "unknown frontmatter field {other:?} (fields: id, project, title, status, priority, assignee, labels, created, updated)"
             ),
         }
     }
@@ -236,11 +259,32 @@ pub fn parse(content: &str) -> Result<TicketFile> {
         status: status.context("frontmatter is missing `status`")?,
         priority: priority.unwrap_or(Priority::None),
         assignee: assignee.unwrap_or(None),
+        labels: labels.unwrap_or_default(),
         created,
         updated,
         body: body.trim_start_matches('\n').trim_end().to_string(),
         comments: comments.to_string(),
     })
+}
+
+fn parse_labels(value: &str) -> Result<Vec<String>> {
+    let inner = value
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .context("labels must use inline list syntax, for example `[auth, bug]`")?;
+    if inner.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut labels = Vec::new();
+    for name in inner.split(',') {
+        let name = flat_schema::normalize_label_name(name).map_err(anyhow::Error::msg)?;
+        if labels.contains(&name) {
+            bail!("duplicate label {name:?}");
+        }
+        labels.push(name);
+    }
+    labels.sort();
+    Ok(labels)
 }
 
 #[cfg(test)]
@@ -257,6 +301,7 @@ mod tests {
             status,
             priority: Priority::High,
             assignee: None,
+            labels: Vec::new(),
             created_at: "2026-08-25T12:34:56.000Z".into(),
             updated_at: "2026-08-25T13:45:00.000Z".into(),
             seq: 7,
@@ -277,6 +322,28 @@ mod tests {
         .collect()
     }
 
+    fn labels() -> BTreeMap<String, Label> {
+        [
+            Label {
+                id: "label-auth".into(),
+                name: "auth".into(),
+                created_at: "2026-08-01T10:00:00.000Z".into(),
+                updated_at: "2026-08-01T10:00:00.000Z".into(),
+                seq: 1,
+            },
+            Label {
+                id: "label-bug".into(),
+                name: "bug".into(),
+                created_at: "2026-08-01T10:00:00.000Z".into(),
+                updated_at: "2026-08-01T10:00:00.000Z".into(),
+                seq: 2,
+            },
+        ]
+        .into_iter()
+        .map(|label| (label.name.clone(), label))
+        .collect()
+    }
+
     #[test]
     fn render_parse_round_trips() {
         for t in [
@@ -288,13 +355,14 @@ mod tests {
             ),
             ticket("done thing", Status::Done, "trailing newline\n"),
         ] {
-            let parsed = parse(&render(&t, &members(), &[]).unwrap()).unwrap();
+            let parsed = parse(&render(&t, &members(), &BTreeMap::new(), &[]).unwrap()).unwrap();
             assert_eq!(parsed.key, t.key);
             assert_eq!(parsed.project, "DEMO");
             assert_eq!(parsed.title, t.title);
             assert_eq!(parsed.status, t.status);
             assert_eq!(parsed.priority, t.priority);
             assert_eq!(parsed.assignee, None);
+            assert!(parsed.labels.is_empty());
             assert_eq!(parsed.created.as_deref(), Some(t.created_at.as_str()));
             assert_eq!(parsed.updated.as_deref(), Some(t.updated_at.as_str()));
             assert_eq!(parsed.body, t.body.trim_end());
@@ -306,16 +374,35 @@ mod tests {
     fn renders_assigned_and_unassigned_tickets() {
         let mut assigned = ticket("assigned", Status::Todo, "");
         assigned.assignee = Some("01JG4BZ4M6PQRSTVWXYZ012345".into());
-        let rendered = render(&assigned, &members(), &[]).unwrap();
+        let rendered = render(&assigned, &members(), &BTreeMap::new(), &[]).unwrap();
         assert!(rendered.contains("priority: high\nassignee: gabe@acme.com\n"));
         assert_eq!(
             parse(&rendered).unwrap().assignee.as_deref(),
             Some("gabe@acme.com")
         );
 
-        let rendered = render(&ticket("unassigned", Status::Todo, ""), &members(), &[]).unwrap();
+        let rendered = render(
+            &ticket("unassigned", Status::Todo, ""),
+            &members(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
         assert!(rendered.contains("assignee: null\n"));
         assert_eq!(parse(&rendered).unwrap().assignee, None);
+    }
+
+    #[test]
+    fn renders_and_parses_sorted_label_names() {
+        let mut ticket = ticket("labels", Status::Todo, "");
+        ticket.labels = vec!["label-bug".into(), "label-auth".into()];
+        let rendered = render(&ticket, &members(), &labels(), &[]).unwrap();
+        assert!(rendered.contains("labels: [auth, bug]\n"));
+        assert_eq!(parse(&rendered).unwrap().labels, ["auth", "bug"]);
+        assert!(parse(&rendered.replace("[auth, bug]", "[bug, bug]"))
+            .unwrap_err()
+            .to_string()
+            .contains("duplicate label"));
     }
 
     #[test]
@@ -360,6 +447,7 @@ mod tests {
         let rendered = render(
             &ticket("comments", Status::Todo, "description"),
             &members,
+            &BTreeMap::new(),
             &[
                 comment(
                     "delegated",
@@ -427,6 +515,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(parsed.priority, Priority::None);
+        assert!(parsed.labels.is_empty());
         assert_eq!(parsed.assignee, None);
         assert_eq!(parsed.created, None);
         assert_eq!(parsed.updated, None);

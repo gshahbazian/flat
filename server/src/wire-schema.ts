@@ -12,6 +12,8 @@ import {
   TokenKind,
   type AppliedMutation,
   type Comment,
+  type Label,
+  type LabelTombstone,
   type MemberProfile,
   type Mutation,
   type MutationConflict,
@@ -26,7 +28,12 @@ import {
   type Ticket,
   type TicketTombstone,
 } from './schema.gen'
-import { projectDescriptionSchema, projectKeySchema, projectNameSchema } from './validate'
+import {
+  labelNameSchema,
+  projectDescriptionSchema,
+  projectKeySchema,
+  projectNameSchema,
+} from './validate'
 
 export const MAX_SEQUENCE = 0xffff_ffff
 
@@ -119,6 +126,8 @@ const ticketCreateMutationSchema = z.object({
   set: ticketCreateSetSchema,
   owners_add: z.undefined().optional(),
   owners_remove: z.undefined().optional(),
+  labels_add: z.array(z.string()).optional(),
+  labels_remove: z.undefined().optional(),
 })
 
 const ticketUpdateMutationSchema = z.object({
@@ -129,6 +138,8 @@ const ticketUpdateMutationSchema = z.object({
   set: ticketSetSchema,
   owners_add: z.undefined().optional(),
   owners_remove: z.undefined().optional(),
+  labels_add: z.array(z.string()).optional(),
+  labels_remove: z.array(z.string()).optional(),
 })
 
 const ticketDeleteMutationSchema = z.object({
@@ -139,6 +150,8 @@ const ticketDeleteMutationSchema = z.object({
   set: z.object({}).strict(),
   owners_add: z.undefined().optional(),
   owners_remove: z.undefined().optional(),
+  labels_add: z.undefined().optional(),
+  labels_remove: z.undefined().optional(),
 })
 
 const commentCreateMutationSchema = z.object({
@@ -149,6 +162,8 @@ const commentCreateMutationSchema = z.object({
   set: commentCreateSetSchema,
   owners_add: z.undefined().optional(),
   owners_remove: z.undefined().optional(),
+  labels_add: z.undefined().optional(),
+  labels_remove: z.undefined().optional(),
 })
 
 const projectCreateMutationSchema = z.object({
@@ -159,6 +174,8 @@ const projectCreateMutationSchema = z.object({
   set: projectCreateSetSchema,
   owners_add: z.undefined().optional(),
   owners_remove: z.undefined().optional(),
+  labels_add: z.undefined().optional(),
+  labels_remove: z.undefined().optional(),
 })
 
 const projectUpdateMutationSchema = z.object({
@@ -168,6 +185,8 @@ const projectUpdateMutationSchema = z.object({
   op: z.literal(MutationOp.Update),
   base_seq: sequenceSchema,
   set: projectUpdateSetSchema,
+  labels_add: z.undefined().optional(),
+  labels_remove: z.undefined().optional(),
 })
 
 const projectDeleteMutationSchema = z.object({
@@ -178,6 +197,47 @@ const projectDeleteMutationSchema = z.object({
   set: z.object({}).strict(),
   owners_add: z.undefined().optional(),
   owners_remove: z.undefined().optional(),
+  labels_add: z.undefined().optional(),
+  labels_remove: z.undefined().optional(),
+})
+
+const labelCreateSetSchema = z.object({ name: labelNameSchema.optional() }).strict()
+const labelUpdateSetSchema = labelCreateSetSchema
+
+const labelCreateMutationSchema = z.object({
+  ...mutationBaseFields,
+  entity: z.literal(Entity.Label),
+  op: z.literal(MutationOp.Create),
+  base_seq: z.undefined().optional(),
+  set: labelCreateSetSchema,
+  owners_add: z.undefined().optional(),
+  owners_remove: z.undefined().optional(),
+  labels_add: z.undefined().optional(),
+  labels_remove: z.undefined().optional(),
+})
+
+const labelUpdateMutationSchema = z.object({
+  ...mutationBaseFields,
+  entity: z.literal(Entity.Label),
+  op: z.literal(MutationOp.Update),
+  base_seq: sequenceSchema,
+  set: labelUpdateSetSchema,
+  owners_add: z.undefined().optional(),
+  owners_remove: z.undefined().optional(),
+  labels_add: z.undefined().optional(),
+  labels_remove: z.undefined().optional(),
+})
+
+const labelDeleteMutationSchema = z.object({
+  ...mutationBaseFields,
+  entity: z.literal(Entity.Label),
+  op: z.literal(MutationOp.Delete),
+  base_seq: sequenceSchema,
+  set: z.object({}).strict(),
+  owners_add: z.undefined().optional(),
+  owners_remove: z.undefined().optional(),
+  labels_add: z.undefined().optional(),
+  labels_remove: z.undefined().optional(),
 })
 
 export const mutationSchema = z.union([
@@ -188,6 +248,9 @@ export const mutationSchema = z.union([
   projectCreateMutationSchema,
   projectUpdateMutationSchema,
   projectDeleteMutationSchema,
+  labelCreateMutationSchema,
+  labelUpdateMutationSchema,
+  labelDeleteMutationSchema,
 ]) satisfies z.ZodType<Mutation>
 
 const mutationInputSchemas = [
@@ -200,6 +263,9 @@ const mutationInputSchemas = [
   projectCreateMutationSchema.extend({ set: projectCreateSetSchema.optional().default({}) }),
   projectUpdateMutationSchema.extend({ set: projectUpdateSetSchema.optional().default({}) }),
   projectDeleteMutationSchema.extend({ set: z.object({}).strict().optional().default({}) }),
+  labelCreateMutationSchema.extend({ set: labelCreateSetSchema.optional().default({}) }),
+  labelUpdateMutationSchema.extend({ set: labelUpdateSetSchema.optional().default({}) }),
+  labelDeleteMutationSchema.extend({ set: z.object({}).strict().optional().default({}) }),
 ] as const
 
 export const mutationInputSchema = z.union(mutationInputSchemas) satisfies z.ZodType<Mutation>
@@ -300,6 +366,7 @@ export const ticketSchema = z.object({
   status: statusSchema,
   priority: prioritySchema,
   assignee: z.string().nullable(),
+  labels: z.array(z.string()).optional().default([]),
   created_at: z.string(),
   updated_at: z.string(),
   seq: sequenceSchema,
@@ -329,6 +396,14 @@ export const projectSchema = z.object({
   seq: sequenceSchema,
 }) satisfies z.ZodType<Project>
 
+export const labelSchema = z.object({
+  id: z.string(),
+  name: labelNameSchema,
+  created_at: z.string(),
+  updated_at: z.string(),
+  seq: sequenceSchema,
+}) satisfies z.ZodType<Label>
+
 export const ticketTombstoneSchema = z.object({
   id: z.string(),
   key: z.string(),
@@ -340,6 +415,12 @@ export const projectTombstoneSchema = z.object({
   key: z.string(),
   seq: sequenceSchema,
 }) satisfies z.ZodType<ProjectTombstone>
+
+export const labelTombstoneSchema = z.object({
+  id: z.string(),
+  name: labelNameSchema,
+  seq: sequenceSchema,
+}) satisfies z.ZodType<LabelTombstone>
 
 export const memberProfileSchema = z.object({
   id: z.string(),
@@ -356,14 +437,17 @@ export const syncResponseSchema = z.object({
   deltas: z.array(ticketSchema),
   comment_deltas: z.array(commentSchema),
   project_deltas: z.array(projectSchema).optional(),
+  label_deltas: z.array(labelSchema).optional().default([]),
   tombstones: z.array(ticketTombstoneSchema).optional(),
   project_tombstones: z.array(projectTombstoneSchema).optional(),
+  label_tombstones: z.array(labelTombstoneSchema).optional().default([]),
   members: z.array(memberProfileSchema).optional(),
   latest_seq: sequenceSchema,
 }) satisfies z.ZodType<SyncResponse>
 
 export const snapshotSchema = z.object({
   projects: z.array(projectSchema),
+  labels: z.array(labelSchema).optional().default([]),
   tickets: z.array(ticketSchema),
   comments: z.array(commentSchema),
   members: z.array(memberProfileSchema).optional(),

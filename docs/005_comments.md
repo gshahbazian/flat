@@ -46,8 +46,8 @@ parent delta is comments-only and replaces an untouched comment suffix while
 preserving local edits above it. A real ticket-row change still preserves a
 dirty file and requires `flat sync --merge`.
 
-Comments ship as part of protocol 2 because there are no deployed older
-clients or servers to preserve compatibility with.
+Comments and labels both use protocol 2. Their fields are additive, and clients
+treat absent fields as empty so older servers and persisted state remain readable.
 
 ## Mirror and CLI
 

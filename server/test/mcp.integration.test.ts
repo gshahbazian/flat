@@ -307,12 +307,36 @@ describe.sequential('server-side MCP', () => {
       next_cursor: null,
     })
 
+    const labelCreated = await json<{
+      conflicts: unknown[]
+      label_deltas: Array<{ id: string; name: string }>
+    }>(worker, '/sync', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        protocol_version: 2,
+        last_seq: 0,
+        mutations: [
+          {
+            mutation_id: 'mcp-label-create',
+            entity: 'label',
+            op: 'create',
+            entity_id: 'mcp-label',
+            set: { name: 'mcp' },
+          },
+        ],
+      }),
+    })
+    expect(labelCreated.response.status).toBe(200)
+    expect(labelCreated.body.conflicts).toEqual([])
+
     const created = await legacy.callTool({
       name: 'create_ticket',
       arguments: {
         idempotency_key: 'integration-create',
         project: 'demo',
         title: 'Created through MCP',
+        labels: ['mcp'],
       },
     })
     expect(created.isError).not.toBe(true)
@@ -332,6 +356,7 @@ describe.sequential('server-side MCP', () => {
         status: 'todo',
         priority: 'none',
         assignee: null,
+        labels: ['mcp'],
       },
     })
     expect(replayed.structuredContent).toEqual({
@@ -359,7 +384,11 @@ describe.sequential('server-side MCP', () => {
     })
     expect(ticket.structuredContent).toEqual(
       expect.objectContaining({
-        ticket: expect.objectContaining({ key: 'DEMO-1', title: 'Created through MCP' }),
+        ticket: expect.objectContaining({
+          key: 'DEMO-1',
+          title: 'Created through MCP',
+          labels: [{ id: 'mcp-label', name: 'mcp' }],
+        }),
         comments: [],
         next_comment_cursor: null,
       })
@@ -418,6 +447,22 @@ describe.sequential('server-side MCP', () => {
       },
     })
     expect(cleared.isError).not.toBe(true)
+    const clearedReceipt = writeReceiptSchema.parse(cleared.structuredContent)
+    const labelsRemoved = await legacy.callTool({
+      name: 'update_ticket',
+      arguments: {
+        idempotency_key: 'integration-remove-label',
+        key: 'DEMO-1',
+        base_seq: clearedReceipt.seq,
+        labels_remove: ['mcp'],
+      },
+    })
+    expect(labelsRemoved.isError).not.toBe(true)
+    const withoutLabels = await legacy.callTool({
+      name: 'get_ticket',
+      arguments: { key: 'DEMO-1' },
+    })
+    expect(getTicketOutputSchema.parse(withoutLabels.structuredContent).ticket.labels).toEqual([])
     await legacy.close()
   })
 
@@ -585,6 +630,7 @@ describe.sequential('server-side MCP', () => {
         idempotency_key: 'integration-create',
         project: 'DEMO',
         title: 'Created through MCP',
+        labels: ['mcp'],
       },
     })
     expect(replacementReplay.structuredContent).toEqual({

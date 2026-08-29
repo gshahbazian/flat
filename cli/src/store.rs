@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use flat_schema::{
-    Comment, MemberProfile, Mutation, Project, ProjectTombstone, Ticket, TicketTombstone,
+    Comment, Label, LabelTombstone, MemberProfile, Mutation, Project, ProjectTombstone, Ticket,
+    TicketTombstone,
 };
 use serde::{Deserialize, Serialize};
 
@@ -40,6 +41,13 @@ pub struct State {
     /// Project key -> current synced project row.
     #[serde(default)]
     pub projects: BTreeMap<String, Project>,
+    /// Label name -> current synced label row.
+    #[serde(default)]
+    pub labels: BTreeMap<String, Label>,
+    /// Every synced label name -> its immutable ID. Names are never reused, so
+    /// this lets merges relate stale Markdown names to renamed labels.
+    #[serde(default)]
+    pub label_history: BTreeMap<String, String>,
     /// Member ULID -> safe profile used to render and resolve assignees.
     #[serde(default)]
     pub members: BTreeMap<String, MemberProfile>,
@@ -272,6 +280,48 @@ impl Checkout {
         }
     }
 
+    pub fn apply_labels(&mut self, labels: &[Label]) {
+        for label in labels {
+            if let Some(existing) = self
+                .state
+                .labels
+                .values()
+                .find(|existing| existing.id == label.id)
+            {
+                self.state
+                    .label_history
+                    .insert(existing.name.clone(), existing.id.clone());
+            }
+            self.state
+                .label_history
+                .insert(label.name.clone(), label.id.clone());
+            self.state
+                .labels
+                .retain(|_, existing| existing.id != label.id);
+            self.state.labels.insert(label.name.clone(), label.clone());
+        }
+    }
+
+    pub fn label(&self, name: &str) -> Result<&Label> {
+        let normalized = flat_schema::normalize_label_name(name).map_err(anyhow::Error::msg)?;
+        self.state
+            .labels
+            .get(&normalized)
+            .with_context(|| format!("unknown label {normalized:?}; run `flat sync`"))
+    }
+
+    pub fn resolve_label(&self, name: &str) -> Result<String> {
+        Ok(self.label(name)?.id.clone())
+    }
+
+    pub fn resolve_historical_label(&self, name: &str) -> Result<String> {
+        self.state
+            .label_history
+            .get(name)
+            .cloned()
+            .with_context(|| format!("unknown label {name:?}; run `flat sync`"))
+    }
+
     pub fn project(&self, key: &str) -> Result<&Project> {
         self.state
             .projects
@@ -329,8 +379,12 @@ impl Checkout {
             if keep_local && !comments_only {
                 continue;
             }
-            let rendered =
-                markdown::render(ticket, &self.state.members, &self.comments_for(&ticket.id))?;
+            let rendered = markdown::render(
+                ticket,
+                &self.state.members,
+                &self.state.labels,
+                &self.comments_for(&ticket.id),
+            )?;
             let current = match fs::read_to_string(self.mirror_path(&ticket.key)) {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound && keep_local => {
                     continue;
@@ -426,12 +480,25 @@ impl Checkout {
         Ok(())
     }
 
+    pub fn apply_label_tombstones(&mut self, tombstones: &[LabelTombstone]) {
+        for tombstone in tombstones {
+            self.state
+                .labels
+                .retain(|_, label| label.id != tombstone.id);
+        }
+    }
+
     /// Writes the outcome of a three-way merge: the merged content (possibly
     /// holding conflict markers) becomes the mirror file, while the base copy
     /// and state advance to the server row — so the next `flat push` sends
     /// exactly the local side of the merge with a fresh base_seq.
     pub fn write_merged(&mut self, ticket: &Ticket, merged: &str) -> Result<()> {
-        let base = markdown::render(ticket, &self.state.members, &self.comments_for(&ticket.id))?;
+        let base = markdown::render(
+            ticket,
+            &self.state.members,
+            &self.state.labels,
+            &self.comments_for(&ticket.id),
+        )?;
         self.write_ticket(ticket, merged, &base)
     }
 
@@ -604,6 +671,33 @@ mod tests {
     }
 
     #[test]
+    fn label_rename_and_tombstone_replace_cached_names() {
+        let mut checkout = checkout("labels");
+        let label = Label {
+            id: "label-1".into(),
+            name: "bug".into(),
+            created_at: "2026-08-25T12:34:56.000Z".into(),
+            updated_at: "2026-08-25T12:34:56.000Z".into(),
+            seq: 1,
+        };
+        checkout.apply_labels(std::slice::from_ref(&label));
+        let mut renamed = label.clone();
+        renamed.name = "defect".into();
+        renamed.seq = 2;
+        checkout.apply_labels(std::slice::from_ref(&renamed));
+        assert!(!checkout.state.labels.contains_key("bug"));
+        assert_eq!(checkout.resolve_label("defect").unwrap(), "label-1");
+        assert_eq!(checkout.resolve_historical_label("bug").unwrap(), "label-1");
+
+        checkout.apply_label_tombstones(&[LabelTombstone {
+            id: label.id,
+            name: "defect".into(),
+            seq: 3,
+        }]);
+        assert!(checkout.state.labels.is_empty());
+    }
+
+    #[test]
     fn tombstone_removes_a_second_checkouts_mirror_and_base() {
         let ticket = Ticket {
             id: "01JG4C2Q4V8XKZ3W5D9E7F2H6M".to_string(),
@@ -614,13 +708,14 @@ mod tests {
             status: Status::Todo,
             priority: Priority::None,
             assignee: None,
+            labels: Vec::new(),
             created_at: "2026-08-25T12:34:56.000Z".to_string(),
             updated_at: "2026-08-25T12:34:56.000Z".to_string(),
             seq: 2,
         };
         let mut first = checkout("first");
         let mut second = checkout("second");
-        let rendered = markdown::render(&ticket, &BTreeMap::new(), &[]).unwrap();
+        let rendered = markdown::render(&ticket, &BTreeMap::new(), &BTreeMap::new(), &[]).unwrap();
         first.write_ticket(&ticket, &rendered, &rendered).unwrap();
         second.write_ticket(&ticket, &rendered, &rendered).unwrap();
 
@@ -651,6 +746,7 @@ mod tests {
             status: Status::Todo,
             priority: Priority::None,
             assignee: None,
+            labels: Vec::new(),
             created_at: "2026-08-25T12:34:56.000Z".into(),
             updated_at: "2026-08-25T12:34:56.000Z".into(),
             seq: 2,
@@ -793,6 +889,7 @@ mod tests {
                 status: Status::Todo,
                 priority: Priority::None,
                 assignee: None,
+                labels: Vec::new(),
                 created_at: "2026-08-25T12:34:56.000Z".into(),
                 updated_at: "2026-08-25T12:34:56.000Z".into(),
                 seq: 3,
@@ -806,6 +903,7 @@ mod tests {
                 status: Status::Todo,
                 priority: Priority::None,
                 assignee: None,
+                labels: Vec::new(),
                 created_at: "2026-08-25T12:34:56.000Z".into(),
                 updated_at: "2026-08-25T12:34:56.000Z".into(),
                 seq: 4,
@@ -859,12 +957,14 @@ mod tests {
     }
 
     #[test]
-    fn old_state_without_member_cache_deserializes() {
+    fn state_without_additive_caches_deserializes() {
         let state: State = serde_json::from_str(
             r#"{"last_seq":7,"tickets":{"DEMO-1":{"id":"ticket-1","seq":7}},"comments":{}}"#,
         )
         .unwrap();
         assert_eq!(state.last_seq, 7);
+        assert!(state.labels.is_empty());
+        assert!(state.label_history.is_empty());
         assert!(state.members.is_empty());
     }
 

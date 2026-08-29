@@ -1,6 +1,7 @@
 # Server search
 
-Status: implemented for the server, HTTP API, CLI, and server-side MCP.
+Status: implemented for the server, HTTP API, CLI, and server-side MCP,
+including label filters from `008_labels.md`.
 
 This document defines server search for Flat. It extends the search outline in
 `001_initial_system.md` and uses the authorization model in
@@ -98,6 +99,8 @@ comma-separated alternatives.
 project:AUTH
 status:backlog,todo,in_progress,in_review,done,canceled
 priority:none,low,medium,high,urgent
+label:bug,auth
+label:none
 assignee:gabe@acme.com
 assignee:me
 assignee:none
@@ -111,6 +114,9 @@ such as `status:todo status:done`.
 
 `project` accepts one or more project keys. The server normalizes keys to
 uppercase. `status` and `priority` accept only their schema enum values.
+`label` accepts one or more normalized label names, while `label:none` matches
+tickets without labels. Label alternatives use the same OR semantics as the
+other comma-separated qualifiers.
 `assignee` accepts normalized member email addresses plus `me` and `none`.
 Suspended members remain valid filter values because tickets can remain
 assigned to them.
@@ -142,9 +148,8 @@ emails, comment authors, timestamps rendered as text, status names, priority
 names, internal IDs, or Markdown frontmatter. Qualifiers cover the structured
 ticket fields that matter for discovery.
 
-Labels are deferred with the label implementation. That work may add a
-`label:` qualifier without changing the text grammar. Project discovery stays
-in the project commands.
+Label names are structured filters rather than full-text fields. Project
+discovery stays in the project commands.
 
 ## FTS schema
 
@@ -402,6 +407,8 @@ following:
 - Exact ticket keys resolve case-insensitively and bypass FTS when no text is
   present.
 - Every qualifier accepts its documented values and rejects malformed values.
+- Label filters match current membership, comma alternatives, and unlabeled
+  tickets; rename and delete take effect immediately.
 - Text and qualifiers combine with the documented AND and OR rules.
 - Raw FTS syntax is escaped rather than executed.
 - Empty, oversized, and malformed queries return stable validation errors.

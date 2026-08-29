@@ -6,8 +6,9 @@ supersedes its bootstrap and member-enrollment details.
 Implementation note: the current milestone covers tenant setup, enrollment,
 token/member administration, audit, projects, authorization for the HTTP
 ticket-sync surface, comments, server-side search, and server-side MCP.
-Labels, force push, and native keychain storage remain deferred slices of this
-accepted design. The operator-recovery deployment procedure is implemented.
+Force push and native keychain storage remain deferred slices of this accepted
+design. The operator-recovery deployment procedure is implemented. Labels are
+implemented as described by `008_labels.md`.
 
 In particular:
 
@@ -1025,6 +1026,10 @@ flat project update KEY [--name NAME] [--description TEXT]
 flat project owner add KEY EMAIL
 flat project owner remove KEY EMAIL
 flat project delete KEY
+flat label ls
+flat label show NAME
+flat label create NAME
+flat label update NAME --new-name NEW_NAME
 flat label delete NAME
 
 flat audit ls [--after SEQ]

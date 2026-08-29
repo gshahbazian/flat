@@ -3,7 +3,7 @@
 //! renamed fields, wrong enum casing, and dropped fields on either side.
 
 use flat_schema::{
-    Comment, Mutation, Project, SearchErrorDetail, SearchRequest, SearchResponse, Snapshot,
+    Comment, Label, Mutation, Project, SearchErrorDetail, SearchRequest, SearchResponse, Snapshot,
     SyncRequest, SyncResponse, Ticket, TicketSet,
 };
 use serde::{de::DeserializeOwned, Serialize};
@@ -38,6 +38,11 @@ fn project() {
 }
 
 #[test]
+fn label() {
+    roundtrip::<Label>("label");
+}
+
+#[test]
 fn mutation() {
     roundtrip::<Mutation>("mutation");
 }
@@ -50,6 +55,11 @@ fn project_mutation() {
 #[test]
 fn comment_mutation() {
     roundtrip::<Mutation>("comment_mutation");
+}
+
+#[test]
+fn label_mutation() {
+    roundtrip::<Mutation>("label_mutation");
 }
 
 #[test]
@@ -200,6 +210,71 @@ fn token_names() {
     for name in ["", "bad name", "-leading", &"a".repeat(65)] {
         assert!(flat_schema::validate_token_name(name).is_err(), "{name:?}");
     }
+}
+
+#[test]
+fn label_names() {
+    #[derive(serde::Deserialize)]
+    struct ValidLabel {
+        input: String,
+        normalized: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Labels {
+        valid: Vec<ValidLabel>,
+        invalid: Vec<String>,
+    }
+    let path = format!("{}/fixtures/labels.json", env!("CARGO_MANIFEST_DIR"));
+    let labels: Labels = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    for label in labels.valid {
+        assert_eq!(
+            flat_schema::normalize_label_name(&label.input),
+            Ok(label.normalized)
+        );
+    }
+    for name in labels.invalid {
+        assert!(
+            flat_schema::normalize_label_name(&name).is_err(),
+            "{name:?}"
+        );
+    }
+}
+
+#[test]
+fn additive_label_fields_default_when_absent() {
+    let fixture = |name: &str| {
+        let path = format!("{}/fixtures/{name}.json", env!("CARGO_MANIFEST_DIR"));
+        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(path).unwrap()).unwrap()
+    };
+
+    let mut ticket = fixture("ticket");
+    ticket.as_object_mut().unwrap().remove("labels");
+    assert!(serde_json::from_value::<Ticket>(ticket)
+        .unwrap()
+        .labels
+        .is_empty());
+
+    let mut response = fixture("sync_response");
+    let response_object = response.as_object_mut().unwrap();
+    response_object.remove("label_deltas");
+    response_object.remove("label_tombstones");
+    for ticket in response_object["deltas"].as_array_mut().unwrap() {
+        ticket.as_object_mut().unwrap().remove("labels");
+    }
+    let response = serde_json::from_value::<SyncResponse>(response).unwrap();
+    assert!(response.label_deltas.is_empty());
+    assert!(response.label_tombstones.is_empty());
+    assert!(response.deltas[0].labels.is_empty());
+
+    let mut snapshot = fixture("snapshot");
+    let snapshot_object = snapshot.as_object_mut().unwrap();
+    snapshot_object.remove("labels");
+    for ticket in snapshot_object["tickets"].as_array_mut().unwrap() {
+        ticket.as_object_mut().unwrap().remove("labels");
+    }
+    let snapshot = serde_json::from_value::<Snapshot>(snapshot).unwrap();
+    assert!(snapshot.labels.is_empty());
+    assert!(snapshot.tickets[0].labels.is_empty());
 }
 
 #[test]

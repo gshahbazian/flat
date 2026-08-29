@@ -59,9 +59,15 @@ member_projects="$(FLAT_DIR="$member_root" "$FLAT_E2E_BIN" project ls)"
 jq -e 'any(.projects[]; .key == "DEMO")' <<<"$member_projects" >/dev/null ||
   e2e_fail "member snapshot did not contain the DEMO project"
 
+e2e_log "Creating a shared label"
+FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" label create bug
+admin_labels="$(FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" label ls)"
+jq -e 'any(.labels[]; .name == "bug")' <<<"$admin_labels" >/dev/null ||
+  e2e_fail "created label was missing from the local label cache"
+
 e2e_log "Creating a ticket as the admin"
 created_output="$(
-  FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" new "Core E2E ticket" --project DEMO
+  FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" new "Core E2E ticket" --project DEMO --label bug
 )"
 printf '%s\n' "$created_output"
 ticket_key="$(awk 'NR == 1 { print $1 }' <<<"$created_output")"
@@ -71,6 +77,7 @@ admin_ticket="$admin_path/DEMO/$ticket_key.md"
 [[ -f "$admin_ticket" ]] || e2e_fail "admin ticket was not materialized at $admin_ticket"
 e2e_assert_line "$admin_ticket" "title: Core E2E ticket"
 e2e_assert_line "$admin_ticket" "status: todo"
+e2e_assert_line "$admin_ticket" "labels: [bug]"
 
 e2e_log "Searching accepted server state"
 empty_search="$(
@@ -88,6 +95,8 @@ jq -e '
   (.results[0].match.source == "ticket") and
   (.results[0].match.excerpt | type == "string")
 ' <<<"$search_json" >/dev/null || e2e_fail "search JSON did not preserve the wire response"
+label_search="$(FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" search "label:bug")"
+grep -Fq "$ticket_key" <<<"$label_search" || e2e_fail "label search omitted the labeled ticket"
 
 second_output="$(
   FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" new "Secondary E2E ticket" --project DEMO
@@ -170,5 +179,15 @@ FLAT_DIR="$member_root" "$FLAT_E2E_BIN" sync
 if ! cmp -s "$member_ticket" "$admin_ticket"; then
   e2e_fail "admin and member mirrors did not converge"
 fi
+
+e2e_log "Renaming and deleting the shared label"
+FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" label update bug --new-name defect
+FLAT_DIR="$member_root" "$FLAT_E2E_BIN" sync
+e2e_assert_line "$admin_ticket" "labels: [defect]"
+e2e_assert_line "$member_ticket" "labels: [defect]"
+FLAT_DIR="$admin_root" "$FLAT_E2E_BIN" label delete defect
+FLAT_DIR="$member_root" "$FLAT_E2E_BIN" sync
+e2e_assert_line "$admin_ticket" "labels: []"
+e2e_assert_line "$member_ticket" "labels: []"
 
 e2e_log "Core ticket flow passed"

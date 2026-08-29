@@ -11,6 +11,15 @@
       "seq": 41
     }
   ],
+  "labels": [
+    {
+      "id": "01JG4BZA1ABELABCDEFGHJKLMN",
+      "name": "auth",
+      "created_at": "2026-08-25T12:00:00.000Z",
+      "updated_at": "2026-08-25T12:00:00.000Z",
+      "seq": 40
+    }
+  ],
   "tickets": [
     {
       "id": "01JG4C2Q4V8XKZ3W5D9E7F2H6M",
@@ -21,6 +30,7 @@
       "status": "in_progress",
       "priority": "high",
       "assignee": "01JG4BZ4M6PQRSTVWXYZ012345",
+      "labels": ["01JG4BZA1ABELABCDEFGHJKLMN"],
       "created_at": "2026-08-25T12:34:56.000Z",
       "updated_at": "2026-08-25T13:45:00.000Z",
       "seq": 42
@@ -34,6 +44,7 @@
       "status": "todo",
       "priority": "none",
       "assignee": null,
+      "labels": [],
       "created_at": "2026-08-25T13:46:00.000Z",
       "updated_at": "2026-08-25T13:46:00.000Z",
       "seq": 43

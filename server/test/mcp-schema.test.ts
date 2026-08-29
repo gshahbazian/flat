@@ -30,6 +30,7 @@ describe('MCP tool schemas', () => {
       status: 'todo',
       priority: 'none',
       assignee: 'user@example.com',
+      labels: [],
     })
   })
 

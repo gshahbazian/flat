@@ -9,5 +9,6 @@
     "status": "in_review",
     "priority": "urgent",
     "assignee": "01JG4BZ4M6PQRSTVWXYZ012345"
-  }
+  },
+  "labels_add": ["01JG4BZA1ABELABCDEFGHJKLMN"]
 }

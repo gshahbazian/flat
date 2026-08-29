@@ -5,6 +5,13 @@ import type { JsonValue } from './request-schema'
 export const MAX_COMMENT_BYTES = 1024 * 1024
 export const MAX_PROJECT_DESCRIPTION_BYTES = 256 * 1024
 export const COMMENT_SENTINEL = '<!-- flat:comments -->'
+const ASCII_TRIM = /^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g
+
+export const labelNameSchema = z
+  .string()
+  .transform((name) => name.replace(ASCII_TRIM, '').toLowerCase())
+  .refine((name) => /^[a-z0-9][a-z0-9._-]{0,63}$/.test(name))
+  .refine((name) => name !== 'none', 'reserved label name')
 
 // Mirrors `flat_schema::validate_title` (schema/src/lib.rs): non-empty,
 // single line, no control characters. A newline would corrupt the markdown
@@ -68,8 +75,6 @@ export const projectDescriptionSchema = z.string().superRefine((description, con
   const reason = invalidProjectDescription(description)
   if (reason) context.addIssue({ code: 'custom', message: reason })
 })
-
-const ASCII_TRIM = /^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g
 
 export const emailSchema = z
   .string()

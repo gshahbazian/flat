@@ -32,6 +32,21 @@ export interface Comment {
 	seq: number;
 }
 
+/** A tenant-wide label referenced by ticket membership. */
+export interface Label {
+	id: string;
+	name: string;
+	created_at: string;
+	updated_at: string;
+	seq: number;
+}
+
+export interface LabelTombstone {
+	id: string;
+	name: string;
+	seq: number;
+}
+
 export enum Role {
 	Admin = "admin",
 	Member = "member",
@@ -64,6 +79,7 @@ export enum Entity {
 	Ticket = "ticket",
 	Comment = "comment",
 	Project = "project",
+	Label = "label",
 }
 
 /** Ticket workflow state. */
@@ -104,6 +120,7 @@ export interface MutationSet {
 	key?: string;
 	display_name?: string;
 	description?: string;
+	name?: string;
 }
 
 /**
@@ -136,6 +153,9 @@ export interface Mutation {
 	 */
 	owners_add?: string[];
 	owners_remove?: string[];
+	/** Ticket-label membership deltas. Values are label ULIDs. */
+	labels_add?: string[];
+	labels_remove?: string[];
 }
 
 /** A rejected mutation. Nothing from it was applied. */
@@ -227,6 +247,8 @@ export interface Ticket {
 	priority: Priority;
 	/** Assigned member ULID, or null when unassigned. */
 	assignee: string | null;
+	/** Label ULIDs ordered by their current human-facing names. */
+	labels?: string[];
 	/** Server-generated UTC timestamps. Clients may not set these fields. */
 	created_at: string;
 	updated_at: string;
@@ -237,6 +259,7 @@ export interface Ticket {
 /** Bootstrap payload from `GET /snapshot`. */
 export interface Snapshot {
 	projects: Project[];
+	labels?: Label[];
 	tickets: Ticket[];
 	comments: Comment[];
 	members?: MemberProfile[];
@@ -268,9 +291,12 @@ export interface SyncResponse {
 	comment_deltas: Comment[];
 	/** Projects changed since the request's `last_seq`. */
 	project_deltas?: Project[];
+	/** Labels changed since the request's `last_seq`. */
+	label_deltas?: Label[];
 	/** Tickets deleted since `last_seq`. */
 	tombstones?: TicketTombstone[];
 	project_tombstones?: ProjectTombstone[];
+	label_tombstones?: LabelTombstone[];
 	/**
 	 * Current safe profiles. Administrative sequence gaps may occur without
 	 * exposing their private records.

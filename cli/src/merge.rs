@@ -6,10 +6,10 @@
 //! and anything both sides changed becomes git-style conflict markers for the
 //! user (or their agent) to edit away before pushing again.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{bail, Result};
-use flat_schema::{Comment, MemberProfile, Ticket};
+use anyhow::{bail, Context, Result};
+use flat_schema::{Comment, Label, MemberProfile, Ticket};
 
 use crate::markdown::{self, TicketFile};
 
@@ -80,6 +80,8 @@ pub fn merge(
     local: &TicketFile,
     server: &Ticket,
     members: &BTreeMap<String, MemberProfile>,
+    labels: &BTreeMap<String, Label>,
+    label_history: &BTreeMap<String, String>,
     comments: &[Comment],
 ) -> Result<Merged> {
     if !markdown::comment_sections_equal(&local.comments, &base.comments) {
@@ -91,6 +93,7 @@ pub fn merge(
     let status = pick(&base.status, &local.status, &server.status);
     let priority = pick(&base.priority, &local.priority, &server.priority);
     let assignee = pick(&base.assignee, &local.assignee, &server_assignee);
+    let labels = merge_labels(base, local, server, labels, label_history)?;
     let body = merge_body(&base.body, &local.body, &server_body);
 
     let mut out = String::from("---\n");
@@ -102,6 +105,7 @@ pub fn merge(
     push_field(&mut out, "assignee", &assignee, |email| {
         email.clone().unwrap_or_else(|| "null".to_string())
     });
+    out.push_str(&format!("labels: [{}]\n", labels.join(", ")));
     out.push_str(&format!("created: {}\n", server.created_at));
     out.push_str(&format!("updated: {}\n", server.updated_at));
     out.push_str("---\n");
@@ -123,6 +127,59 @@ pub fn merge(
             || assignee.conflicted()
             || body_conflicted,
     })
+}
+
+fn merge_labels(
+    base: &TicketFile,
+    local: &TicketFile,
+    server: &Ticket,
+    labels: &BTreeMap<String, Label>,
+    label_history: &BTreeMap<String, String>,
+) -> Result<Vec<String>> {
+    let base_names: BTreeSet<&str> = base.labels.iter().map(String::as_str).collect();
+    let base_ids = base
+        .labels
+        .iter()
+        .map(|name| historical_label_id(name, label_history))
+        .collect::<Result<BTreeSet<_>>>()?;
+    let local_ids = local
+        .labels
+        .iter()
+        .map(|name| {
+            if base_names.contains(name.as_str()) {
+                historical_label_id(name, label_history)
+            } else {
+                labels
+                    .get(name)
+                    .map(|label| label.id.clone())
+                    .with_context(|| format!("unknown label {name:?}; run `flat sync`"))
+            }
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    let mut merged: BTreeSet<String> = server.labels.iter().cloned().collect();
+    for added in local_ids.difference(&base_ids) {
+        merged.insert(added.clone());
+    }
+    for removed in base_ids.difference(&local_ids) {
+        merged.remove(removed);
+    }
+    merged
+        .into_iter()
+        .map(|id| {
+            labels
+                .values()
+                .find(|label| label.id == id)
+                .map(|label| label.name.clone())
+                .with_context(|| format!("missing label {id}; run `flat sync`"))
+        })
+        .collect()
+}
+
+fn historical_label_id(name: &str, label_history: &BTreeMap<String, String>) -> Result<String> {
+    label_history
+        .get(name)
+        .cloned()
+        .with_context(|| format!("unknown label {name:?}; run `flat sync`"))
 }
 
 fn push_field<T>(out: &mut String, name: &str, field: &Field<T>, fmt: impl Fn(&T) -> String) {
@@ -216,6 +273,7 @@ mod tests {
             status,
             priority: Priority::None,
             assignee: None,
+            labels: Vec::new(),
             created: Some("2026-08-25T12:34:56.000Z".into()),
             updated: Some("2026-08-25T13:45:00.000Z".into()),
             body: body.into(),
@@ -233,10 +291,31 @@ mod tests {
             status,
             priority: Priority::None,
             assignee: None,
+            labels: Vec::new(),
             created_at: "2026-08-25T12:34:56.000Z".into(),
             updated_at: "2026-08-25T14:00:00.000Z".into(),
             seq: 9,
         }
+    }
+
+    fn labels() -> BTreeMap<String, Label> {
+        [
+            ("label-auth", "auth"),
+            ("label-bug", "bug"),
+            ("label-local", "local"),
+        ]
+        .into_iter()
+        .map(|(id, name)| {
+            let label = Label {
+                id: id.into(),
+                name: name.into(),
+                created_at: "2026-08-01T10:00:00.000Z".into(),
+                updated_at: "2026-08-01T10:00:00.000Z".into(),
+                seq: 1,
+            };
+            (label.name.clone(), label)
+        })
+        .collect()
     }
 
     #[test]
@@ -248,6 +327,8 @@ mod tests {
             &file("mine", Status::Todo, "line"),
             &server("theirs", Status::Todo, "line"),
             &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
             &[],
         )
         .unwrap();
@@ -255,6 +336,8 @@ mod tests {
             &base,
             &file("t", Status::Todo, "mine"),
             &server("t", Status::Todo, "theirs"),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
             &BTreeMap::new(),
             &[],
         )
@@ -277,11 +360,20 @@ mod tests {
     fn no_local_edits_yields_exact_server_render() {
         let base = file("t", Status::Todo, "body");
         let server = server("new title", Status::Done, "new body");
-        let merged = merge(&base, &base.clone(), &server, &BTreeMap::new(), &[]).unwrap();
+        let merged = merge(
+            &base,
+            &base.clone(),
+            &server,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
         assert!(!merged.conflicted);
         assert_eq!(
             merged.content,
-            markdown::render(&server, &BTreeMap::new(), &[]).unwrap()
+            markdown::render(&server, &BTreeMap::new(), &BTreeMap::new(), &[]).unwrap()
         );
     }
 
@@ -290,11 +382,78 @@ mod tests {
         let base = file("t", Status::Todo, "body");
         let local = file("my title", Status::Todo, "body");
         let server = server("t", Status::InProgress, "body");
-        let merged = merge(&base, &local, &server, &BTreeMap::new(), &[]).unwrap();
+        let merged = merge(
+            &base,
+            &local,
+            &server,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
         assert!(!merged.conflicted);
         let parsed = markdown::parse(&merged.content).unwrap();
         assert_eq!(parsed.title, "my title");
         assert_eq!(parsed.status, Status::InProgress);
+    }
+
+    #[test]
+    fn label_sets_merge_without_conflict_markers() {
+        let mut base = file("t", Status::Todo, "body");
+        base.labels = vec!["auth".into()];
+        let mut local = base.clone();
+        local.labels.push("local".into());
+        let mut server = server("t", Status::Todo, "body");
+        server.labels = vec!["label-auth".into(), "label-bug".into()];
+
+        let label_history = labels()
+            .into_values()
+            .map(|label| (label.name, label.id))
+            .collect();
+        let merged = merge(
+            &base,
+            &local,
+            &server,
+            &BTreeMap::new(),
+            &labels(),
+            &label_history,
+            &[],
+        )
+        .unwrap();
+        assert!(!merged.conflicted);
+        assert_eq!(
+            markdown::parse(&merged.content).unwrap().labels,
+            ["auth", "bug", "local"]
+        );
+    }
+
+    #[test]
+    fn label_merge_tracks_identity_across_a_rename() {
+        let mut base = file("t", Status::Todo, "body");
+        base.labels = vec!["bug".into()];
+        let mut local = base.clone();
+        local.labels.clear();
+        let mut server = server("t", Status::Todo, "body");
+        server.labels = vec!["label-bug".into()];
+
+        let mut current_labels = labels();
+        let mut renamed = current_labels.remove("bug").unwrap();
+        renamed.name = "defect".into();
+        current_labels.insert(renamed.name.clone(), renamed);
+        let label_history = BTreeMap::from([("bug".into(), "label-bug".into())]);
+
+        let merged = merge(
+            &base,
+            &local,
+            &server,
+            &BTreeMap::new(),
+            &current_labels,
+            &label_history,
+            &[],
+        )
+        .unwrap();
+        assert!(markdown::parse(&merged.content).unwrap().labels.is_empty());
     }
 
     #[test]
@@ -314,7 +473,16 @@ mod tests {
             Status::Todo,
             "one\ntwo\nthree\nfour\nfive\nsix\nseven\nEIGHT",
         );
-        let merged = merge(&base, &local, &server, &BTreeMap::new(), &[]).unwrap();
+        let merged = merge(
+            &base,
+            &local,
+            &server,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
         assert!(!merged.conflicted);
         let parsed = markdown::parse(&merged.content).unwrap();
         assert_eq!(
@@ -328,7 +496,16 @@ mod tests {
         let base = file("t", Status::Todo, "body");
         let local = file("t", Status::Done, "body");
         let server = server("t", Status::Done, "body");
-        let merged = merge(&base, &local, &server, &BTreeMap::new(), &[]).unwrap();
+        let merged = merge(
+            &base,
+            &local,
+            &server,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
         assert!(!merged.conflicted);
         assert_eq!(
             markdown::parse(&merged.content).unwrap().status,
@@ -341,7 +518,16 @@ mod tests {
         let base = file("t", Status::Todo, "body");
         let local = file("mine", Status::Todo, "body");
         let server = server("theirs", Status::Todo, "body");
-        let merged = merge(&base, &local, &server, &BTreeMap::new(), &[]).unwrap();
+        let merged = merge(
+            &base,
+            &local,
+            &server,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
         assert!(merged.conflicted);
         let expected = "<<<<<<< local\ntitle: mine\n=======\ntitle: theirs\n>>>>>>> server\n";
         assert!(
@@ -359,7 +545,16 @@ mod tests {
         let base = file("t", Status::Todo, "line");
         let local = file("t", Status::Todo, "mine");
         let server = server("t", Status::Todo, "theirs");
-        let merged = merge(&base, &local, &server, &BTreeMap::new(), &[]).unwrap();
+        let merged = merge(
+            &base,
+            &local,
+            &server,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
         assert!(merged.conflicted);
         assert!(
             merged
@@ -378,7 +573,16 @@ mod tests {
         let mut server = server("t", Status::Todo, "body");
         server.assignee = Some("member-server".into());
 
-        let merged = merge(&base, &local, &server, &members(), &[]).unwrap();
+        let merged = merge(
+            &base,
+            &local,
+            &server,
+            &members(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
         assert!(!merged.conflicted);
         let parsed = markdown::parse(&merged.content).unwrap();
         assert_eq!(parsed.priority, Priority::High);
@@ -395,7 +599,16 @@ mod tests {
         let mut server = server("t", Status::Todo, "body");
         server.priority = Priority::Urgent;
 
-        let merged = merge(&base, &local, &server, &members(), &[]).unwrap();
+        let merged = merge(
+            &base,
+            &local,
+            &server,
+            &members(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
         assert!(merged.conflicted);
         assert!(merged
             .content
@@ -411,7 +624,16 @@ mod tests {
         let mut server = server("t", Status::Todo, "body");
         server.assignee = Some("member-server".into());
 
-        let merged = merge(&base, &local, &server, &members(), &[]).unwrap();
+        let merged = merge(
+            &base,
+            &local,
+            &server,
+            &members(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .unwrap();
         assert!(merged.conflicted);
         assert!(merged.content.contains(
             "<<<<<<< local\nassignee: null\n=======\nassignee: server@example.com\n>>>>>>> server"

@@ -1,6 +1,6 @@
 import { z } from 'zod'
 
-export const LATEST_SCHEMA_VERSION = 7
+export const LATEST_SCHEMA_VERSION = 8
 
 const storedSchemaVersionSchema = z.union([z.string(), z.number()])
 const schemaVersionSchema = storedSchemaVersionSchema
@@ -240,6 +240,28 @@ const MIGRATIONS = [
   INSERT INTO ticket_search
     (ticket_id, source_kind, source_id, title, description, comment)
   SELECT ticket_id, 'comment', id, '', '', body FROM comments`,
+  `CREATE TABLE labels (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    seq INTEGER NOT NULL CHECK (seq >= 0)
+  );
+  CREATE TABLE label_name_reservations (
+    name TEXT PRIMARY KEY,
+    label_id TEXT NOT NULL
+  );
+  CREATE TABLE ticket_labels (
+    ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+    label_id TEXT NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    PRIMARY KEY (ticket_id, label_id)
+  );
+  CREATE INDEX ticket_labels_label ON ticket_labels (label_id, ticket_id);
+  CREATE TABLE label_tombstones (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    seq INTEGER NOT NULL UNIQUE CHECK (seq >= 0)
+  )`,
 ] as const
 
 type MigrationValue = ArrayBuffer | string | number | null

@@ -109,6 +109,7 @@ describe('search query parser', () => {
       projects: ['AUTH'],
       statuses: ['in_progress', 'todo'],
       priorities: ['high', 'none'],
+      labels: null,
       assignees: [{ kind: 'email', email: 'old@example.com' }, { kind: 'me' }, { kind: 'none' }],
       created: { comparison: '>=', timestamp: '2026-08-01T00:00:00.000Z' },
       updated: { comparison: '<', timestamp: '2026-08-26T10:00:00.000Z' },
@@ -117,6 +118,11 @@ describe('search query parser', () => {
 
   test('quotes every clause instead of exposing FTS syntax', () => {
     expect(compileFtsQuery(['oauth', 'or', 'title:*'])).toBe('"oauth" AND "or" AND "title:*"')
+  })
+
+  test('normalizes label alternatives and the unlabeled sentinel', () => {
+    expect(parseSearchQuery('label:Bug,none').labels).toEqual(['bug', 'none'])
+    expect(() => parseSearchQuery('label:bad$name')).toThrow('invalid label')
   })
 
   test.each([

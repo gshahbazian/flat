@@ -7,7 +7,7 @@ mod markdown;
 mod merge;
 mod store;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::Path;
@@ -16,8 +16,8 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use flat_schema::{
-    Entity, Mutation, MutationOp, MutationSet, Priority, Project, SearchRequest, SearchResponse,
-    SearchSort, SyncRequest, SyncResponse, Ticket, TicketSet, PROTOCOL_VERSION,
+    Entity, Label, Mutation, MutationOp, MutationSet, Priority, Project, SearchRequest,
+    SearchResponse, SearchSort, SyncRequest, SyncResponse, Ticket, TicketSet, PROTOCOL_VERSION,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -65,6 +65,8 @@ enum Command {
         priority: Option<Priority>,
         #[arg(long)]
         assignee: Option<String>,
+        #[arg(long = "label")]
+        labels: Vec<String>,
     },
     /// Pull server changes into the mirror.
     Sync {
@@ -124,6 +126,11 @@ enum Command {
         #[command(subcommand)]
         command: ProjectCommand,
     },
+    /// Label administration.
+    Label {
+        #[command(subcommand)]
+        command: LabelCommand,
+    },
     /// Delete a ticket (admin human token required).
     Delete { key: String },
 }
@@ -154,6 +161,25 @@ enum ProjectCommand {
     },
     Delete {
         key: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum LabelCommand {
+    Ls,
+    Show {
+        name: String,
+    },
+    Create {
+        name: String,
+    },
+    Update {
+        name: String,
+        #[arg(long)]
+        new_name: String,
+    },
+    Delete {
+        name: String,
     },
 }
 
@@ -394,6 +420,7 @@ fn run() -> Result<()> {
             project,
             priority,
             assignee,
+            labels,
         } => {
             let title = title.trim().to_string();
             flat_schema::validate_title(&title).map_err(anyhow::Error::msg)?;
@@ -405,6 +432,7 @@ fn run() -> Result<()> {
                 .as_deref()
                 .map(|email| checkout.resolve_assignee(email).map(Some))
                 .transpose()?;
+            let labels = resolve_label_names(&checkout, &labels)?;
             // Journal the create before sending: if the response is lost, the
             // next `flat sync` replays the same mutation_id instead of a rerun
             // minting fresh IDs and creating a duplicate ticket.
@@ -425,6 +453,8 @@ fn run() -> Result<()> {
                 },
                 owners_add: Vec::new(),
                 owners_remove: Vec::new(),
+                labels_add: labels,
+                labels_remove: Vec::new(),
             };
             let mutation_id = mutation.mutation_id.clone();
             checkout.write_pending(&mutation)?;
@@ -443,10 +473,12 @@ fn run() -> Result<()> {
                 .context("server returned no result")?
                 .clone();
             checkout.apply_projects(&response.project_deltas);
+            checkout.apply_labels(&response.label_deltas);
             let skipped =
                 checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
             checkout.apply_tombstones(&response.tombstones)?;
             checkout.apply_project_tombstones(&response.project_tombstones)?;
+            checkout.apply_label_tombstones(&response.label_tombstones);
             report_kept(&checkout, &skipped);
             if skipped.is_empty() {
                 checkout.state.last_seq = response.latest_seq;
@@ -469,10 +501,12 @@ fn run() -> Result<()> {
                 eprintln!("pending mutation rejected: {}", conflict.reason);
             }
             checkout.apply_projects(&response.project_deltas);
+            checkout.apply_labels(&response.label_deltas);
             let skipped =
                 checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
             checkout.apply_tombstones(&response.tombstones)?;
             checkout.apply_project_tombstones(&response.project_tombstones)?;
+            checkout.apply_label_tombstones(&response.label_tombstones);
             let unresolved = if merge {
                 merge_skipped(&mut checkout, &skipped)?
             } else {
@@ -514,12 +548,15 @@ fn run() -> Result<()> {
             }
             let changed = response.deltas.len()
                 + response.project_deltas.len()
+                + response.label_deltas.len()
                 + response.tombstones.len()
-                + response.project_tombstones.len();
+                + response.project_tombstones.len()
+                + response.label_tombstones.len();
             println!(
-                "synced {changed} changes ({} tickets deleted, {} projects deleted, seq {})",
+                "synced {changed} changes ({} tickets deleted, {} projects deleted, {} labels deleted, seq {})",
                 response.tombstones.len(),
                 response.project_tombstones.len(),
+                response.label_tombstones.len(),
                 response.latest_seq
             );
         }
@@ -585,6 +622,7 @@ fn run() -> Result<()> {
         Command::Token { command } => run_token(&Checkout::open(&root)?, command)?,
         Command::Audit { command } => run_audit(&Checkout::open(&root)?, command)?,
         Command::Project { command } => run_project(&mut Checkout::open(&root)?, command)?,
+        Command::Label { command } => run_label(&mut Checkout::open(&root)?, command)?,
         Command::Delete { key } => delete_ticket(&mut Checkout::open(&root)?, &key)?,
     }
     Ok(())
@@ -632,13 +670,15 @@ fn initialize_checkout(
     checkout.update_members(&snapshot.members);
     checkout.update_comments(&snapshot.comments);
     checkout.apply_projects(&snapshot.projects);
+    checkout.apply_labels(&snapshot.labels);
     checkout.apply_deltas(&snapshot.tickets, &HashSet::new(), &HashMap::new())?;
     checkout.state.last_seq = snapshot.latest_seq;
     checkout.save_state()?;
     println!(
-        "initialized {} ({} projects, {} tickets, seq {})",
+        "initialized {} ({} projects, {} labels, {} tickets, seq {})",
         checkout.host_dir().display(),
         snapshot.projects.len(),
+        snapshot.labels.len(),
         snapshot.tickets.len(),
         snapshot.latest_seq
     );
@@ -985,6 +1025,8 @@ fn run_project(checkout: &mut Checkout, command: ProjectCommand) -> Result<()> {
                 },
                 owners_add: Vec::new(),
                 owners_remove: Vec::new(),
+                labels_add: Vec::new(),
+                labels_remove: Vec::new(),
             };
             checkout.write_pending(&mutation)?;
             execute_project_mutation(
@@ -1064,6 +1106,8 @@ fn run_project(checkout: &mut Checkout, command: ProjectCommand) -> Result<()> {
                 set: MutationSet::default(),
                 owners_add: Vec::new(),
                 owners_remove: Vec::new(),
+                labels_add: Vec::new(),
+                labels_remove: Vec::new(),
             };
             execute_project_mutation(
                 checkout,
@@ -1090,6 +1134,8 @@ fn project_update_mutation(
         set,
         owners_add,
         owners_remove,
+        labels_add: Vec::new(),
+        labels_remove: Vec::new(),
     }
 }
 
@@ -1139,6 +1185,130 @@ fn project_json(checkout: &Checkout, project: &Project) -> Value {
     })
 }
 
+fn run_label(checkout: &mut Checkout, command: LabelCommand) -> Result<()> {
+    match command {
+        LabelCommand::Ls => {
+            let labels: Vec<Value> = checkout.state.labels.values().map(label_json).collect();
+            print_json(&json!({ "labels": labels }))
+        }
+        LabelCommand::Show { name } => print_json(&label_json(checkout.label(&name)?)),
+        LabelCommand::Create { name } => {
+            let name = flat_schema::normalize_label_name(&name).map_err(anyhow::Error::msg)?;
+            require_empty_journal(checkout)?;
+            let mutation = Mutation {
+                mutation_id: Ulid::new().to_string(),
+                op: MutationOp::Create,
+                entity: Entity::Label,
+                entity_id: Ulid::new().to_string(),
+                base_seq: None,
+                set: MutationSet {
+                    name: Some(name),
+                    ..MutationSet::default()
+                },
+                owners_add: Vec::new(),
+                owners_remove: Vec::new(),
+                labels_add: Vec::new(),
+                labels_remove: Vec::new(),
+            };
+            let mutation_id = mutation.mutation_id.clone();
+            checkout.write_pending(&mutation)?;
+            execute_label_mutation(checkout, mutation_id, Vec::new(), "created")
+        }
+        LabelCommand::Update { name, new_name } => {
+            let label = checkout.label(&name)?.clone();
+            let new_name =
+                flat_schema::normalize_label_name(&new_name).map_err(anyhow::Error::msg)?;
+            let mutation = Mutation {
+                mutation_id: Ulid::new().to_string(),
+                op: MutationOp::Update,
+                entity: Entity::Label,
+                entity_id: label.id,
+                base_seq: Some(label.seq),
+                set: MutationSet {
+                    name: Some(new_name),
+                    ..MutationSet::default()
+                },
+                owners_add: Vec::new(),
+                owners_remove: Vec::new(),
+                labels_add: Vec::new(),
+                labels_remove: Vec::new(),
+            };
+            execute_label_mutation(
+                checkout,
+                mutation.mutation_id.clone(),
+                vec![mutation],
+                "updated",
+            )
+        }
+        LabelCommand::Delete { name } => {
+            let label = checkout.label(&name)?.clone();
+            let mutation = Mutation {
+                mutation_id: Ulid::new().to_string(),
+                op: MutationOp::Delete,
+                entity: Entity::Label,
+                entity_id: label.id,
+                base_seq: Some(label.seq),
+                set: MutationSet::default(),
+                owners_add: Vec::new(),
+                owners_remove: Vec::new(),
+                labels_add: Vec::new(),
+                labels_remove: Vec::new(),
+            };
+            execute_label_mutation(
+                checkout,
+                mutation.mutation_id.clone(),
+                vec![mutation],
+                "deleted",
+            )
+        }
+    }
+}
+
+fn execute_label_mutation(
+    checkout: &mut Checkout,
+    mutation_id: String,
+    mutations: Vec<Mutation>,
+    verb: &str,
+) -> Result<()> {
+    let response = send(checkout, mutations)?;
+    apply_sync_changes(checkout, &response)?;
+    if let Some(conflict) = response
+        .conflicts
+        .iter()
+        .find(|conflict| conflict.mutation_id == mutation_id)
+    {
+        bail!("label mutation rejected: {}", conflict.reason);
+    }
+    let applied = response
+        .applied
+        .iter()
+        .find(|applied| applied.mutation_id == mutation_id)
+        .context("server returned no label mutation result")?;
+    println!("{verb} {}", applied.key);
+    Ok(())
+}
+
+fn label_json(label: &Label) -> Value {
+    json!({
+        "name": label.name,
+        "created_at": label.created_at,
+        "updated_at": label.updated_at,
+    })
+}
+
+fn resolve_label_names(checkout: &Checkout, names: &[String]) -> Result<Vec<String>> {
+    let mut normalized = HashSet::new();
+    let mut ids = Vec::new();
+    for name in names {
+        let name = flat_schema::normalize_label_name(name).map_err(anyhow::Error::msg)?;
+        if !normalized.insert(name.clone()) {
+            bail!("duplicate label {name:?}");
+        }
+        ids.push(checkout.resolve_label(&name)?);
+    }
+    Ok(ids)
+}
+
 fn delete_ticket(checkout: &mut Checkout, key: &str) -> Result<()> {
     let state = checkout
         .state
@@ -1155,6 +1325,8 @@ fn delete_ticket(checkout: &mut Checkout, key: &str) -> Result<()> {
         set: TicketSet::default(),
         owners_add: Vec::new(),
         owners_remove: Vec::new(),
+        labels_add: Vec::new(),
+        labels_remove: Vec::new(),
     };
     let mutation_id = mutation.mutation_id.clone();
     let response = send(checkout, vec![mutation])?;
@@ -1204,6 +1376,8 @@ fn comment(checkout: &mut Checkout, key: &str, text: Option<String>, stdin: bool
         },
         owners_add: Vec::new(),
         owners_remove: Vec::new(),
+        labels_add: Vec::new(),
+        labels_remove: Vec::new(),
     };
     let mutation_id = mutation.mutation_id.clone();
     checkout.write_pending(&mutation)?;
@@ -1231,9 +1405,11 @@ fn apply_delete_changes(checkout: &mut Checkout, response: &SyncResponse) -> Res
 
 fn apply_sync_changes(checkout: &mut Checkout, response: &SyncResponse) -> Result<Vec<Ticket>> {
     checkout.apply_projects(&response.project_deltas);
+    checkout.apply_labels(&response.label_deltas);
     let skipped = checkout.apply_deltas(&response.deltas, &HashSet::new(), &HashMap::new())?;
     checkout.apply_tombstones(&response.tombstones)?;
     checkout.apply_project_tombstones(&response.project_tombstones)?;
+    checkout.apply_label_tombstones(&response.label_tombstones);
     report_kept(checkout, &skipped);
     if skipped.is_empty() {
         checkout.state.last_seq = response.latest_seq;
@@ -1274,12 +1450,27 @@ fn send(checkout: &mut Checkout, mutations: Vec<Mutation>) -> Result<SyncRespons
     Ok(response)
 }
 
+#[derive(Debug)]
+struct TicketChanges {
+    set: TicketSet,
+    labels_add: Vec<String>,
+    labels_remove: Vec<String>,
+}
+
+impl TicketChanges {
+    fn is_empty(&self) -> bool {
+        self.set == TicketSet::default()
+            && self.labels_add.is_empty()
+            && self.labels_remove.is_empty()
+    }
+}
+
 fn changed_ticket_set(
     checkout: &Checkout,
     file: &markdown::TicketFile,
     base: &markdown::TicketFile,
     path: &Path,
-) -> Result<TicketSet> {
+) -> Result<TicketChanges> {
     flat_schema::validate_ticket_body(&file.body).map_err(anyhow::Error::msg)?;
     if file.project != base.project {
         bail!("{}: project is read-only", path.display());
@@ -1308,13 +1499,36 @@ fn changed_ticket_set(
     } else {
         None
     };
-    Ok(TicketSet {
-        title: (file.title != base.title).then(|| file.title.clone()),
-        status: (file.status != base.status).then_some(file.status),
-        priority: (file.priority != base.priority).then_some(file.priority),
-        assignee,
-        body: (file.body != base.body).then(|| file.body.clone()),
-        ..TicketSet::default()
+    let base_names: HashSet<&str> = base.labels.iter().map(String::as_str).collect();
+    let base_labels = base
+        .labels
+        .iter()
+        .map(|name| checkout.resolve_historical_label(name))
+        .collect::<Result<BTreeSet<_>>>()?;
+    let file_labels = file
+        .labels
+        .iter()
+        .map(|name| {
+            if base_names.contains(name.as_str()) {
+                checkout.resolve_historical_label(name)
+            } else {
+                checkout.resolve_label(name)
+            }
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    let labels_add = file_labels.difference(&base_labels).cloned().collect();
+    let labels_remove = base_labels.difference(&file_labels).cloned().collect();
+    Ok(TicketChanges {
+        set: TicketSet {
+            title: (file.title != base.title).then(|| file.title.clone()),
+            status: (file.status != base.status).then_some(file.status),
+            priority: (file.priority != base.priority).then_some(file.priority),
+            assignee,
+            body: (file.body != base.body).then(|| file.body.clone()),
+            ..TicketSet::default()
+        },
+        labels_add,
+        labels_remove,
     })
 }
 
@@ -1383,8 +1597,8 @@ fn push(checkout: &mut Checkout) -> Result<()> {
             .with_context(|| format!("parsing base copy of {stem}"))?;
 
         // One mutation carries every changed field: atomic per ticket.
-        let set = changed_ticket_set(checkout, &file, &base, &path)?;
-        if set == TicketSet::default() {
+        let changes = changed_ticket_set(checkout, &file, &base, &path)?;
+        if changes.is_empty() {
             continue;
         }
         pushed.insert(stem.clone(), content);
@@ -1394,9 +1608,11 @@ fn push(checkout: &mut Checkout) -> Result<()> {
             entity: Entity::Ticket,
             entity_id: ticket_state.id.clone(),
             base_seq: Some(ticket_state.seq),
-            set,
+            set: changes.set,
             owners_add: Vec::new(),
             owners_remove: Vec::new(),
+            labels_add: changes.labels_add,
+            labels_remove: changes.labels_remove,
         });
     }
 
@@ -1438,9 +1654,11 @@ fn push(checkout: &mut Checkout) -> Result<()> {
     // server changed). last_seq only advances on a clean push so a later sync
     // re-delivers anything skipped here.
     checkout.apply_projects(&response.project_deltas);
+    checkout.apply_labels(&response.label_deltas);
     let skipped = checkout.apply_deltas(&response.deltas, &conflicted, &pushed)?;
     checkout.apply_tombstones(&response.tombstones)?;
     checkout.apply_project_tombstones(&response.project_tombstones)?;
+    checkout.apply_label_tombstones(&response.label_tombstones);
     report_kept(checkout, &skipped);
     if conflicted.is_empty() && skipped.is_empty() {
         checkout.state.last_seq = response.latest_seq;
@@ -1491,7 +1709,15 @@ fn merge_skipped(checkout: &mut Checkout, skipped: &[Ticket]) -> Result<usize> {
         let base = markdown::parse(&base_raw)
             .with_context(|| format!("parsing base copy of {}", ticket.key))?;
         let comments = checkout.comments_for(&ticket.id);
-        let merged = match merge::merge(&base, &local, ticket, &checkout.state.members, &comments) {
+        let merged = match merge::merge(
+            &base,
+            &local,
+            ticket,
+            &checkout.state.members,
+            &checkout.state.labels,
+            &checkout.state.label_history,
+            &comments,
+        ) {
             Ok(merged) => merged,
             Err(error) => {
                 eprintln!(
@@ -1530,6 +1756,8 @@ mod tests {
             "urgent",
             "--assignee",
             "Gabe@Example.com",
+            "--label",
+            "bug",
         ])
         .unwrap();
         match cli.command {
@@ -1538,11 +1766,13 @@ mod tests {
                 project,
                 priority,
                 assignee,
+                labels,
             } => {
                 assert_eq!(title, "Title");
                 assert_eq!(project, "DEMO");
                 assert_eq!(priority, Some(Priority::Urgent));
                 assert_eq!(assignee.as_deref(), Some("Gabe@Example.com"));
+                assert_eq!(labels, ["bug"]);
             }
             _ => panic!("expected new command"),
         }
@@ -1664,6 +1894,8 @@ mod tests {
                 },
                 owners_add: Vec::new(),
                 owners_remove: Vec::new(),
+                labels_add: Vec::new(),
+                labels_remove: Vec::new(),
             })
             .unwrap();
 
@@ -1683,6 +1915,7 @@ mod tests {
             status: Status::Todo,
             priority: Priority::None,
             assignee: None,
+            labels: Vec::new(),
             created_at: "2026-08-25T12:34:56.000Z".to_string(),
             updated_at: "2026-08-25T12:34:56.000Z".to_string(),
             seq,
@@ -1717,12 +1950,14 @@ mod tests {
             deltas: vec![updated.clone()],
             comment_deltas: Vec::new(),
             project_deltas: Vec::new(),
+            label_deltas: Vec::new(),
             tombstones: vec![TicketTombstone {
                 id: deleted.id.clone(),
                 key: deleted.key.clone(),
                 seq: 4,
             }],
             project_tombstones: Vec::new(),
+            label_tombstones: Vec::new(),
             members: Vec::new(),
             latest_seq: 4,
         };
@@ -1734,7 +1969,13 @@ mod tests {
         assert!(!checkout.mirror_path(&deleted.key).exists());
         assert_eq!(
             fs::read_to_string(checkout.mirror_path(&updated.key)).unwrap(),
-            markdown::render(&updated, &checkout.state.members, &[]).unwrap()
+            markdown::render(
+                &updated,
+                &checkout.state.members,
+                &checkout.state.labels,
+                &[],
+            )
+            .unwrap()
         );
 
         std::fs::remove_dir_all(root).unwrap();
@@ -1800,6 +2041,7 @@ mod tests {
             status: Status::Todo,
             priority: Priority::None,
             assignee: Some("gabe@example.com".into()),
+            labels: Vec::new(),
             created: Some("created".into()),
             updated: Some("updated".into()),
             body: String::new(),
@@ -1808,7 +2050,54 @@ mod tests {
         let mut file = base.clone();
         file.assignee = None;
         let set = changed_ticket_set(&checkout, &file, &base, Path::new("DEMO-1.md")).unwrap();
-        assert_eq!(set.assignee, Some(None));
+        assert_eq!(set.set.assignee, Some(None));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn label_edits_emit_membership_deltas() {
+        let root = std::env::temp_dir().join(format!("flat-label-deltas-{}", Ulid::new()));
+        let config = Config {
+            server: "https://flat.example".to_string(),
+            token: "test-token".to_string(),
+        };
+        store::save_config(&root, &config).unwrap();
+        let mut checkout = Checkout::open(&root).unwrap();
+        checkout.apply_labels(&[
+            Label {
+                id: "label-auth".into(),
+                name: "auth".into(),
+                created_at: "created".into(),
+                updated_at: "updated".into(),
+                seq: 1,
+            },
+            Label {
+                id: "label-bug".into(),
+                name: "bug".into(),
+                created_at: "created".into(),
+                updated_at: "updated".into(),
+                seq: 2,
+            },
+        ]);
+        let base = markdown::TicketFile {
+            key: "DEMO-1".into(),
+            project: "DEMO".into(),
+            title: "Title".into(),
+            status: Status::Todo,
+            priority: Priority::None,
+            assignee: None,
+            labels: vec!["auth".into()],
+            created: Some("created".into()),
+            updated: Some("updated".into()),
+            body: String::new(),
+            comments: format!("{}\n## Comments\n", markdown::COMMENT_SENTINEL),
+        };
+        let mut edited = base.clone();
+        edited.labels = vec!["bug".into()];
+        let changes =
+            changed_ticket_set(&checkout, &edited, &base, Path::new("DEMO-1.md")).unwrap();
+        assert_eq!(changes.labels_add, ["label-bug"]);
+        assert_eq!(changes.labels_remove, ["label-auth"]);
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -1822,13 +2111,15 @@ mod tests {
         store::save_config(&root, &config).unwrap();
         let checkout = Checkout::open(&root).unwrap();
         let base = markdown::parse(
-            "---\nid: DEMO-1\nproject: DEMO\ntitle: Title\nstatus: todo\n---\n\n<!-- flat:comments -->\n## Comments\n",
+            "---\nid: DEMO-1\nproject: DEMO\ntitle: Title\nstatus: todo\nlabels: []\n---\n\n<!-- flat:comments -->\n## Comments\n",
         )
         .unwrap();
         let mut edited_title = base.clone();
         edited_title.title = "Edited".into();
         assert_eq!(
-            changed_ticket_set(&checkout, &edited_title, &base, Path::new("DEMO-1.md")).unwrap(),
+            changed_ticket_set(&checkout, &edited_title, &base, Path::new("DEMO-1.md"))
+                .unwrap()
+                .set,
             TicketSet {
                 title: Some("Edited".into()),
                 ..TicketSet::default()

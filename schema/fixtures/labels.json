@@ -1,0 +1,9 @@
+{
+  "valid": [
+    { "input": "bug", "normalized": "bug" },
+    { "input": " Auth ", "normalized": "auth" },
+    { "input": "p0", "normalized": "p0" },
+    { "input": "needs_review", "normalized": "needs_review" }
+  ],
+  "invalid": ["", "bad name", "-leading", "none", "é", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+}

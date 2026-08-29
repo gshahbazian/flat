@@ -7,7 +7,7 @@ flat init URL --setup                  # claim a new tenant
 flat init URL --invite                 # redeem an invitation
 flat init URL --recover                # redeem a recovery enrollment
 flat init URL --token                  # configure an existing FLAT_TOKEN
-flat new TITLE --project KEY [--priority PRIORITY] [--assignee EMAIL]
+flat new TITLE --project KEY [--priority PRIORITY] [--assignee EMAIL] [--label NAME]...
 flat sync [--merge]                    # pull server changes into the mirror
 flat push                              # send locally edited files back
 flat search QUERY [--sort MODE] [--limit N] [--cursor TOKEN] [--json]
@@ -26,6 +26,11 @@ flat project update KEY [--name NAME] [--description TEXT]
 flat project owner add KEY EMAIL
 flat project owner remove KEY EMAIL
 flat project delete KEY                # admin human token; project must be empty
+flat label ls
+flat label show NAME
+flat label create NAME
+flat label update NAME --new-name NEW_NAME
+flat label delete NAME                 # admin human token
 ```
 
 Project keys contain 2-8 uppercase letters or digits and start with a letter.
@@ -43,13 +48,19 @@ overrides the root). Base copies and sync state sit next to it under
 mutation per dirty ticket.
 
 Ticket frontmatter includes `id`, `project`, `title`, `status`, `priority`,
-`assignee`, `created`, and `updated`. Edit `title`, `status`, `priority`,
-`assignee`, and the description body. `id`, `project`, `created`, and `updated`
-are read-only. Priority
-is one of `none`, `low`, `medium`, `high`, or `urgent`; unassigned tickets use
+`assignee`, `labels`, `created`, and `updated`. Edit `title`, `status`,
+`priority`, `assignee`, `labels`, and the description body. `id`, `project`,
+`created`, and `updated` are read-only. Labels use a sorted inline list such as
+`labels: [auth, bug]`; `labels: []` means unlabeled.
+Older ticket files without a `labels` field are read as unlabeled and gain the
+field the next time Flat rematerializes them. Priority is one of `none`, `low`,
+`medium`, `high`, or `urgent`; unassigned tickets use
 `assignee: null`. Assignment emails use the shared normalization rules and are
 resolved through synced member profiles. If an email is missing from the
 local cache, run `flat sync` and retry.
+Label names are normalized lowercase ASCII slugs and must already exist in the
+synced label cache. `flat label create` and `flat label update` require write
+access; delete requires an admin human token. Claimed names are never reused.
 
 Each file ends with a `<!-- flat:comments -->` section rendered from the
 server's append-only comments. Everything from that sentinel onward is

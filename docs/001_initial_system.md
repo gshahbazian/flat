@@ -98,13 +98,14 @@ round-trip every message shape in CI.
   "entity_id": "01JC...ULID",
   "base_seq": 4021,                  // seq the client last saw for this entity
   "set": { "status": "in_progress", "assignee": "01JB...ULID" },
-  "labels_add": ["auth"],
+  "labels_add": ["01JB...LABEL_ULID"],
   "labels_remove": []
 }
 ```
 
-- Scalar fields: last-value `set`. List fields (labels): add/remove deltas,
-  so concurrent taggers don't clobber each other.
+- Scalar fields: last-value `set`. List fields (labels): add/remove ULID deltas,
+  so concurrent taggers don't clobber each other. Files and CLI arguments use
+  label names; the wire protocol uses immutable label IDs.
 - `assignee` travels as a member ULID. The CLI resolves the email in the file
   to a ULID from the synced members list before pushing; files keep emails.
 - **Idempotency**: server keeps an `applied_mutations` table; a replayed
@@ -126,7 +127,9 @@ POST /sync
   { "applied": [...], "conflicts": [...], "deltas": [...], "latest_seq": 4090 }
 ```
 
-- `protocol_version` handshake; server rejects mismatched versions.
+- `protocol_version` handshake; protocol 2 includes projects, comments, and labels.
+  Additive fields may be absent and are treated as empty by updated clients.
+  The server rejects mismatched versions.
 - Bootstrap: `GET /snapshot` — paginated JSON of all entities + the seq
   watermark it represents.
 - Sequence numbers are cursors and may skip secret-only administrative
@@ -162,7 +165,7 @@ title: Fix OAuth token refresh race
 status: in_progress     # backlog|todo|in_progress|in_review|done|canceled
 priority: high          # none|low|medium|high|urgent
 assignee: gabe@acme.com # email or null
-labels: [bug, auth]
+labels: [auth, bug]
 project: AUTH           # read-only in v1
 created: 2025-11-30T18:04:11Z   # read-only
 updated: 2025-12-01T09:22:41Z   # read-only

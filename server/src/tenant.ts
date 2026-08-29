@@ -79,6 +79,8 @@ import {
   TokenKind,
   type AppliedMutation,
   type Comment,
+  type Label,
+  type LabelTombstone,
   type MemberProfile,
   type Mutation,
   type MutationConflict,
@@ -97,6 +99,7 @@ import {
   invalidCommentBody,
   invalidProjectDescription,
   invalidTicketBody,
+  labelNameSchema,
   invalidTitle,
   projectKeySchema,
   projectNameSchema,
@@ -353,7 +356,7 @@ function mutationReason(raw: JsonObject, operation: MutationOp, entity: Entity):
     if (set.body != null && !stringValueSchema.safeParse(set.body).success) {
       return 'set.body must be a string'
     }
-  } else {
+  } else if (entity === Entity.Project) {
     if (set.key !== undefined && !projectKeySchema.safeParse(set.key).success) {
       return 'invalid_project_key'
     }
@@ -368,11 +371,19 @@ function mutationReason(raw: JsonObject, operation: MutationOp, entity: Entity):
       const reason = invalidProjectDescription(description.data)
       if (reason) return reason
     }
+  } else if (set.name !== undefined && !labelNameSchema.safeParse(set.name).success) {
+    return 'invalid_label_name'
   }
   for (const field of ['owners_add', 'owners_remove'] as const) {
     const value = raw[field]
     if (value !== undefined && !z.array(z.string()).safeParse(value).success) {
       return `${field} must be a list of member ids`
+    }
+  }
+  for (const field of ['labels_add', 'labels_remove'] as const) {
+    const value = raw[field]
+    if (value !== undefined && !z.array(z.string()).safeParse(value).success) {
+      return `${field} must be a list of label ids`
     }
   }
   if (operation === MutationOp.Create && raw.base_seq !== undefined) {
@@ -878,8 +889,10 @@ export class TenantDO extends DurableObject<Env> {
       deltas: this.ticketsSince(lastSeq),
       comment_deltas: this.commentsSince(lastSeq),
       project_deltas: this.projectsSince(lastSeq),
+      label_deltas: this.labelsSince(lastSeq),
       tombstones: this.tombstonesSince(lastSeq),
       project_tombstones: this.projectTombstonesSince(lastSeq),
+      label_tombstones: this.labelTombstonesSince(lastSeq),
       members: this.memberProfiles(),
       latest_seq: this.latestSeq(),
     }
@@ -1020,6 +1033,16 @@ export class TenantDO extends DurableObject<Env> {
             result = set
             return
           }
+          const labelsAdd = this.mcpLabelIds(update.labels_add)
+          if (labelsAdd instanceof Response) {
+            result = labelsAdd
+            return
+          }
+          const labelsRemove = this.mcpLabelIds(update.labels_remove)
+          if (labelsRemove instanceof Response) {
+            result = labelsRemove
+            return
+          }
           mutation = {
             mutation_id: mutationId,
             entity: Entity.Ticket,
@@ -1027,6 +1050,8 @@ export class TenantDO extends DurableObject<Env> {
             entity_id: ticket.id,
             base_seq: update.base_seq,
             set,
+            labels_add: labelsAdd,
+            labels_remove: labelsRemove,
           }
         } else {
           const comment = write.input
@@ -1123,6 +1148,8 @@ export class TenantDO extends DurableObject<Env> {
       }
       assignee = member.id
     }
+    const labels = this.mcpLabelIds(input.labels)
+    if (labels instanceof Response) return labels
     return {
       mutation_id: mutationId,
       entity: Entity.Ticket,
@@ -1136,7 +1163,27 @@ export class TenantDO extends DurableObject<Env> {
         priority: input.priority,
         assignee,
       },
+      labels_add: labels,
     }
+  }
+
+  private mcpLabelIds(names: string[]): string[] | Response {
+    const ids: string[] = []
+    for (const name of names) {
+      const label = this.sql
+        .exec<{ id: string }>('SELECT id FROM labels WHERE name = ?', name)
+        .toArray()[0]
+      if (!label) {
+        return mcpError(
+          422,
+          'validation',
+          'invalid_label',
+          `Unknown label ${JSON.stringify(name)}.`
+        )
+      }
+      ids.push(label.id)
+    }
+    return ids
   }
 
   private mcpTicketSet(
@@ -1259,6 +1306,7 @@ export class TenantDO extends DurableObject<Env> {
   private snapshot(): Snapshot {
     return {
       projects: this.projects(),
+      labels: this.labels(),
       tickets: this.ticketsSince(0),
       comments: this.commentsSince(0),
       members: this.memberProfiles(),
@@ -1278,6 +1326,11 @@ export class TenantDO extends DurableObject<Env> {
       return 'ticket.delete'
     }
     if (mutation.entity === Entity.Comment) return 'comment.create'
+    if (mutation.entity === Entity.Label) {
+      if (mutation.op === MutationOp.Create) return 'label.create'
+      if (mutation.op === MutationOp.Update) return 'label.update'
+      return 'label.delete'
+    }
     if (mutation.op === MutationOp.Create) return 'project.create'
     if (mutation.op === MutationOp.Update) {
       const ownerDeltas = [mutation.owners_add, mutation.owners_remove]
@@ -1293,6 +1346,7 @@ export class TenantDO extends DurableObject<Env> {
   private apply(mutation: Mutation, principal: Principal): AppliedMutation | ApplyConflict {
     if (mutation.entity === Entity.Project) return this.applyProject(mutation, principal)
     if (mutation.entity === Entity.Comment) return this.applyComment(mutation, principal)
+    if (mutation.entity === Entity.Label) return this.applyLabel(mutation)
     return this.applyTicket(mutation)
   }
 
@@ -1372,6 +1426,24 @@ export class TenantDO extends DurableObject<Env> {
     const assigneeId = setsAssignee ? (parsedSet.assignee ?? null) : null
     const title = parsedSet.title != null ? parsedSet.title.trim() : null
     const body = parsedSet.body
+    const labelsAdd = mutation.labels_add ?? []
+    const labelsRemove = mutation.labels_remove ?? []
+    if (new Set(labelsAdd).size !== labelsAdd.length) {
+      return reject('labels_add contains duplicate label ids')
+    }
+    if (new Set(labelsRemove).size !== labelsRemove.length) {
+      return reject('labels_remove contains duplicate label ids')
+    }
+    const addedLabels = new Set(labelsAdd)
+    if (labelsRemove.some((labelId) => addedLabels.has(labelId))) {
+      return reject('a label cannot be added and removed in the same mutation')
+    }
+    for (const labelId of [...labelsAdd, ...labelsRemove]) {
+      const labelExists = this.sql
+        .exec('SELECT 1 FROM labels WHERE id = ?', labelId)
+        .toArray().length
+      if (labelExists === 0) return reject(`unknown label ${labelId}`)
+    }
     if (title !== null) {
       const reason = invalidTitle(title)
       if (reason) return reject(reason)
@@ -1436,6 +1508,13 @@ export class TenantDO extends DurableObject<Env> {
         seq
       )
       this.sql.exec('UPDATE projects SET next_ticket_num = ? WHERE id = ?', num + 1, projectId)
+      for (const labelId of labelsAdd) {
+        this.sql.exec(
+          'INSERT INTO ticket_labels (ticket_id, label_id) VALUES (?, ?)',
+          mutation.entity_id,
+          labelId
+        )
+      }
       this.log(mutation, seq)
       return {
         mutation_id: mutation.mutation_id,
@@ -1531,12 +1610,174 @@ export class TenantDO extends DurableObject<Env> {
       seq,
       mutation.entity_id
     )
+    for (const labelId of labelsAdd) {
+      this.sql.exec(
+        'INSERT OR IGNORE INTO ticket_labels (ticket_id, label_id) VALUES (?, ?)',
+        mutation.entity_id,
+        labelId
+      )
+    }
+    for (const labelId of labelsRemove) {
+      this.sql.exec(
+        'DELETE FROM ticket_labels WHERE ticket_id = ? AND label_id = ?',
+        mutation.entity_id,
+        labelId
+      )
+    }
     this.log(mutation, seq)
     return {
       mutation_id: mutation.mutation_id,
       entity_id: mutation.entity_id,
       key,
       seq,
+    }
+  }
+
+  private applyLabel(mutation: Mutation): AppliedMutation | ApplyConflict {
+    const reject = (reason: string): ApplyConflict => ({
+      mutation_id: mutation.mutation_id,
+      entity_id: mutation.entity_id,
+      reason,
+    })
+
+    if (mutation.op === MutationOp.Create) {
+      const duplicateId = this.sql
+        .exec(
+          `SELECT 1 FROM labels WHERE id = ?
+           UNION ALL SELECT 1 FROM label_tombstones WHERE id = ? LIMIT 1`,
+          mutation.entity_id,
+          mutation.entity_id
+        )
+        .toArray()
+      if (duplicateId.length > 0) return reject(`label ${mutation.entity_id} already exists`)
+      const nameResult = labelNameSchema.safeParse(mutation.set.name)
+      if (!nameResult.success) return reject('create requires a valid set.name')
+      const name = nameResult.data
+      if (this.labelNameReserved(name)) return reject(`label name ${name} is already used`)
+
+      const seq = this.nextSeq()
+      const now = isoNow()
+      this.sql.exec(
+        `INSERT INTO labels (id, name, created_at, updated_at, seq)
+         VALUES (?, ?, ?, ?, ?)`,
+        mutation.entity_id,
+        name,
+        now,
+        now,
+        seq
+      )
+      this.sql.exec(
+        'INSERT INTO label_name_reservations (name, label_id) VALUES (?, ?)',
+        name,
+        mutation.entity_id
+      )
+      this.log(mutation, seq)
+      return {
+        mutation_id: mutation.mutation_id,
+        entity_id: mutation.entity_id,
+        key: name,
+        seq,
+      }
+    }
+
+    const label = this.sql
+      .exec<{ name: string; seq: number; updated_at: string }>(
+        'SELECT name, seq, updated_at FROM labels WHERE id = ?',
+        mutation.entity_id
+      )
+      .toArray()[0]
+    if (!label) return reject(`unknown label ${mutation.entity_id}`)
+    if (mutation.base_seq === undefined) return reject(`${mutation.op} requires a valid base_seq`)
+    if (mutation.base_seq > label.seq) {
+      return reject(`base_seq ${mutation.base_seq} is ahead of the label (seq ${label.seq})`)
+    }
+
+    const ticketIds = this.labelTicketIds(mutation.entity_id)
+    if (mutation.op === MutationOp.Delete) {
+      const seq = this.nextSeq()
+      this.sql.exec(
+        'INSERT INTO label_tombstones (id, name, seq) VALUES (?, ?, ?)',
+        mutation.entity_id,
+        label.name,
+        seq
+      )
+      this.sql.exec('DELETE FROM labels WHERE id = ?', mutation.entity_id)
+      this.touchTickets(ticketIds, seq)
+      this.log(mutation, seq)
+      return {
+        mutation_id: mutation.mutation_id,
+        entity_id: mutation.entity_id,
+        key: label.name,
+        seq,
+      }
+    }
+    if (mutation.op !== MutationOp.Update) {
+      return reject(`unknown op ${JSON.stringify(mutation.op)}`)
+    }
+    const nameResult = labelNameSchema.safeParse(mutation.set.name)
+    if (!nameResult.success) return reject('update requires a valid set.name')
+    const name = nameResult.data
+    if (mutation.base_seq < label.seq && name !== label.name) {
+      return reject(`conflicting edits to name (label is at seq ${label.seq}): run \`flat sync\``)
+    }
+    if (name !== label.name && this.labelNameReserved(name)) {
+      return reject(`label name ${name} is already used`)
+    }
+
+    const seq = this.nextSeq()
+    const updatedAt = timestampAfter(label.updated_at)
+    if (name !== label.name) {
+      this.sql.exec(
+        'INSERT INTO label_name_reservations (name, label_id) VALUES (?, ?)',
+        name,
+        mutation.entity_id
+      )
+    }
+    this.sql.exec(
+      'UPDATE labels SET name = ?, updated_at = ?, seq = ? WHERE id = ?',
+      name,
+      updatedAt,
+      seq,
+      mutation.entity_id
+    )
+    this.touchTickets(ticketIds, seq)
+    this.log(mutation, seq)
+    return {
+      mutation_id: mutation.mutation_id,
+      entity_id: mutation.entity_id,
+      key: name,
+      seq,
+    }
+  }
+
+  private labelNameReserved(name: string): boolean {
+    return (
+      this.sql.exec('SELECT 1 FROM label_name_reservations WHERE name = ?', name).toArray().length >
+      0
+    )
+  }
+
+  private labelTicketIds(labelId: string): string[] {
+    return this.sql
+      .exec<{ ticket_id: string }>(
+        'SELECT ticket_id FROM ticket_labels WHERE label_id = ? ORDER BY ticket_id',
+        labelId
+      )
+      .toArray()
+      .map((row) => row.ticket_id)
+  }
+
+  private touchTickets(ticketIds: string[], seq: number): void {
+    for (const ticketId of ticketIds) {
+      const ticket = this.sql
+        .exec<{ updated_at: string }>('SELECT updated_at FROM tickets WHERE id = ?', ticketId)
+        .one()
+      this.sql.exec(
+        'UPDATE tickets SET updated_at = ?, seq = ? WHERE id = ?',
+        timestampAfter(ticket.updated_at),
+        seq,
+        ticketId
+      )
     }
   }
 
@@ -3199,8 +3440,8 @@ export class TenantDO extends DurableObject<Env> {
   }
 
   private ticketsSince(seq: number): Ticket[] {
-    return this.sql
-      .exec<SqlRow<Ticket>>(
+    const tickets = this.sql
+      .exec<SqlRow<Omit<Ticket, 'labels'>>>(
         `SELECT id, key, project, title, body, status, priority, assignee, created_at, updated_at, seq
          FROM tickets
          WHERE seq > ? OR id IN (SELECT ticket_id FROM comments WHERE seq > ?)
@@ -3209,6 +3450,11 @@ export class TenantDO extends DurableObject<Env> {
         seq
       )
       .toArray()
+    const deltas: Ticket[] = []
+    for (const ticket of tickets) {
+      deltas.push({ ...ticket, labels: this.ticketLabelIds(ticket.id) })
+    }
+    return deltas
   }
 
   private commentsSince(seq: number): Comment[] {
@@ -3224,6 +3470,32 @@ export class TenantDO extends DurableObject<Env> {
 
   private projects(): Project[] {
     return this.projectsSince(-1)
+  }
+
+  private labels(): Label[] {
+    return this.labelsSince(-1)
+  }
+
+  private labelsSince(seq: number): Label[] {
+    return this.sql
+      .exec<SqlRow<Label>>(
+        `SELECT id, name, created_at, updated_at, seq
+         FROM labels WHERE seq > ? ORDER BY seq, name`,
+        seq
+      )
+      .toArray()
+  }
+
+  private ticketLabelIds(ticketId: string): string[] {
+    return this.sql
+      .exec<{ label_id: string }>(
+        `SELECT tl.label_id FROM ticket_labels tl
+         JOIN labels l ON l.id = tl.label_id
+         WHERE tl.ticket_id = ? ORDER BY l.name`,
+        ticketId
+      )
+      .toArray()
+      .map((row) => row.label_id)
   }
 
   private projectsSince(seq: number): Project[] {
@@ -3293,6 +3565,15 @@ export class TenantDO extends DurableObject<Env> {
     return this.sql
       .exec<SqlRow<ProjectTombstone>>(
         'SELECT id, key, seq FROM project_tombstones WHERE seq > ? ORDER BY seq',
+        seq
+      )
+      .toArray()
+  }
+
+  private labelTombstonesSince(seq: number): LabelTombstone[] {
+    return this.sql
+      .exec<SqlRow<LabelTombstone>>(
+        'SELECT id, name, seq FROM label_tombstones WHERE seq > ? ORDER BY seq',
         seq
       )
       .toArray()
