@@ -105,18 +105,26 @@ describe('MCP tool schemas', () => {
   })
 
   test('fits one maximum-size project even with worst-case JSON escaping', () => {
-    expect(
-      mcpResultFits({
-        projects: [
-          {
-            id: '0'.repeat(26),
-            key: 'DEMO',
-            display_name: 'Demo',
-            description: '\0'.repeat(MAX_PROJECT_DESCRIPTION_BYTES),
-          },
-        ],
-        next_cursor: encodeMcpCursor({ kind: 'projects', last_key: 'DEMO' }),
-      })
-    ).toBe(true)
+    expect(mcpResultFits(projectPage(['DEMO']))).toBe(true)
+  })
+
+  test('pages before two maximum-size projects can exceed the result limit', () => {
+    expect(mcpResultFits(projectPage(['BIGA', 'BIGB']))).toBe(false)
   })
 })
+
+function projectPage(keys: string[]) {
+  const lastKey = keys[keys.length - 1]
+  if (lastKey === undefined) {
+    throw new Error('projectPage requires at least one key')
+  }
+  return {
+    projects: keys.map((key) => ({
+      id: '0'.repeat(26),
+      key,
+      display_name: key,
+      description: '\0'.repeat(MAX_PROJECT_DESCRIPTION_BYTES),
+    })),
+    next_cursor: encodeMcpCursor({ kind: 'projects', last_key: lastKey }),
+  }
+}
