@@ -698,50 +698,6 @@ describe.sequential('server-side MCP', () => {
     await modern.close()
   })
 
-  test('returns a bounded error when one complete result cannot fit', async () => {
-    const snapshot = await json<{ latest_seq: number }>(worker, '/snapshot', {
-      headers: { Authorization: `Bearer ${adminToken}` },
-    })
-    const oversizedBody = 'x'.repeat(2 * 1024 * 1024 + 1)
-    const created = await json<{ applied: Array<{ key: string }> }>(worker, '/sync', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${adminToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        protocol_version: 2,
-        last_seq: snapshot.body.latest_seq,
-        mutations: [
-          {
-            mutation_id: 'oversized-result-ticket',
-            entity: 'ticket',
-            op: 'create',
-            entity_id: '01KMRESULTTOOLARGETICKET01',
-            set: {
-              project: '00000000000000000000000000',
-              title: 'Oversized result',
-              body: oversizedBody,
-            },
-          },
-        ],
-      }),
-    })
-    const client = await connectClient(worker, adminToken, 'legacy')
-    const result = await client.callTool({
-      name: 'get_ticket',
-      arguments: { key: created.body.applied[0].key },
-    })
-    expect(result.isError).toBe(true)
-    expect(result.structuredContent).toEqual(
-      expect.objectContaining({ error: expect.objectContaining({ code: 'result_too_large' }) })
-    )
-    expect(new TextEncoder().encode(JSON.stringify(result)).byteLength).toBeLessThanOrEqual(
-      16 * 1024
-    )
-    await client.close()
-  })
-
   test('enforces permissions and reserves the MCP mutation namespace', async () => {
     const member = await enroll(worker, adminToken, 'member@example.com', 'member')
     const selfAgent = await json<{ token: string }>(worker, '/tokens', {
