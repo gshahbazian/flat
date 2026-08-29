@@ -30,7 +30,7 @@ back. Structured writes also work via CLI commands and MCP tools.
 | Storage | One **tenant DO** (DO SQLite): all tables + one global ordered mutation log |
 | Mirror | Out-of-repo: `~/.flat/<tenant-host>/` (`FLAT_DIR` overrides, `flat path` prints). Two-way editing, `flat push` |
 | Filenames | Stable key-only: `AUTH-142.md` |
-| Freshness | Explicit `flat sync` + `flat sync --watch` (WebSocket). No daemon in v1 |
+| Freshness | Explicit `flat sync`. No watch, daemon, or other auto-sync |
 | v1 entities | Projects, members, tickets, comments, labels |
 | Deferred | Teams, milestones, cycles, ticket relations, attachments (R2), custom fields, custom statuses, OAuth, hosted multi-tenant service |
 | Identity | Enrollment binds each token to a tenant member email. `git config user.email` may supply a CLI default or warning but grants no identity or access |
@@ -66,9 +66,9 @@ monotonically increasing `seq` transactionally — which also makes per-project
 ticket counters (`AUTH-142`) trivial. One tenant DO = one log = one sync
 stream. DO SQLite holds 10GB; tickets are text; shard only if that ever hurts.
 
-Rejected: **D1** (build your own ordering, no WebSockets), **git as the
-database** (concurrent agent writes = merge hell on structured data; we keep
-the git-like *experience* via the file mirror instead).
+Rejected: **D1** (build your own ordering), **git as the database**
+(concurrent agent writes = merge hell on structured data; we keep the git-like
+*experience* via the file mirror instead).
 
 ## IDs and keys
 
@@ -127,8 +127,6 @@ POST /sync
 ```
 
 - `protocol_version` handshake; server rejects mismatched versions.
-- `flat sync --watch`: WebSocket to the DO (hibernation-friendly); frames
-  reuse the delta format and may carry a watermark without entity data.
 - Bootstrap: `GET /snapshot` — paginated JSON of all entities + the seq
   watermark it represents.
 - Sequence numbers are cursors and may skip secret-only administrative
@@ -222,7 +220,7 @@ Users point agents at it with one line in AGENTS.md: "tickets live at
 
 ```
 flat init                      # connect to tenant, write config, first snapshot
-flat sync [--watch] [--merge]
+flat sync [--merge]
 flat push [KEY ...] [--force]  # default: all dirty files
 flat new TITLE --project AUTH [--assignee me] [...]
 flat comment KEY [TEXT|--stdin]
@@ -275,8 +273,8 @@ Exercises every architectural bet before MCP enters the picture:
 3. CLI: `init`, `new`, `sync` (mirror materialization), `push` with
    field-level conflict detection and `--merge` markers.
 
-Then: comments, `--watch`, FTS + `search`, server-side MCP, admin commands,
-docs + example AGENTS.md snippet.
+Then: comments, FTS + `search`, server-side MCP, admin commands, docs +
+example AGENTS.md snippet.
 
 Auth in the first milestone is one shared bearer token checked in the Worker
 — a placeholder. The real system in `002_permissions_system.md` is its own

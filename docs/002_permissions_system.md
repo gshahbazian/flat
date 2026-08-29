@@ -6,9 +6,8 @@ supersedes its bootstrap and member-enrollment details.
 Implementation note: the current milestone covers tenant setup, enrollment,
 token/member administration, audit, projects, authorization for the HTTP
 ticket-sync surface, comments, server-side search, and server-side MCP.
-WebSocket/watch, labels, force push, and native keychain storage remain deferred
-slices of this accepted design. The operator-recovery deployment procedure is
-implemented.
+Labels, force push, and native keychain storage remain deferred slices of this
+accepted design. The operator-recovery deployment procedure is implemented.
 
 In particular:
 
@@ -143,15 +142,13 @@ be made until the member is reactivated or the ticket is reassigned.
 
 Suspension is a credential reset, not a pause. In the same transaction, the
 server revokes all of the member's tokens and live recovery and upgrade
-enrollments and removes the member from every project owner list. After commit,
-the DO closes sessions for the revoked tokens. Reactivation does not restore
-any of those records. After reactivation, an admin creates a recovery
+enrollments and removes the member from every project owner list.
+Reactivation does not restore any of those records. After reactivation, an admin creates a recovery
 enrollment so the member can obtain a new human token.
 
 The role-demotion transaction revokes tokens whose access exceeds the new role
 ceiling and live upgrade enrollments whose intended access exceeds that
-ceiling. After commit, the DO closes sessions for the revoked tokens. A later
-promotion does not restore those records. The member keeps lower-access tokens
+ceiling. A later promotion does not restore those records. The member keeps lower-access tokens
 that the new role still permits. Demotion to `viewer` also removes the member
 from every project owner list.
 
@@ -180,7 +177,7 @@ This preserves the original architecture:
 
 - `/snapshot` contains the tenant's work data.
 - One global sequence orders all mutations.
-- `flat sync --watch` follows one tenant stream.
+- `flat sync` follows one tenant stream.
 - FTS searches all tenant work data.
 - The local mirror can contain every project.
 
@@ -280,9 +277,8 @@ compares against a dummy verifier and fails with the same `401` as a wrong
 secret. The endpoint accepts only active admins as targets. The shared
 recovery transaction revokes all of the admin's tokens, revokes older recovery
 and upgrade enrollments, creates the new recovery enrollment, and writes an
-audit event with actor kind `deployment`. After commit, the DO closes sessions
-for the revoked tokens. Recovery does not reset the tenant, change a role, or
-reopen `/setup`.
+audit event with actor kind `deployment`. Recovery does not reset the tenant,
+change a role, or reopen `/setup`.
 
 ## Member invitations
 
@@ -376,9 +372,8 @@ create one through the normal API. The tenant DO uses the same creation
 transaction for normal and operator recovery. It revokes the member's existing
 tokens, revokes older recovery and upgrade enrollments, creates the new
 recovery enrollment, and writes one recovery audit event containing the revoked
-token IDs. After commit, the DO closes sessions for the revoked tokens. Normal
-recovery records the calling admin as actor; operator recovery records
-`deployment`.
+token IDs. Normal recovery records the calling admin as actor; operator
+recovery records `deployment`.
 
 Redemption issues a human token at the member's role ceiling. It does not
 change the role or reactivate a suspended member.
@@ -473,7 +468,7 @@ Tokens have two kinds:
 
 Tokens have one of three access levels:
 
-- `read`: read, sync, watch, and search. A human token at this level may also
+- `read`: read, sync, and search. A human token at this level may also
   list and revoke its owner's tokens, create another `read` token, and redeem a
   matching upgrade enrollment.
 - `write`: `read` plus ticket creation and editing, comment creation, label
@@ -753,7 +748,6 @@ The server checks permissions for:
 - Every HTTP endpoint.
 - Every mutation inside a `/sync` batch.
 - Snapshot and delta reads.
-- WebSocket connection establishment and continued use.
 - Server-side search.
 - Server-side MCP tool calls.
 - Token and member administration.
@@ -789,11 +783,6 @@ Server-side MCP operations read and write the tenant Durable Object directly.
 The Durable Object authenticates and authorizes each operation before reading
 or changing accepted state; no local mirror or later push participates.
 
-Long-lived WebSocket sessions must not outlive token revocation or member
-suspension. The tenant DO closes affected sessions when membership or token
-state changes. It rechecks expiry and verifier-key availability when processing
-a frame.
-
 Member, enrollment, token, and audit actions use dedicated endpoints. The
 general `/sync` mutation envelope does not accept those entity types.
 
@@ -820,10 +809,9 @@ material never enters the mutation log.
 
 Sequence numbers are cursors, not a promise that every client can see every
 number. `/sync` always returns the latest tenant sequence, even when no visible
-delta exists after the client's cursor. A secret-only mutation sends active
-watchers a watermark frame containing `latest_seq` and no entity data. Clients
-advance their cursor on that frame. They request a new snapshot only after an
-explicit `resync_required`; a gap by itself does not trigger a resync.
+delta exists after the client's cursor. Clients advance their cursor from that
+value. They request a new snapshot only after an explicit `resync_required`; a
+gap by itself does not trigger a resync.
 
 ## Data model additions
 
@@ -1090,9 +1078,8 @@ agent tokens away from tenant administration.
 5. Implement invitation, cancellation, recovery, access upgrade, token
    lifecycle, and their CLI commands.
 6. Add server-derived attribution and audit records to every mutation path.
-7. Keep the implemented policy enforcement on search and server-side MCP, and
-   add it to WebSockets. Add expiry, revocation, and key-removal handling for
-   every continued-use path.
+7. Keep the implemented policy enforcement on search and server-side MCP. Add
+   expiry, revocation, and key-removal handling for every continued-use path.
 8. Add bulk invitation import and the operator recovery procedure.
 
 ## Acceptance criteria
@@ -1111,7 +1098,7 @@ The permissions milestone is complete when the following tests pass.
 - Setup stores and returns the submitted tenant display name.
 - Setup rejects a tenant display name that is empty after trimming.
 - A human token cannot create a token above its own access or role ceiling.
-- A viewer cannot mutate through HTTP, sync, WebSocket, or MCP paths.
+- A viewer cannot mutate through HTTP, sync, or MCP paths.
 - A member cannot perform tenant administration or delete tickets, labels, or
   projects.
 - A project owner can update only projects they own.
@@ -1139,7 +1126,7 @@ The permissions milestone is complete when the following tests pass.
   plaintext secret.
 - Normal and operator recovery use the same tenant-DO transaction. Both revoke
   every old token and older recovery and upgrade enrollments before creating a
-  new recovery enrollment, then close sessions for the revoked tokens.
+  new recovery enrollment.
 - An upgrade requires the target member's human token and raises only that
   token. It does not revoke or change other tokens.
 - A second live upgrade fails unless the admin explicitly replaces the first.
@@ -1167,9 +1154,8 @@ The permissions milestone is complete when the following tests pass.
 
 ### Operations
 
-- Revoking a token closes its active WebSocket sessions.
-- Secret-only mutations advance `/sync` cursors and send watermark frames
-  without exposing secret data or forcing a snapshot.
+- Secret-only mutations advance `/sync` cursors without exposing secret data
+  or forcing a snapshot.
 - Rotating verifier keys keeps credentials on retained keys valid and rejects
   credentials tied to removed keys.
 - Bulk invitation validation is all-or-nothing, and the CLI writes credentials

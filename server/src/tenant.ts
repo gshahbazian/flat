@@ -58,7 +58,6 @@ import {
   operatorRecoveryBodySchema,
   setupBodySchema,
   setupIdentitySchema,
-  socketAttachmentSchema,
   stringValueSchema,
   tokenCreateBodySchema,
   tokenAccessSchema,
@@ -2328,7 +2327,6 @@ export class TenantDO extends DurableObject<Env> {
       }
       throw error
     }
-    this.closeTokenSessions(revokedTokenIds)
     return Response.json(
       { email, expires_at: expiresAt, recovery_code: enrollment.credential },
       {
@@ -2600,7 +2598,6 @@ export class TenantDO extends DurableObject<Env> {
       }
       throw error
     }
-    this.closeTokenSessions(revokedTokenIds)
     return Response.json({ member: this.memberProfile(member.id) })
   }
 
@@ -2736,7 +2733,6 @@ export class TenantDO extends DurableObject<Env> {
       }
       throw error
     }
-    this.closeTokenSessions(revokedTokenIds)
     const live = this.liveUpgrade(member.id)
     return Response.json(
       {
@@ -2961,7 +2957,6 @@ export class TenantDO extends DurableObject<Env> {
           {}
         )
       })
-      this.closeTokenSessions([tokenId])
     }
     return emptyOk()
   }
@@ -3185,18 +3180,6 @@ export class TenantDO extends DurableObject<Env> {
       JSON.stringify(safeMetadata),
       isoNow()
     )
-  }
-
-  private closeTokenSessions(tokenIds: string[]): void {
-    if (tokenIds.length === 0) return
-    const revoked = new Set(tokenIds)
-    for (const socket of this.ctx.getWebSockets()) {
-      const attachment = socket.deserializeAttachment()
-      const parsed = socketAttachmentSchema.safeParse(attachment)
-      if (parsed.success && revoked.has(parsed.data.tokenId)) {
-        socket.close(4001, 'credential revoked')
-      }
-    }
   }
 
   private nextSeq(): number {

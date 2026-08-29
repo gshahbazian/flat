@@ -152,5 +152,3 @@ export const tokenCreateBodySchema = z.object({
 })
 
 export const tokenRevokeBodySchema = z.object({ token_id: z.string() })
-
-export const socketAttachmentSchema = z.object({ tokenId: z.string() })

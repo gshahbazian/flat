@@ -11,7 +11,6 @@ import {
   invitationSchema,
   setupBodySchema,
   setupIdentitySchema,
-  socketAttachmentSchema,
   tokenCreateBodySchema,
 } from '../src/request-schema'
 import { Entity, MutationOp, Priority, Role, TokenKind } from '../src/schema.gen'
@@ -136,11 +135,6 @@ describe('request schemas', () => {
         expires_in_seconds: null,
       }).success
     ).toBe(false)
-  })
-
-  test('parses websocket attachments without accepting arbitrary shapes', () => {
-    expect(socketAttachmentSchema.parse({ tokenId: 'token-1' })).toEqual({ tokenId: 'token-1' })
-    expect(socketAttachmentSchema.safeParse({ tokenId: 1 }).success).toBe(false)
   })
 })
 

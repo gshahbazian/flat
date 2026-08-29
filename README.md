@@ -14,9 +14,8 @@ distinct credential.
 Operator recovery provides a deployer-only break-glass path for an existing
 active admin without resetting the tenant.
 
-The broader accepted design is not complete yet. WebSocket/watch sessions,
-labels, force pushes, and native OS-keychain storage remain explicit follow-up
-work.
+The broader accepted design is not complete yet. Labels, force pushes, and
+native OS-keychain storage remain explicit follow-up work.
 
 ## MCP
 
